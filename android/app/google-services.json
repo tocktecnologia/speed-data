@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "26770981081",
+    "project_id": "speed-data-tock",
+    "storage_bucket": "speed-data-tock.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:26770981081:android:f1b93fd0dd839ff4253ec8",
+        "android_client_info": {
+          "package_name": "com.mycompany.spee.data.tock"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB-E4bqa0QUO9iWDQDH97LJ04Fg0a8mzxM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

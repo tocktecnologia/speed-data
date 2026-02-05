@@ -2,11 +2,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
-import 'package:speed_data/features/services/local_database_service.dart';
 
 class TelemetryService extends ChangeNotifier {
   final FirestoreService _firestoreService = FirestoreService();
-  final LocalDatabaseService _localDb = LocalDatabaseService();
 
   StreamSubscription<Position>? _positionStreamSubscription;
   Timer? _syncTimer;
@@ -17,13 +15,16 @@ class TelemetryService extends ChangeNotifier {
   Position? _currentPosition;
   Position? get currentPosition => _currentPosition;
 
-  Position? _lastRecordedPosition;
-
   String? _currentRaceId;
+
   String? _currentUserId;
 
+  // Buffer for telemetry points (volatile memory)
+  final List<Map<String, dynamic>> _buffer = [];
+
   // Configuration
-  static const int _syncIntervalSeconds = 5;
+  static const int _syncIntervalSeconds = 10;
+  static const int _samplingIntervalMs = 100;
 
   Future<void> startRecording(String raceId, String userId) async {
     if (_isRecording) return;
@@ -44,14 +45,36 @@ class TelemetryService extends ChangeNotifier {
     _currentRaceId = raceId;
     _currentUserId = userId;
     _isRecording = true;
+    _buffer.clear(); // Start fresh
     notifyListeners();
 
-    // Start Location Stream (1Hz approx)
-    final locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.bestForNavigation,
-      distanceFilter:
-          0, // Update every change, filtered by time implicitly by stream
-    );
+    // Start Location Stream (Aiming for 10Hz)
+    // specific settings for Android/iOS might be needed for true 10Hz,
+    // but this requests the best possible.
+    late LocationSettings locationSettings;
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      locationSettings = AndroidSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 0,
+        forceLocationManager: true,
+        intervalDuration: const Duration(milliseconds: _samplingIntervalMs),
+        // foregroundNotificationConfig: ... // Consider if background is needed
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS) {
+      locationSettings = AppleSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        activityType: ActivityType.fitness,
+        distanceFilter: 0,
+        pauseLocationUpdatesAutomatically: false,
+        showBackgroundLocationIndicator: true,
+      );
+    } else {
+      locationSettings = const LocationSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 0,
+      );
+    }
 
     _positionStreamSubscription =
         Geolocator.getPositionStream(locationSettings: locationSettings)
@@ -61,9 +84,9 @@ class TelemetryService extends ChangeNotifier {
       _handleLocationUpdate(position);
     });
 
-    // Start Sync Timer (Every 5s)
+    // Start Sync Timer
     _syncTimer =
-        Timer.periodic(Duration(seconds: _syncIntervalSeconds), (timer) {
+        Timer.periodic(const Duration(seconds: _syncIntervalSeconds), (timer) {
       _syncData();
     });
   }
@@ -78,32 +101,21 @@ class TelemetryService extends ChangeNotifier {
     _syncTimer?.cancel();
     _syncTimer = null;
 
-    // Final sync
+    // Final sync of remaining data
     if (_currentRaceId != null && _currentUserId != null) {
       await _syncData();
     }
 
     _currentRaceId = null;
     _currentUserId = null;
+    _buffer.clear();
   }
 
   Future<void> _handleLocationUpdate(Position position) async {
     if (_currentRaceId == null || _currentUserId == null) return;
 
-    // Filter stationary points (save battery and DB writes)
-    if (_lastRecordedPosition != null) {
-      final distance = Geolocator.distanceBetween(
-        _lastRecordedPosition!.latitude,
-        _lastRecordedPosition!.longitude,
-        position.latitude,
-        position.longitude,
-      );
-
-      // If moved less than 3 meters, ignore this update
-      if (distance < 3.0) return;
-    }
-
-    _lastRecordedPosition = position;
+    // We capture every point as requested (100ms ideally).
+    // No minimum distance filter to ensure raw telemetry for high-speed analysis.
 
     final point = {
       'raceId': _currentRaceId,
@@ -112,48 +124,32 @@ class TelemetryService extends ChangeNotifier {
       'lng': position.longitude,
       'speed': position.speed, // in m/s
       'heading': position.heading,
+      'altitude': position.altitude,
       'timestamp': position.timestamp.millisecondsSinceEpoch,
-      'synced': 0
     };
 
-    await _localDb.insertPoint(point);
+    _buffer.add(point);
   }
 
   Future<void> _syncData() async {
     if (_currentRaceId == null || _currentUserId == null) return;
+    if (_buffer.isEmpty) return;
+
+    // Snapshot buffer and clear main buffer to allow new writes
+    final batch = List<Map<String, dynamic>>.from(_buffer);
+    _buffer.clear();
 
     try {
-      final unsynced = await _localDb.getUnsyncedPoints(_currentRaceId!);
-      if (unsynced.isEmpty) return;
+      // 1. Send Batch to Cloud Function
+      await _firestoreService.sendTelemetryBatch(
+          _currentRaceId!, _currentUserId!, batch);
 
-      // 1. Upload Batch to Logs
-      await _firestoreService.uploadTelemetryBatch(
-          _currentRaceId!, _currentUserId!, unsynced);
-
-      // 2. Update Live Location (use the last point)
-      final lastPoint = unsynced.last;
-
-      // Need to convert DateTime back from int if necessary or just pass directly
-      // My Service expects explicit params, I can refactor or parse.
-      await _firestoreService.updatePilotLocation(
-        raceId: _currentRaceId!,
-        uid: _currentUserId!,
-        lat: lastPoint['lat'],
-        lng: lastPoint['lng'],
-        speed: lastPoint['speed'],
-        heading: lastPoint['heading'],
-        timestamp: DateTime.fromMillisecondsSinceEpoch(lastPoint['timestamp']),
-      );
-
-      // 3. Mark as Synced
-      final ids = unsynced.map((e) => e['id'] as int).toList();
-      await _localDb.markAsSynced(ids);
-
-      // Optional: Clean up synced data to keep DB small?
-      // User says "finalize... sync...". implies keeping it until done.
-      // We can keep it for now.
+      // Success! Data collected and sent.
     } catch (e) {
-      print('Error syncing telemetry: $e');
+      print('Error syncing telemetry batch: $e');
+      // On failure, restore data to the buffer (prepend to keep order roughly,
+      // though strictly strictly prepending a block maintains order relative to new data)
+      _buffer.insertAll(0, batch);
     }
   }
 }

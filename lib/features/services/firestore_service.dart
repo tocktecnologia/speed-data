@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/features/models/user_role.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -96,34 +97,25 @@ class FirestoreService {
         'heading': heading,
         'timestamp': timestamp.millisecondsSinceEpoch,
         'last_updated': FieldValue.serverTimestamp(),
-        // Redundant but useful info might go here, but strictly "current -> data" is this map.
       }
     }, SetOptions(merge: true));
   }
 
-  /// Batch uploads historical/offline points to a separate collection log
-  Future<void> uploadTelemetryBatch(
+  /// Sends a batch of telemetry data to the ingestion Cloud Function
+  Future<void> sendTelemetryBatch(
       String raceId, String uid, List<Map<String, dynamic>> points) async {
-    final batch = _db.batch();
-
-    // Also nest logs under participant
-    final collection = _db
-        .collection('races')
-        .doc(raceId)
-        .collection('participants')
-        .doc(uid)
-        .collection('telemetry_logs');
-
-    for (var point in points) {
-      final docRef = collection.doc(); // Auto-ID
-      batch.set(docRef, {
+    try {
+      final callable =
+          FirebaseFunctions.instance.httpsCallable('ingestTelemetry');
+      await callable.call({
+        'raceId': raceId,
         'uid': uid,
-        'race_id': raceId,
-        ...point,
-        'uploaded_at': FieldValue.serverTimestamp(),
+        'points': points,
       });
+    } catch (e) {
+      print('Error sending telemetry batch: $e');
+      rethrow; // Re-throw to handle in service (e.g. keep in buffer)
     }
-    await batch.commit();
   }
 
   Stream<QuerySnapshot> getRaceLocations(String raceId) {

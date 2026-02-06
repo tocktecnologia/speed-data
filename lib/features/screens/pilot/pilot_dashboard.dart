@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/flutter_flow/nav/nav.dart';
 import 'package:speed_data/features/screens/pilot/active_race_screen.dart';
+import 'package:speed_data/features/screens/pilot/gps_test_screen.dart';
 
 class PilotDashboard extends StatelessWidget {
   const PilotDashboard({Key? key}) : super(key: key);
@@ -78,36 +79,54 @@ class PilotDashboard extends StatelessWidget {
                   title: Text(raceName,
                       style: const TextStyle(fontWeight: FontWeight.bold)),
                   subtitle: const Text('Status: Open for registration'),
-                  trailing: ElevatedButton(
-                    onPressed: () async {
-                      if (user == null) return;
-
-                      // Join Race
-                      await firestoreService.joinRace(
-                        raceId,
-                        user.uid,
-                        user.displayName ?? 'Pilot ${user.uid.substring(0, 4)}',
-                      );
-
-                      // Navigate
-                      if (context.mounted) {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => ActiveRaceScreen(
-                              raceId: raceId,
-                              userId: user.uid,
-                              raceName: raceName,
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const GpsTestScreen(),
                             ),
-                          ),
-                        );
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blueAccent,
-                      foregroundColor: Colors.white,
-                    ),
-                    child: const Text('JOIN & START'),
+                          );
+                        },
+                        child: const Text('TEST GPS'),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: () async {
+                          if (user == null) return;
+
+                          // Join Race
+                          await firestoreService.joinRace(
+                            raceId,
+                            user.uid,
+                            user.displayName ??
+                                'Pilot ${user.uid.substring(0, 4)}',
+                          );
+
+                          // Navigate
+                          if (context.mounted) {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => ActiveRaceScreen(
+                                  raceId: raceId,
+                                  userId: user.uid,
+                                  raceName: raceName,
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueAccent,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text('JOIN & START'),
+                      ),
+                    ],
                   ),
                 ),
               );

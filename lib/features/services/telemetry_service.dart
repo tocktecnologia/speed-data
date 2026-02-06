@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
+import 'package:uuid/uuid.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class TelemetryService extends ChangeNotifier {
   final FirestoreService _firestoreService = FirestoreService();
@@ -16,18 +18,27 @@ class TelemetryService extends ChangeNotifier {
   Position? get currentPosition => _currentPosition;
 
   String? _currentRaceId;
-
   String? _currentUserId;
+  String? _currentSessionId;
 
   // Buffer for telemetry points (volatile memory)
   final List<Map<String, dynamic>> _buffer = [];
 
   // Configuration
-  static const int _syncIntervalSeconds = 10;
-  static const int _samplingIntervalMs = 100;
+  static const int _syncIntervalSeconds = 5;
+  static const int _samplingIntervalMs = 50;
+  // Frequency Tracking
+  double _currentFrequency = 0.0;
+  double get currentFrequency => _currentFrequency;
 
   Future<void> startRecording(String raceId, String userId) async {
     if (_isRecording) return;
+
+    // Enable Wakelock to keep screen on and CPU active
+    await WakelockPlus.enable();
+
+    // Generate Session ID
+    _currentSessionId = const Uuid().v4();
 
     // Check permissions
     LocationPermission permission = await Geolocator.checkPermission();
@@ -48,17 +59,19 @@ class TelemetryService extends ChangeNotifier {
     _buffer.clear(); // Start fresh
     notifyListeners();
 
-    // Start Location Stream (Aiming for 10Hz)
-    // specific settings for Android/iOS might be needed for true 10Hz,
-    // but this requests the best possible.
+    // Start Location Stream
     late LocationSettings locationSettings;
     if (defaultTargetPlatform == TargetPlatform.android) {
       locationSettings = AndroidSettings(
         accuracy: LocationAccuracy.bestForNavigation,
         distanceFilter: 0,
-        forceLocationManager: true,
+        forceLocationManager: false, // Fuse Location Provider
         intervalDuration: const Duration(milliseconds: _samplingIntervalMs),
-        // foregroundNotificationConfig: ... // Consider if background is needed
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: "Race Recording",
+          notificationText: "Telemetry is being captured in background",
+          enableWakeLock: true,
+        ),
       );
     } else if (defaultTargetPlatform == TargetPlatform.iOS ||
         defaultTargetPlatform == TargetPlatform.macOS) {
@@ -89,17 +102,25 @@ class TelemetryService extends ChangeNotifier {
         Timer.periodic(const Duration(seconds: _syncIntervalSeconds), (timer) {
       _syncData();
     });
+
+    // Start Frequency Timer
+    _currentFrequency = 0.0;
   }
 
   Future<void> stopRecording() async {
     _isRecording = false;
     notifyListeners();
 
+    // Disable WakeLock
+    await WakelockPlus.disable();
+
     _positionStreamSubscription?.cancel();
     _positionStreamSubscription = null;
 
     _syncTimer?.cancel();
     _syncTimer = null;
+
+    _currentFrequency = 0.0;
 
     // Final sync of remaining data
     if (_currentRaceId != null && _currentUserId != null) {
@@ -108,6 +129,7 @@ class TelemetryService extends ChangeNotifier {
 
     _currentRaceId = null;
     _currentUserId = null;
+    _currentSessionId = null;
     _buffer.clear();
   }
 
@@ -120,6 +142,7 @@ class TelemetryService extends ChangeNotifier {
     final point = {
       'raceId': _currentRaceId,
       'uid': _currentUserId,
+      'session': _currentSessionId,
       'lat': position.latitude,
       'lng': position.longitude,
       'speed': position.speed, // in m/s
@@ -144,7 +167,8 @@ class TelemetryService extends ChangeNotifier {
       await _firestoreService.sendTelemetryBatch(
           _currentRaceId!, _currentUserId!, batch);
 
-      // Success! Data collected and sent.
+      _currentFrequency = batch.length / _syncIntervalSeconds;
+      print('Synced telemetry batch: ${batch.length} points');
     } catch (e) {
       print('Error syncing telemetry batch: $e');
       // On failure, restore data to the buffer (prepend to keep order roughly,

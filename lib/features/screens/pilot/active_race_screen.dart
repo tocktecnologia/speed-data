@@ -174,6 +174,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                     children: [
                       _buildInfoMetric('Speed',
                           '${(telemetry.currentPosition?.speed ?? 0 * 3.6).toStringAsFixed(1)} km/h'),
+                      _buildInfoMetric('GPS Hz',
+                          '${telemetry.currentFrequency.toStringAsFixed(1)} Hz'),
                       _buildStatusIndicator(telemetry.isRecording),
                     ],
                   ),

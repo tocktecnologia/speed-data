@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class GpsTestScreen extends StatefulWidget {
   const GpsTestScreen({Key? key}) : super(key: key);
@@ -14,6 +15,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
   StreamSubscription<Position>? _positionStreamSubscription;
   final List<Map<String, dynamic>> _pointsBuffer = [];
   Timer? _logTimer;
+  final int _syncIntervalSeconds = 1;
   bool _isRecording = false;
   double _currentSpeed = 0.0;
   int _pointsCount = 0;
@@ -21,11 +23,15 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
   @override
   void dispose() {
     _stopRecording();
+    WakelockPlus.disable(); // Ensure it's disabled when leaving
     super.dispose();
   }
 
   void _startRecording() async {
     if (_isRecording) return;
+
+    // Enable Wakelock to keep screen on and CPU active
+    await WakelockPlus.enable();
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -94,7 +100,8 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
     });
 
     // Timer to log and clear buffer every second
-    _logTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    _logTimer =
+        Timer.periodic(Duration(seconds: _syncIntervalSeconds), (timer) {
       if (_pointsBuffer.isNotEmpty) {
         print(
             '\n--- GPS Capture Log (${DateTime.now().toIso8601String()}) ---');
@@ -112,6 +119,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
   }
 
   void _stopRecording() {
+    WakelockPlus.disable(); // Allow screen to turn off
     _positionStreamSubscription?.cancel();
     _positionStreamSubscription = null;
     _logTimer?.cancel();

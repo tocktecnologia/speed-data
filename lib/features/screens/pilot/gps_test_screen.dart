@@ -52,6 +52,11 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
         forceLocationManager: false,
         // Request updates as fast as possible (e.g. 50ms) to try and get >1Hz
         intervalDuration: const Duration(milliseconds: 50),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: "GPS Test Running",
+          notificationText: "Background tracking is active",
+          enableWakeLock: true,
+        ),
       );
     } else if (defaultTargetPlatform == TargetPlatform.iOS ||
         defaultTargetPlatform == TargetPlatform.macOS) {

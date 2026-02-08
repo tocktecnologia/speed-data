@@ -359,24 +359,28 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
             child: Column(
               children: [
                 // Speed Parameter
-                if (!_isSimulating)
-                  Row(
-                    children: [
-                      const Text('Sim Speed:',
-                          style: TextStyle(color: Colors.white)),
-                      Expanded(
-                          child: Slider(
-                        value: _simulationSpeed,
-                        min: 1,
-                        max: 100, // up to 360km/h
-                        onChanged: (val) {
-                          setState(() => _simulationSpeed = val);
-                        },
-                      )),
-                      Text('${_simulationSpeed.toStringAsFixed(1)} m/s',
-                          style: const TextStyle(color: Colors.white)),
-                    ],
-                  ),
+                Row(
+                  children: [
+                    const Text('Sim Speed:',
+                        style: TextStyle(color: Colors.white)),
+                    Expanded(
+                        child: Slider(
+                      value: _simulationSpeed,
+                      min: 1,
+                      max: 100, // up to 360km/h
+                      onChanged: (val) {
+                        setState(() {
+                          _simulationSpeed = val;
+                          if (_isSimulating) {
+                            _currentSpeed = val * 3.6;
+                          }
+                        });
+                      },
+                    )),
+                    Text('${_simulationSpeed.toStringAsFixed(1)} m/s',
+                        style: const TextStyle(color: Colors.white)),
+                  ],
+                ),
 
                 const SizedBox(height: 10),
 

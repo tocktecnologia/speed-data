@@ -313,7 +313,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
                 _buildInfoMetric(
-                    'Speed', '${(_currentSpeed).toStringAsFixed(1)} km/h'),
+                    'Speed', '${(_currentSpeed).toStringAsFixed(1)} km/h '),
                 _buildInfoMetric(
                     'GPS Hz', '${_currentHz.toStringAsFixed(1)} Hz',
                     valueColor: _getGpsColor(_currentHz)),

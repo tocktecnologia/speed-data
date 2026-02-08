@@ -24,6 +24,7 @@ class ActiveRaceScreen extends StatefulWidget {
 class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   GoogleMapController? _mapController;
   final FirestoreService _firestoreService = FirestoreService();
+  late TelemetryService _telemetryService;
   Set<Marker> _raceMarkers = {};
   bool _isInitLocationSet = false;
 
@@ -33,7 +34,25 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   @override
   void initState() {
     super.initState();
+    _telemetryService = TelemetryService();
+    // Start GPS immediately but disable cloud sync
+    _telemetryService.enableSendDataToCloud = false;
+
+    // Use post-frame callback to ensure context is ready if needed,
+    // though startRecording handles mostly logic.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _telemetryService.startRecording(widget.raceId, widget.userId);
+    });
+
     _loadRaceDetails();
+  }
+
+  @override
+  void dispose() {
+    // Ensure we stop recording and dispose the service
+    _telemetryService.stopRecording();
+    _telemetryService.dispose();
+    super.dispose();
   }
 
   Future<void> _loadRaceDetails() async {
@@ -141,8 +160,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => TelemetryService(),
+    return ChangeNotifierProvider.value(
+      value: _telemetryService,
       child: Scaffold(
         appBar: AppBar(
           title: Text('Race: ${widget.raceName}'),
@@ -173,10 +192,13 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
                       _buildInfoMetric('Speed',
-                          '${(telemetry.currentPosition?.speed ?? 0 * 3.6).toStringAsFixed(1)} km/h'),
-                      _buildInfoMetric('GPS Hz',
-                          '${telemetry.currentFrequency.toStringAsFixed(1)} Hz'),
-                      _buildStatusIndicator(telemetry.isRecording),
+                          '${((telemetry.currentPosition?.speed ?? 0) * 3.6).toStringAsFixed(1)} km/h'),
+                      _buildInfoMetric(
+                        'GPS Hz',
+                        '${telemetry.currentFrequency.toStringAsFixed(1)} Hz',
+                        valueColor: _getGpsColor(telemetry.currentFrequency),
+                      ),
+                      _buildStatusIndicator(telemetry.enableSendDataToCloud),
                     ],
                   ),
                 ),
@@ -209,13 +231,18 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                     children: [
                       Expanded(
                         child: ElevatedButton(
-                          onPressed: telemetry.isRecording
+                          onPressed: telemetry.enableSendDataToCloud
                               ? null
-                              : () => telemetry.startRecording(
-                                  widget.raceId, widget.userId),
+                              : () {
+                                  telemetry.enableSendDataToCloud = true;
+                                  // Force rebuild to update button state since setter doesn't notify
+                                  setState(() {});
+                                },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.green,
                             padding: const EdgeInsets.symmetric(vertical: 16),
+                            disabledBackgroundColor: Colors.grey[800],
+                            disabledForegroundColor: Colors.grey,
                           ),
                           child: const Text('START'),
                         ),
@@ -223,7 +250,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                       const SizedBox(width: 16),
                       Expanded(
                         child: ElevatedButton(
-                          onPressed: !telemetry.isRecording
+                          onPressed: !telemetry.enableSendDataToCloud
                               ? null
                               : () async {
                                   await telemetry.stopRecording();
@@ -239,6 +266,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.red,
                             padding: const EdgeInsets.symmetric(vertical: 16),
+                            disabledBackgroundColor: Colors.grey[800],
+                            disabledForegroundColor: Colors.grey,
                           ),
                           child: const Text('FINISH RACE'),
                         ),
@@ -254,39 +283,55 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     );
   }
 
-  Widget _buildInfoMetric(String label, String value) {
+  Color _getGpsColor(double hz) {
+    if (hz < 0.5) {
+      return Colors.red;
+    } else if (hz < 1.0) {
+      return Colors.orange;
+    } else if (hz < 1.8) {
+      return Colors.green;
+    } else {
+      return Colors.greenAccent;
+    }
+  }
+
+  Widget _buildInfoMetric(String label, String value, {Color? valueColor}) {
     return Column(
       children: [
         Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
         const SizedBox(height: 4),
         Text(value,
-            style: const TextStyle(
-                color: Colors.white,
+            style: TextStyle(
+                color: valueColor ?? Colors.white,
                 fontSize: 24,
                 fontWeight: FontWeight.bold)),
       ],
     );
   }
 
-  Widget _buildStatusIndicator(bool isRecording) {
+  Widget _buildStatusIndicator(bool isSendingToCloud) {
+    // If we're not sending to cloud, but GPS is running (which it generally is), show READY/GPS ON
+    // If sending to cloud, show LIVE
+    final isLive = isSendingToCloud;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: isRecording
+        color: isLive
             ? Colors.green.withOpacity(0.2)
-            : Colors.red.withOpacity(0.2),
+            : Colors.orange.withOpacity(0.2),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: isRecording ? Colors.green : Colors.red),
+        border: Border.all(color: isLive ? Colors.green : Colors.orange),
       ),
       child: Row(
         children: [
           Icon(Icons.circle,
-              size: 10, color: isRecording ? Colors.green : Colors.red),
+              size: 10, color: isLive ? Colors.green : Colors.orange),
           const SizedBox(width: 8),
           Text(
-            isRecording ? 'LIVE' : 'OFFLINE',
+            isLive ? 'LIVE' : 'JÁ NO GRID',
             style: TextStyle(
-              color: isRecording ? Colors.green : Colors.red,
+              color: isLive ? Colors.green : Colors.orange,
               fontWeight: FontWeight.bold,
             ),
           ),

@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:intl/intl.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
-import 'package:uuid/uuid.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 class TelemetryService extends ChangeNotifier {
@@ -10,6 +10,12 @@ class TelemetryService extends ChangeNotifier {
 
   StreamSubscription<Position>? _positionStreamSubscription;
   Timer? _syncTimer;
+
+  bool _enableSendDataToCloud = true;
+  bool get enableSendDataToCloud => _enableSendDataToCloud;
+  set enableSendDataToCloud(bool value) {
+    _enableSendDataToCloud = value;
+  }
 
   bool _isRecording = false;
   bool get isRecording => _isRecording;
@@ -37,8 +43,9 @@ class TelemetryService extends ChangeNotifier {
     // Enable Wakelock to keep screen on and CPU active
     await WakelockPlus.enable();
 
-    // Generate Session ID
-    _currentSessionId = const Uuid().v4();
+    // Generate Session ID (dd-MM-yyyy HH:mm:ss)
+    final now = DateTime.now();
+    _currentSessionId = DateFormat('dd-MM-yyyy HH:mm:ss').format(now);
 
     // Check permissions
     LocationPermission permission = await Geolocator.checkPermission();
@@ -164,13 +171,20 @@ class TelemetryService extends ChangeNotifier {
 
     try {
       // 1. Send Batch to Cloud Function
-      await _firestoreService.sendTelemetryBatch(
-          _currentRaceId!, _currentUserId!, batch);
+      if (_enableSendDataToCloud) {
+        await _firestoreService.sendTelemetryBatch(
+            _currentRaceId!, _currentUserId!, batch);
+      }
 
-      _currentFrequency = batch.length / _syncIntervalSeconds;
-      print('Synced telemetry batch: ${batch.length} points');
+      _currentFrequency = batch.length.toDouble() / _syncIntervalSeconds;
+
+      if (kDebugMode) {
+        print('Synced telemetry batch: ${batch.length} points');
+      }
     } catch (e) {
-      print('Error syncing telemetry batch: $e');
+      if (kDebugMode) {
+        print('Error syncing telemetry batch: $e');
+      }
       // On failure, restore data to the buffer (prepend to keep order roughly,
       // though strictly strictly prepending a block maintains order relative to new data)
       _buffer.insertAll(0, batch);

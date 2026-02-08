@@ -87,7 +87,11 @@ class PilotDashboard extends StatelessWidget {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => const GpsTestScreen(),
+                              builder: (context) => GpsTestScreen(
+                                raceId: raceId,
+                                userId: user?.uid ?? 'unknown',
+                                raceName: raceName,
+                              ),
                             ),
                           );
                         },

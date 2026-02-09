@@ -31,6 +31,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
   Set<Marker> _raceMarkers = {};
   Set<Polyline> _polylines = {};
   LatLng? _startLocation;
+  List<Map<String, dynamic>>? _checkpoints;
 
   // Simulation State
   bool _isSimulating = false;
@@ -75,6 +76,10 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
       final checkpoints = data['checkpoints'] as List<dynamic>?;
 
       if (checkpoints != null && checkpoints.isNotEmpty) {
+        // Cast strictly to ensure type safety
+        _checkpoints = checkpoints
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
         final markers = <Marker>{};
         final straightRoutePoints = <LatLng>[];
 
@@ -483,7 +488,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
       // 1. Send Batch to Cloud Function
       if (_enableSendDataToCloud) {
         await _firestoreService.sendTelemetryBatch(
-            widget.raceId, widget.userId, batch);
+            widget.raceId, widget.userId, batch, _checkpoints);
       }
 
       if (kDebugMode) {

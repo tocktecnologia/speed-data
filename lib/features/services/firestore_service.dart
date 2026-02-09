@@ -103,7 +103,10 @@ class FirestoreService {
 
   /// Sends a batch of telemetry data to the ingestion Cloud Function
   Future<void> sendTelemetryBatch(
-      String raceId, String uid, List<Map<String, dynamic>> points) async {
+      String raceId,
+      String uid,
+      List<Map<String, dynamic>> points,
+      List<Map<String, dynamic>>? checkpoints) async {
     try {
       final callable =
           FirebaseFunctions.instance.httpsCallable('ingestTelemetry');
@@ -111,6 +114,7 @@ class FirestoreService {
         'raceId': raceId,
         'uid': uid,
         'points': points,
+        'checkpoints': checkpoints,
       });
     } catch (e) {
       print('Error sending telemetry batch: $e');

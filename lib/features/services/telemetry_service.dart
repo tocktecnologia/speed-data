@@ -26,6 +26,7 @@ class TelemetryService extends ChangeNotifier {
   String? _currentRaceId;
   String? _currentUserId;
   String? _currentSessionId;
+  List<Map<String, dynamic>>? _checkpoints;
 
   // Buffer for telemetry points (volatile memory)
   final List<Map<String, dynamic>> _buffer = [];
@@ -36,6 +37,10 @@ class TelemetryService extends ChangeNotifier {
   // Frequency Tracking
   double _currentFrequency = 0.0;
   double get currentFrequency => _currentFrequency;
+
+  void setCheckpoints(List<Map<String, dynamic>> checkpoints) {
+    _checkpoints = checkpoints;
+  }
 
   Future<void> startRecording(String raceId, String userId) async {
     if (_isRecording) return;
@@ -64,6 +69,7 @@ class TelemetryService extends ChangeNotifier {
     _currentUserId = userId;
     _isRecording = true;
     _buffer.clear(); // Start fresh
+    _buffer.clear();
     notifyListeners();
 
     // Start Location Stream
@@ -173,7 +179,7 @@ class TelemetryService extends ChangeNotifier {
       // 1. Send Batch to Cloud Function
       if (_enableSendDataToCloud) {
         await _firestoreService.sendTelemetryBatch(
-            _currentRaceId!, _currentUserId!, batch);
+            _currentRaceId!, _currentUserId!, batch, _checkpoints);
       }
 
       _currentFrequency = batch.length.toDouble() / _syncIntervalSeconds;

@@ -68,6 +68,11 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         final straightRoutePoints = <LatLng>[];
 
         if (checkpoints.isNotEmpty) {
+          // Pass checkpoints to telemetry service for cloud function processing
+          _telemetryService.setCheckpoints(checkpoints
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .toList());
+
           final firstPoint = checkpoints[0];
           final fLat = (firstPoint['lat'] as num).toDouble();
           final fLng = (firstPoint['lng'] as num).toDouble();

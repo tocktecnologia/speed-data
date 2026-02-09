@@ -35,10 +35,11 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
 
   // Simulation State
   bool _isSimulating = false;
-  double _simulationSpeed = 10.0; // m/s
+  double _simulationSpeed = 40.0; // m/s
   Timer? _simulationTimer;
   List<LatLng> _routePath = [];
   double _currentRouteDistance = 0.0;
+  Color _userColor = Colors.cyan; // Default color
 
   // "Telemetry" State for UI
   double _currentSpeed = 0.0; // m/s
@@ -46,7 +47,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
   LatLng? _currentPosition;
 
   // Simulation config
-  final int _updatesPerSecond = 2;
+  final int _updatesPerSecond = 1;
 
   // Telemetry Syncing
   List<Map<String, dynamic>> _buffer = [];
@@ -70,6 +71,24 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
   Future<void> _loadRaceDetails() async {
     final stream = _firestoreService.getRaceStream(widget.raceId);
     final snapshot = await stream.first;
+
+    // Fetch user color
+    try {
+      final userProfile = await _firestoreService.getUserProfile(widget.userId);
+      if (userProfile != null && userProfile.containsKey('color')) {
+        final colorData = userProfile['color'];
+        if (colorData is int) {
+          _userColor = Color(colorData);
+        } else if (colorData is String) {
+          final parsed = int.tryParse(colorData);
+          if (parsed != null) {
+            _userColor = Color(parsed);
+          }
+        }
+      }
+    } catch (e) {
+      print('Error fetching user color: $e');
+    }
 
     if (snapshot.exists) {
       final data = snapshot.data() as Map<String, dynamic>;
@@ -347,7 +366,8 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
                         markerId: const MarkerId('simulated_pos'),
                         position: _currentPosition!,
                         icon: BitmapDescriptor.defaultMarkerWithHue(
-                            BitmapDescriptor.hueCyan),
+                          HSVColor.fromColor(_userColor).hue,
+                        ),
                         zIndex: 10,
                       )
                   },

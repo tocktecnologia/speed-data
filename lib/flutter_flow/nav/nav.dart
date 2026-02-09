@@ -110,6 +110,11 @@ GoRouter createRouter(AppStateNotifier appStateNotifier) => GoRouter(
           name: SignUpWidget.routeName,
           path: SignUpWidget.routePath,
           builder: (context, params) => SignUpWidget(),
+        ),
+        FFRoute(
+          name: PilotProfileSetupWidget.routeName,
+          path: PilotProfileSetupWidget.routePath,
+          builder: (context, params) => PilotProfileSetupWidget(),
         )
       ].map((r) => r.toRoute(appStateNotifier)).toList(),
     );

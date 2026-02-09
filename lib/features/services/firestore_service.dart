@@ -27,6 +27,13 @@ class FirestoreService {
     }, SetOptions(merge: true));
   }
 
+  Future<void> updatePilotProfile(String uid, String name, int color) async {
+    await _db.collection('users').doc(uid).set({
+      'name': name,
+      'color': color,
+    }, SetOptions(merge: true));
+  }
+
   // --- Races ---
 
   Future<String> createRace(String name, String creatorId,
@@ -51,7 +58,45 @@ class FirestoreService {
         .snapshots();
   }
 
-  Future<void> joinRace(String raceId, String uid, String displayName) async {
+  Future<Map<String, dynamic>?> getUserProfile(String uid) async {
+    try {
+      DocumentSnapshot doc = await _db.collection('users').doc(uid).get();
+      if (doc.exists) {
+        return doc.data() as Map<String, dynamic>;
+      }
+    } catch (e) {
+      print('Error getting user profile: $e');
+    }
+    return null;
+  }
+
+  Future<void> joinRace(
+      String raceId, String uid, String displayName, int color) async {
+    // Try to get the name from the user profile first
+    String finalName = displayName;
+    int finalColor = color;
+
+    try {
+      DocumentSnapshot userDoc = await _db.collection('users').doc(uid).get();
+      if (userDoc.exists) {
+        final data = userDoc.data() as Map<String, dynamic>;
+        if (data.containsKey('name') &&
+            data['name'] != null &&
+            data['name'].toString().isNotEmpty) {
+          finalName = data['name'];
+        }
+        if (data.containsKey('color') && data['color'] != null) {
+          if (data['color'] is int) {
+            finalColor = data['color'];
+          } else if (data['color'] is String) {
+            finalColor = int.tryParse(data['color']) ?? finalColor;
+          }
+        }
+      }
+    } catch (e) {
+      print('Error fetching user profile for join: $e');
+    }
+
     await _db
         .collection('races')
         .doc(raceId)
@@ -59,7 +104,8 @@ class FirestoreService {
         .doc(uid)
         .set({
       'uid': uid,
-      'display_name': displayName,
+      'display_name': finalName,
+      'color': finalColor.toString(),
       'joined_at': FieldValue.serverTimestamp(),
     });
   }
@@ -70,7 +116,6 @@ class FirestoreService {
 
   // --- Telemetry ---
 
-  /// Updates the current live location of a pilot in a race
   /// Updates the current live location of a pilot in a race
   Future<void> updatePilotLocation({
     required String raceId,

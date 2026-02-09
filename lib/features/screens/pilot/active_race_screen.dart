@@ -30,6 +30,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
   LatLng? _startLocation;
   Set<Polyline> _polylines = {};
+  Color _userColor = Colors.blue; // Default
 
   @override
   void initState() {
@@ -58,6 +59,24 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   Future<void> _loadRaceDetails() async {
     final stream = _firestoreService.getRaceStream(widget.raceId);
     final snapshot = await stream.first;
+
+    // Fetch user color
+    try {
+      final userProfile = await _firestoreService.getUserProfile(widget.userId);
+      if (userProfile != null && userProfile.containsKey('color')) {
+        final colorData = userProfile['color'];
+        if (colorData is int) {
+          _userColor = Color(colorData);
+        } else if (colorData is String) {
+          final parsed = int.tryParse(colorData);
+          if (parsed != null) {
+            _userColor = Color(parsed);
+          }
+        }
+      }
+    } catch (e) {
+      print('Error fetching user color: $e');
+    }
 
     if (snapshot.exists) {
       final data = snapshot.data() as Map<String, dynamic>;
@@ -221,7 +240,21 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                         onMapCreated: _onMapCreated,
                         myLocationEnabled: true,
                         myLocationButtonEnabled: true,
-                        markers: _raceMarkers,
+                        markers: {
+                          ..._raceMarkers,
+                          if (telemetry.currentPosition != null)
+                            Marker(
+                              markerId: const MarkerId('my_position'),
+                              position: LatLng(
+                                telemetry.currentPosition!.latitude,
+                                telemetry.currentPosition!.longitude,
+                              ),
+                              icon: BitmapDescriptor.defaultMarkerWithHue(
+                                HSVColor.fromColor(_userColor).hue,
+                              ),
+                              zIndex: 10,
+                            ),
+                        },
                         polylines: _polylines,
                       ),
                     ],

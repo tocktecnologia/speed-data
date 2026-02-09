@@ -83,13 +83,47 @@ class PilotDashboard extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       TextButton(
-                        onPressed: () {
+                        onPressed: () async {
+                          if (user == null) return;
+
+                          // Fetch User Profile
+                          int finalColor = 0xFF0000FF; // Default Blue
+                          String finalName = user.displayName ??
+                              'Pilot ${user.uid.substring(0, 4)}';
+
+                          try {
+                            final profile =
+                                await firestoreService.getUserProfile(user.uid);
+                            if (profile != null) {
+                              if (profile['name'] != null) {
+                                finalName = profile['name'];
+                              }
+                              if (profile['color'] != null) {
+                                if (profile['color'] is int) {
+                                  finalColor = profile['color'];
+                                } else if (profile['color'] is String) {
+                                  finalColor = int.tryParse(profile['color']) ??
+                                      finalColor;
+                                }
+                              }
+                            }
+                          } catch (e) {
+                            print('Error fetching profile: $e');
+                          }
+
+                          // Join Race
+                          await firestoreService.joinRace(
+                            raceId,
+                            user.uid,
+                            finalName,
+                            finalColor,
+                          );
                           Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (context) => GpsTestScreen(
                                 raceId: raceId,
-                                userId: user?.uid ?? 'unknown',
+                                userId: user.uid,
                                 raceName: raceName,
                               ),
                             ),
@@ -102,12 +136,37 @@ class PilotDashboard extends StatelessWidget {
                         onPressed: () async {
                           if (user == null) return;
 
+                          // Fetch User Profile
+                          int finalColor = 0xFF0000FF; // Default Blue
+                          String finalName = user.displayName ??
+                              'Pilot ${user.uid.substring(0, 4)}';
+
+                          try {
+                            final profile =
+                                await firestoreService.getUserProfile(user.uid);
+                            if (profile != null) {
+                              if (profile['name'] != null) {
+                                finalName = profile['name'];
+                              }
+                              if (profile['color'] != null) {
+                                if (profile['color'] is int) {
+                                  finalColor = profile['color'];
+                                } else if (profile['color'] is String) {
+                                  finalColor = int.tryParse(profile['color']) ??
+                                      finalColor;
+                                }
+                              }
+                            }
+                          } catch (e) {
+                            print('Error fetching profile: $e');
+                          }
+
                           // Join Race
                           await firestoreService.joinRace(
                             raceId,
                             user.uid,
-                            user.displayName ??
-                                'Pilot ${user.uid.substring(0, 4)}',
+                            finalName,
+                            finalColor,
                           );
 
                           // Navigate

@@ -167,8 +167,14 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
   Widget build(BuildContext context) {
     final pilots = _stats.values.toList();
     // Sort: 0 is best
-    // Sort: 0 is best (using bestLapTime primarily)
+    // Sort: 1. Completed Laps (desc), 2. Best Lap Time (asc)
     pilots.sort((a, b) {
+      // 1. Completed Laps (Descending)
+      if (b.completedLaps != a.completedLaps) {
+        return b.completedLaps.compareTo(a.completedLaps);
+      }
+
+      // 2. Best Lap Time (Ascending)
       if (a.bestLapTime == 0 && b.bestLapTime == 0) return 0;
       if (a.bestLapTime == 0) return 1; // Put 0 at bottom
       if (b.bestLapTime == 0) return -1;

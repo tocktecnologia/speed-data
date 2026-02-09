@@ -660,21 +660,41 @@ class _SignUpWidgetState extends State<SignUpWidget> {
                                           return;
                                         }
 
-                                        // Save Selected Role
+                                        // Save Selected Role and Navigate
                                         try {
                                           final roleStr =
                                               _model.selectedRole ?? 'pilot';
                                           final roleEnum =
                                               UserRole.fromString(roleStr);
-                                          await FirestoreService().setUserRole(
-                                              user?.uid ?? '', roleEnum);
+                                          final uid = user?.uid ?? '';
+
+                                          await FirestoreService()
+                                              .setUserRole(uid, roleEnum);
+
+                                          if (roleEnum == UserRole.pilot) {
+                                            // Ensure we are mounted before navigating
+                                            if (context.mounted) {
+                                              context.goNamedAuth(
+                                                  PilotProfileSetupWidget
+                                                      .routeName,
+                                                  context.mounted);
+                                            }
+                                          } else {
+                                            if (context.mounted) {
+                                              context.goNamedAuth(
+                                                  HomePageWidget.routeName,
+                                                  context.mounted);
+                                            }
+                                          }
                                         } catch (e) {
                                           print('Error saving role: $e');
+                                          // Fallback to home page on error
+                                          if (context.mounted) {
+                                            context.goNamedAuth(
+                                                HomePageWidget.routeName,
+                                                context.mounted);
+                                          }
                                         }
-
-                                        context.goNamedAuth(
-                                            HomePageWidget.routeName,
-                                            context.mounted);
                                       },
                                       text: 'Create Account',
                                       options: FFButtonOptions(

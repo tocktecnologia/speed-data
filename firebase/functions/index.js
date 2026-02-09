@@ -142,7 +142,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
                             const totalCheckpoints = checkpoints.length;
                             const recordedCheckpoints = currentLapData.points ? Object.keys(currentLapData.points).length : 0;
 
-                            if (recordedCheckpoints >= (totalCheckpoints - 1)) {
+                            if (recordedCheckpoints >= (totalCheckpoints - 2)) {
                                 // Create Next Lap
                                 const nextLapNum = currentLapData.number + 1;
                                 const nextLapRef = lapsRef.doc(`lap_${nextLapNum}`);

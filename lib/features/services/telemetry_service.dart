@@ -178,8 +178,8 @@ class TelemetryService extends ChangeNotifier {
     try {
       // 1. Send Batch to Cloud Function
       if (_enableSendDataToCloud) {
-        await _firestoreService.sendTelemetryBatch(
-            _currentRaceId!, _currentUserId!, batch, _checkpoints);
+        await _firestoreService.sendTelemetryBatch(_currentRaceId!,
+            _currentUserId!, batch, _checkpoints, _currentSessionId!);
       }
 
       _currentFrequency = batch.length.toDouble() / _syncIntervalSeconds;

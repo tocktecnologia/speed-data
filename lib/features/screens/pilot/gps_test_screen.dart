@@ -487,8 +487,8 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
     try {
       // 1. Send Batch to Cloud Function
       if (_enableSendDataToCloud) {
-        await _firestoreService.sendTelemetryBatch(
-            widget.raceId, widget.userId, batch, _checkpoints);
+        await _firestoreService.sendTelemetryBatch(widget.raceId, widget.userId,
+            batch, _checkpoints, _currentSessionId);
       }
 
       if (kDebugMode) {

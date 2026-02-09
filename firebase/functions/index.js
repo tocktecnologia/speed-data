@@ -23,7 +23,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
         );
     }
 
-    const { raceId, uid, points, checkpoints } = data;
+    const { raceId, uid, points, checkpoints, session } = data;
 
     // 2. Validation
     if (!points || !Array.isArray(points)) {
@@ -92,7 +92,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
 
                 if (bestPP) {
                     // Interaction with Firestore Laps
-                    const lapsRef = db.collection('races').doc(raceId).collection('participants').doc(uid).collection('laps');
+                    const lapsRef = db.collection('races').doc(raceId).collection('participants').doc(uid).collection("sessions").doc(session).collection('laps');
 
                     // Get 'latest' lap
                     const lapsSnapshot = await lapsRef.orderBy('number', 'desc').limit(1).get();

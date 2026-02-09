@@ -132,4 +132,39 @@ class FirestoreService {
         .collection('participants')
         .snapshots();
   }
+
+  Stream<QuerySnapshot> getPilotSessions(String raceId, String uid) {
+    return _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .doc(uid)
+        .collection('sessions')
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot> getSessionLaps(
+      String raceId, String uid, String sessionId) {
+    return _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .doc(uid)
+        .collection('sessions')
+        .doc(sessionId)
+        .collection('laps')
+        .orderBy('number', descending: true)
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot> getLaps(String raceId, String uid) {
+    return _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .doc(uid)
+        .collection('laps')
+        .orderBy('number', descending: true)
+        .snapshots();
+  }
 }

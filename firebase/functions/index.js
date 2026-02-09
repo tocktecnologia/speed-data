@@ -92,7 +92,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
 
                 if (bestPP) {
                     // Interaction with Firestore Laps
-                    const lapsRef = db.collection('races').doc(raceId).collection('participants').doc(uid).collection("sessions").doc(session).collection('laps');
+                    // const lapsRef = db.collection('races').doc(raceId).collection('participants').doc(uid).collection("sessions").doc(session).collection('laps');
+                    const lapsRef = db.collection('races').doc(raceId).collection('participants').doc(uid).collection('laps');
 
                     // Get 'latest' lap
                     const lapsSnapshot = await lapsRef.orderBy('number', 'desc').limit(1).get();

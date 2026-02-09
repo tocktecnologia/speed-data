@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:speed_data/features/screens/admin/widgets/leaderboard_panel.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 
 class AdminMapView extends StatefulWidget {
@@ -18,6 +19,7 @@ class _AdminMapViewState extends State<AdminMapView> {
   final FirestoreService _firestoreService = FirestoreService();
   GoogleMapController? _mapController;
   LatLng? _initialCameraTarget;
+  List<dynamic> _checkpoints = [];
 
   @override
   void initState() {
@@ -31,6 +33,11 @@ class _AdminMapViewState extends State<AdminMapView> {
       if (doc.exists && doc.data() != null) {
         final data = doc.data() as Map<String, dynamic>;
         final checkpoints = data['checkpoints'] as List<dynamic>?;
+        if (mounted && checkpoints != null) {
+          setState(() {
+            _checkpoints = checkpoints;
+          });
+        }
 
         if (checkpoints != null && checkpoints.isNotEmpty) {
           final firstPoint = checkpoints.first as Map<String, dynamic>;
@@ -81,26 +88,34 @@ class _AdminMapViewState extends State<AdminMapView> {
         title: Text('Monitoring: ${widget.raceName}'),
         backgroundColor: Colors.black,
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: _firestoreService.getRaceLocations(widget.raceId),
-        builder: (context, snapshot) {
-          Set<Marker> markers = {};
+      body: Stack(
+        children: [
+          StreamBuilder<QuerySnapshot>(
+            stream: _firestoreService.getRaceLocations(widget.raceId),
+            builder: (context, snapshot) {
+              Set<Marker> markers = {};
 
-          if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
-            markers = _createMarkers(snapshot.data!.docs);
-          }
+              if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
+                markers = _createMarkers(snapshot.data!.docs);
+              }
 
-          return GoogleMap(
-            initialCameraPosition: CameraPosition(
-              target: _initialCameraTarget!,
-              zoom: 16, // Use a closer zoom for races
-            ),
-            markers: markers,
-            onMapCreated: (controller) => _mapController = controller,
-            myLocationEnabled: true,
-            myLocationButtonEnabled: true,
-          );
-        },
+              return GoogleMap(
+                initialCameraPosition: CameraPosition(
+                  target: _initialCameraTarget!,
+                  zoom: 16, // Use a closer zoom for races
+                ),
+                markers: markers,
+                onMapCreated: (controller) => _mapController = controller,
+                myLocationEnabled: true,
+                myLocationButtonEnabled: true,
+              );
+            },
+          ),
+          LeaderboardPanel(
+            raceId: widget.raceId,
+            checkpoints: _checkpoints,
+          ),
+        ],
       ),
     );
   }

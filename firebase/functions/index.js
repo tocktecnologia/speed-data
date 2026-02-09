@@ -145,6 +145,17 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
                                 // Create Next Lap
                                 const nextLapNum = currentLapData.number + 1;
                                 const nextLapRef = lapsRef.doc(`lap_${nextLapNum}`);
+
+                                // Calculate Last Lap Time if this is cp_0
+                                if (i === 0 && currentLapData.points && currentLapData.points['cp_0']) {
+                                    const startTimestamp = currentLapData.points['cp_0'].timestamp;
+                                    const finishTimestamp = bestPP.timestamp;
+                                    const lapTimeMs = finishTimestamp - startTimestamp;
+                                    await currentLapDoc.update({
+                                        totalLapTime: lapTimeMs
+                                    });
+                                }
+
                                 await nextLapRef.set({
                                     number: nextLapNum,
                                     created_at: admin.firestore.FieldValue.serverTimestamp(),

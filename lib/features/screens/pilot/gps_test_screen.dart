@@ -206,9 +206,16 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
 
     await WakelockPlus.enable();
 
+    final totalLength = _calculatePathLength(_routePath);
+    // Start 50 meters before the start point (Checkpoint A)
+    double initialDistance = 0.0;
+    if (totalLength > 50) {
+      initialDistance = totalLength - 50;
+    }
+
     setState(() {
       _isSimulating = true;
-      _currentRouteDistance = 0.0;
+      _currentRouteDistance = initialDistance;
       _currentHz = _updatesPerSecond.toDouble();
       _currentSpeed = _simulationSpeed * 3.6;
     });

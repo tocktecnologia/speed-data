@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:speed_data/features/screens/admin/admin_dashboard.dart';
 import 'package:speed_data/features/screens/admin/widgets/leaderboard_panel.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/utils/map_utils.dart';
@@ -132,6 +133,45 @@ class _AdminMapViewState extends State<AdminMapView> {
     }
   }
 
+  Future<void> _confirmClearRace() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Race?'),
+        content: const Text(
+          'Are you sure you want to clear this race? This will remove all participants from the list.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await _firestoreService.clearRaceParticipantsLaps(widget.raceId);
+        if (mounted) {
+          Navigator.pushReplacement(context,
+              MaterialPageRoute(builder: (context) => const AdminDashboard()));
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error clearing race: $e')),
+          );
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_initialCameraTarget == null) {
@@ -150,6 +190,13 @@ class _AdminMapViewState extends State<AdminMapView> {
       appBar: AppBar(
         title: Text('Monitoring: ${widget.raceName}'),
         backgroundColor: Colors.black,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete_forever),
+            tooltip: 'Clear Race',
+            onPressed: _confirmClearRace,
+          ),
+        ],
       ),
       body: Stack(
         children: [

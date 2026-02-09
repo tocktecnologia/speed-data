@@ -212,4 +212,34 @@ class FirestoreService {
         .orderBy('number', descending: true)
         .snapshots();
   }
+
+  Future<void> clearRaceParticipantsLaps(String raceId) async {
+    final participantsRef =
+        _db.collection('races').doc(raceId).collection('participants');
+
+    final snapshot = await participantsRef.get();
+
+    for (var doc in snapshot.docs) {
+      // 1. Delete direct 'laps' subcollection if it exists
+      await _deleteCollection(doc.reference.collection('laps'));
+    }
+  }
+
+  Future<void> _deleteCollection(CollectionReference collection) async {
+    final snapshot = await collection.get();
+    if (snapshot.docs.isEmpty) return;
+
+    WriteBatch batch = _db.batch();
+    int count = 0;
+    for (var doc in snapshot.docs) {
+      batch.delete(doc.reference);
+      count++;
+      if (count >= 450) {
+        await batch.commit();
+        batch = _db.batch();
+        count = 0;
+      }
+    }
+    if (count > 0) await batch.commit();
+  }
 }

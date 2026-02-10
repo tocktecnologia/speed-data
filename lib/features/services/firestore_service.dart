@@ -50,6 +50,25 @@ class FirestoreService {
     return ref.id;
   }
 
+  Future<void> updateRace(String raceId,
+      {String? name,
+      List<Map<String, double>>? checkpoints,
+      List<Map<String, double>>? routePath}) async {
+    final Map<String, dynamic> data = {};
+    if (name != null) data['name'] = name;
+    if (checkpoints != null) data['checkpoints'] = checkpoints;
+    if (routePath != null) data['route_path'] = routePath;
+
+    await _db.collection('races').doc(raceId).update(data);
+  }
+
+  Future<void> deleteRace(String raceId) async {
+    // Note: This only deletes the race document. Subcollections (participants) are not automatically deleted in Firestore.
+    // Ideally, a Cloud Function should handle recursive deletion, or we delete subcollections manually here.
+    // For now, we'll just delete the race document as per typical client-side implementation constraints.
+    await _db.collection('races').doc(raceId).delete();
+  }
+
   Stream<QuerySnapshot> getOpenRaces() {
     return _db
         .collection('races')

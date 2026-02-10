@@ -7,7 +7,11 @@ import 'package:speed_data/utils/map_utils.dart';
 import 'package:speed_data/features/services/route_service.dart';
 
 class CreateRaceScreen extends StatefulWidget {
-  const CreateRaceScreen({Key? key}) : super(key: key);
+  final String? raceId;
+  final Map<String, dynamic>? initialData;
+
+  const CreateRaceScreen({Key? key, this.raceId, this.initialData})
+      : super(key: key);
 
   @override
   State<CreateRaceScreen> createState() => _CreateRaceScreenState();
@@ -30,6 +34,51 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialData != null) {
+      _loadInitialData();
+    }
+  }
+
+  void _loadInitialData() {
+    final data = widget.initialData!;
+    _raceNameController.text = data['name'] ?? '';
+
+    if (data['checkpoints'] != null) {
+      final List<dynamic> points = data['checkpoints'];
+      _checkpoints.addAll(points.map((p) {
+        final lat = (p['lat'] as num).toDouble();
+        final lng = (p['lng'] as num).toDouble();
+        return LatLng(lat, lng);
+      }));
+    }
+
+    if (data['route_path'] != null) {
+      final List<dynamic> route = data['route_path'];
+      _routePath = route.map((p) {
+        final lat = (p['lat'] as num).toDouble();
+        final lng = (p['lng'] as num).toDouble();
+        return LatLng(lat, lng);
+      }).toList();
+    }
+
+    // We need to wait for the build to complete before updating markers
+    // because createCustomMarkerBitmap might depend on context/assets
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Create markers but DO NOT trigger route recalculation (updatePolyline: false)
+      _updateMarkers(updatePolyline: false);
+
+      // Manually set the polyline from the loaded route path
+      setState(() {
+        _polylines = {
+          Polyline(
+            polylineId: const PolylineId('race_route'),
+            points: _routePath,
+            color: Colors.blue,
+            width: 5,
+          ),
+        };
+      });
+    });
   }
 
   void _onMapCreated(GoogleMapController controller) {
@@ -74,6 +123,20 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
         );
       }
 
+      // If editing, center on the first checkpoint
+      if (widget.initialData != null && _checkpoints.isNotEmpty) {
+        if (!mounted) return;
+        _mapController?.animateCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(
+              target: _checkpoints.first,
+              zoom: 16,
+            ),
+          ),
+        );
+        return;
+      }
+
       Position position = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high);
 
@@ -109,7 +172,7 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
     _updateMarkers();
   }
 
-  Future<void> _updateMarkers() async {
+  Future<void> _updateMarkers({bool updatePolyline = true}) async {
     final markers = <Marker>{};
 
     for (int i = 0; i < _checkpoints.length; i++) {
@@ -146,7 +209,9 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
     if (mounted) {
       setState(() {
         _markers = markers;
-        _updatePolylines();
+        if (updatePolyline) {
+          _updatePolylines();
+        }
       });
     }
   }
@@ -213,12 +278,21 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
             })
         .toList();
 
-    await _firestoreService.createRace(
-      name,
-      user.uid,
-      checkpoints: pointsList,
-      routePath: routeList,
-    );
+    if (widget.raceId != null) {
+      await _firestoreService.updateRace(
+        widget.raceId!,
+        name: name,
+        checkpoints: pointsList,
+        routePath: routeList,
+      );
+    } else {
+      await _firestoreService.createRace(
+        name,
+        user.uid,
+        checkpoints: pointsList,
+        routePath: routeList,
+      );
+    }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -232,7 +306,8 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Create Race Plan'),
+        title:
+            Text(widget.raceId != null ? 'Edit Race Plan' : 'Create Race Plan'),
         backgroundColor: Colors.black,
         actions: [
           IconButton(
@@ -300,7 +375,9 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
               child: ElevatedButton(
                 onPressed: _saveRace,
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.black),
-                child: const Text('SAVE & CREATE RACE'),
+                child: Text(widget.raceId != null
+                    ? 'UPDATE RACE'
+                    : 'SAVE & CREATE RACE'),
               ),
             ),
           ),

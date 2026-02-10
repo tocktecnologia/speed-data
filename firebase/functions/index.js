@@ -41,7 +41,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
 
     // --- ALGORITHM START ---
     try {
-        if (checkpoints && checkpoints.length > 0) {
+        if (checkpoints && checkpoints.length > 1) {
             const db = admin.firestore();
 
             // Helper: distance in meters
@@ -59,13 +59,13 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
             }
 
             // Iterate over Checkpoints (PM)
-            for (let i = 0; i < checkpoints.length; i++) {
+            for (let i = 0; i < checkpoints.length - 1; i++) {
                 const pm = checkpoints[i];
                 const nextPm = checkpoints[(i + 1) % checkpoints.length];
 
                 // Find closest PP that meets conditions
                 let bestPP = null;
-                let minDist = 41.6; // Max allowed distance (15m)
+                let minDist = 40; // Max allowed distance (40m)
 
                 for (const pp of points) {
                     const dist = getDistance(pm.lat, pm.lng, pp.lat, pp.lng);
@@ -82,8 +82,10 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
 
                         // Dot Product: if > 0, pilot is "ahead" or aligned with track direction from PM
                         const dot = (vPilotLat * vTrackLat) + (vPilotLng * vTrackLng);
+                        const lenSq = vTrackLat * vTrackLat + vTrackLng * vTrackLng;
 
-                        if (dot > 0) {
+                        // check if the point is between PM and NextPM
+                        if (dot >= 0 && dot <= lenSq) {
                             minDist = dist;
                             bestPP = pp;
                         }
@@ -101,6 +103,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
                     let currentLapDoc = null;
                     let currentLapData = null;
 
+                    // if no laps, create new lap
                     if (lapsSnapshot.empty) {
                         // Create Lap 1
                         const newLapRef = lapsRef.doc('lap_1');
@@ -112,62 +115,70 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
                         await newLapRef.set(newLapData);
                         currentLapDoc = newLapRef;
                         currentLapData = newLapData;
-                    } else {
+                    }
+                    // if there is , get the latest lap
+                    else {
                         currentLapDoc = lapsSnapshot.docs[0].ref;
                         currentLapData = lapsSnapshot.docs[0].data();
                     }
 
-                    // Check if point for THIS checkpoint is already added
-                    const cpKey = `cp_${i}`;
-                    const existingPoint = currentLapData.points && currentLapData.points[cpKey];
 
-                    if (!existingPoint) {
-                        // Add point
-                        const updateData = {};
-                        updateData[`points.${cpKey}`] = bestPP;
-                        // We use dot notation to update specific map field without overwriting entire map
-                        await currentLapDoc.update(updateData);
-                        // Update local data for subsequent loop checks if needed (though we fetch fresh usually, but here we are in loop)
-                        if (!currentLapData.points) currentLapData.points = {};
-                        currentLapData.points[cpKey] = bestPP;
+                    // if the best found is related to the first checkpoint and the best point already added, create new lap
+                    if (i === 0) {
+                        const cp0Key = `cp_0`;
 
-                    } else {
-                        // Already exists, check timestamp
-                        const existingTime = existingPoint.timestamp;
-                        const newTime = bestPP.timestamp;
-                        const diffSeconds = (newTime - existingTime) / 1000;
+                        if (currentLapData.points && currentLapData.points[cp0Key]) {
 
-                        if (diffSeconds >= 20) {
-                            // Check if ALL checkpoints are present in current lap
-                            const totalCheckpoints = checkpoints.length;
-                            const recordedCheckpoints = currentLapData.points ? Object.keys(currentLapData.points).length : 0;
-
-                            if (recordedCheckpoints >= (totalCheckpoints - 2)) {
+                            if (bestPP.timestamp - currentLapData.points[cp0Key].timestamp > 20000) {
                                 // Create Next Lap
                                 const nextLapNum = currentLapData.number + 1;
                                 const nextLapRef = lapsRef.doc(`lap_${nextLapNum}`);
 
                                 // Calculate Last Lap Time if this is cp_0
-                                if (i === 0 && currentLapData.points && currentLapData.points['cp_0']) {
-                                    const startTimestamp = currentLapData.points['cp_0'].timestamp;
-                                    const finishTimestamp = bestPP.timestamp;
-                                    const lapTimeMs = finishTimestamp - startTimestamp;
-                                    await currentLapDoc.update({
-                                        totalLapTime: lapTimeMs
-                                    });
-                                }
+                                const startTimestamp = currentLapData.points[cp0Key].timestamp;
+                                const finishTimestamp = bestPP.timestamp;
+                                const lapTimeMs = finishTimestamp - startTimestamp;
+                                await currentLapDoc.update({
+                                    totalLapTime: lapTimeMs
+                                });
+
 
                                 await nextLapRef.set({
                                     number: nextLapNum,
                                     created_at: admin.firestore.FieldValue.serverTimestamp(),
                                     points: {
-                                        [cpKey]: bestPP // Add the point to the NEW lap
+                                        [cp0Key]: bestPP // Add the point to the NEW lap
                                     }
                                 });
                             }
+
+                        } else {
+                            await currentLapDoc.update({
+                                points: {
+                                    [cp0Key]: bestPP // Add the point to the NEW lap
+                                }
+                            });
                         }
-                        // If < 30s, do nothing.
                     }
+                    else {
+                        // Check if point for the others checkpoints
+                        const cpKey = `cp_${i}`;
+                        const existingPoint = currentLapData.points && currentLapData.points[cpKey];
+
+                        if (!existingPoint) {
+                            // Add point
+                            const updateData = {};
+                            updateData[`points.${cpKey}`] = bestPP;
+                            // We use dot notation to update specific map field without overwriting entire map
+                            await currentLapDoc.update(updateData);
+                            // Update local data for subsequent loop checks if needed (though we fetch fresh usually, but here we are in loop)
+                            if (!currentLapData.points) {
+                                currentLapData.points = {};
+                            }
+                            currentLapData.points[cpKey] = bestPP;
+                        }
+                    }
+
                 }
             }
         }

@@ -296,7 +296,10 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Race created successfully!')),
+        SnackBar(
+            content: Text(widget.raceId != null
+                ? 'Race updated successfully!'
+                : 'Race created successfully!')),
       );
       Navigator.pop(context);
     }

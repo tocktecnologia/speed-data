@@ -244,6 +244,12 @@ class FirestoreService {
     }
   }
 
+  Future<void> clearRaceParticipants(String raceId) async {
+    final participantsRef =
+        _db.collection('races').doc(raceId).collection('participants');
+    await _deleteCollection(participantsRef);
+  }
+
   Future<void> _deleteCollection(CollectionReference collection) async {
     final snapshot = await collection.get();
     if (snapshot.docs.isEmpty) return;

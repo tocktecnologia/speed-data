@@ -5,6 +5,7 @@ import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/flutter_flow/nav/nav.dart';
 import 'package:speed_data/features/screens/pilot/active_race_screen.dart';
 import 'package:speed_data/features/screens/pilot/gps_test_screen.dart';
+import 'package:speed_data/features/screens/pilot/pilot_race_stats_screen.dart';
 
 class PilotDashboard extends StatelessWidget {
   const PilotDashboard({Key? key}) : super(key: key);
@@ -130,6 +131,22 @@ class PilotDashboard extends StatelessWidget {
                           );
                         },
                         child: const Text('TEST GPS'),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          if (user == null) return;
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => PilotRaceStatsScreen(
+                                raceId: raceId,
+                                userId: user.uid,
+                                raceName: raceName,
+                              ),
+                            ),
+                          );
+                        },
+                        child: const Text('STATS'),
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton(

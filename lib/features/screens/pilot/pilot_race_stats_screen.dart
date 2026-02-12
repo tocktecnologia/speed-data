@@ -990,14 +990,10 @@ class TrackPainter extends CustomPainter {
 
     List<Offset> transformedCPs = [];
 
-    for (int i = 0; i < checkpoints.length; i++) {
+    for (int i = 0; i < checkpoints.length - 1; i++) {
       final cp = transform(checkpoints[i]);
       transformedCPs.add(cp);
-      cpPaint.color = i == 0
-          ? Colors.greenAccent
-          : (i == checkpoints.length - 1
-              ? Colors.redAccent
-              : Colors.orangeAccent);
+      cpPaint.color = i == 0 ? Colors.greenAccent : Colors.orangeAccent;
       canvas.drawCircle(cp, 5, cpPaint);
 
       // Setup text for CP label

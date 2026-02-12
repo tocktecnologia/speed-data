@@ -810,7 +810,9 @@ class _PilotRaceStatsScreenState extends State<PilotRaceStatsScreen> {
                                 sideTitles: SideTitles(
                                   showTitles: true,
                                   getTitlesWidget: (val, meta) => Text(
-                                    "CP${val.toInt()}",
+                                    val.toInt() == 0
+                                        ? ""
+                                        : "Trecho ${val.toInt()}",
                                     style: const TextStyle(
                                         color: Colors.grey, fontSize: 10),
                                   ),

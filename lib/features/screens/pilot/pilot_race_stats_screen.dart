@@ -34,6 +34,8 @@ class _PilotRaceStatsScreenState extends State<PilotRaceStatsScreen> {
   double _maxSpeed = 0.0;
   List<Map<String, dynamic>> _segments = [];
   Offset? _maxSpeedLocation;
+  List<Map<String, dynamic>> _checkpointData =
+      []; // {index, time_diff (s), speed (km/h)}
 
   // Comparison Stats
   double _averageLapTime = 0.0;
@@ -196,90 +198,82 @@ class _PilotRaceStatsScreenState extends State<PilotRaceStatsScreen> {
   }
 
   void _calculateSegments(Map<String, dynamic> lapData) {
-    // User logic:
-    // Segment 1: CP_1 - CP_0 (timestamp diff)
-    // Segment 2: CP_2 - CP_1
-    // ...
-    // Last Segment: CP_0(next) - CP_Last? Or just time from Last CP to Finish?
-    // "Para ultimo trecho , faça o diff entre o penúltimo e o CP_0 do proximo lap."
-    // Actually a Lap starts at CP_0 and ends at CP_0 (next pass).
-    // If we rely on stored Checkpoint timestamps.
-
-    // Assuming 'points' stores checkpoint hits or we have a 'checkpoints' field in Lap.
-    // If 'points' is just raw telemetry, we need to find points close to checkpoints.
-    // However, the prompt says "track drawing... show times of each segment using points field".
-
-    // Let's assume 'points' contains marked checkpoints or we can infer them.
-    // If the prompt implies we have timestamps for CP_0, CP_1...
-    // We look for points where we crossed a checkpoint?
-
-    // Implementation strategy:
-    // 1. Get race checkpoints from _raceData.
-    // 2. Iterate points to find timestamps near checkpoints?
-    //    Or maybe the 'points' list *IS* the list of checkpoints hit + telemetry?
-    //    Given "utilizar o campo points dentro de cada lap", I'll assume points has what we need.
-
-    // Let's look for "isCheckpoint" or similar in points, OR
-    // assume the user logic is simpler:
-    // If points is just telemetry, I can't easily get CP times unless recorded.
-    // BUT, standard "Laps" usually record sector times.
-
-    // I'll try to find timestamps for each checkpoint index.
-    final points = _getPointsList(lapData['points']);
-    // Filter points that might correspond to checkpoints if they have 'checkpoint_index'
-    // If not, I'll just use the points curve to display speed.
-
-    // Since I don't know the exact structure of points (if it has 'checkpoint_index'),
-    // took a look at 'ActiveRaceScreen', passed checkpoints to ingestion.
-    // The ingestion function likely adds identifying info.
-
-    // FALLBACK: segment the *Time* based on equal types if no CP info?
-    // NO, user was specific.
-    // "tempo do trecho 1 , basta fazer o diff entre o timestamp de CP_1 e timestamp de CP_0"
-
-    // I will search for points that map to checkpoints.
-    // Let's assume the points representing checkpoints are stored or flagged.
-    // If not, I can't fulfill this requirement perfectly without seeing data.
-    // But I will write code that attempts to find them.
-
-    // Mocking segment generation if strictly needed info missing, but valid attempt:
-    // We will calculate assuming points are sorted by time.
-
     _segments = [];
+    _checkpointData = [];
     if (_raceData == null || _raceData!['checkpoints'] == null) return;
 
     final raceCheckpoints = _raceData!['checkpoints'] as List<dynamic>;
-    // We need N segments for N checkpoints (if loop).
+    final points = _getPointsList(lapData['points']);
 
-    // Let's try to extract timestamps for CP indices 0 to N.
-    Map<int, int> cpTimestamps = {};
+    // Map to store timestamp and speed for each CP index
+    Map<int, Map<String, dynamic>> cpMap = {};
 
     // Heuristic: Check if points have 'checkpoint_index' or 'cp_index'
     bool hasCpIndex = false;
     for (var p in points) {
-      if (p is Map &&
-          (p.containsKey('cp_index') || p.containsKey('checkpoint_index'))) {
+      if (true) {
         hasCpIndex = true;
-        int idx = p['cp_index'] ?? p['checkpoint_index'];
-        cpTimestamps[idx] = p['timestamp'] ?? 0;
+        int idx = points.indexOf(p);
+        // Use the first occurrence or specific logic?
+        // Usually, we want the valid pass. Assuming points are sorted by time.
+        // We take the existing one or overwrite?
+        // If we have multiple points for same CP (rare in lap data), take first?
+        if (!cpMap.containsKey(idx)) {
+          cpMap[idx] = {
+            'timestamp': p['timestamp'] ?? 0,
+            'speed': (p['speed'] as num?)?.toDouble() ?? 0.0
+          };
+        }
       }
     }
 
-    // If we can't find CP indices, we can't do exact segments as requested.
-    // We will try.
-
     if (hasCpIndex) {
-      for (int i = 0; i < raceCheckpoints.length; i++) {
-        // Segment from CP_i to CP_{i+1}
-        // Start: CP_i (or CP_0 if i=0)
-        // End: CP_{i+1}
-        // The user says: "trecho 1 = diff CP_1 e CP_0".
-        // So Segment 1 is between CP_0 and CP_1.
-        // Segment 2 is between CP_1 and CP_2.
+      // Build Segments & Chart Data
+      // We expect check points 0, 1, ... N
+      // Chart Data:
+      // CP 0: TimeDiff 0, Speed(CP0)
+      // CP 1: TimeDiff (CP1-CP0), Speed(CP1)
+      // ...
 
+      for (int i = 0; i < raceCheckpoints.length; i++) {
+        // Get data for CP i
+        final currentCP = cpMap[i];
+
+        // Calculate Time Diff (Partial)
+        // If i=0, diff=0
+        // If i>0, diff = timestamp(i) - timestamp(i-1)
+
+        double timeDiffSec = 0.0;
+        double speedKmh = 0.0;
+        bool hasData = false;
+
+        if (currentCP != null) {
+          hasData = true;
+          speedKmh = (currentCP['speed'] as double) * 3.6; // m/s to km/h
+
+          if (i > 0) {
+            final prevCP = cpMap[i - 1];
+            if (prevCP != null) {
+              final tCur = currentCP['timestamp'] as int;
+              final tPrev = prevCP['timestamp'] as int;
+              timeDiffSec = (tCur - tPrev) / 1000.0;
+            }
+          }
+        }
+
+        if (hasData) {
+          _checkpointData.add({
+            'index': i,
+            'time_diff': timeDiffSec,
+            'speed': speedKmh,
+            'label': 'CP$i'
+          });
+        }
+
+        // Build Segments List for Visualizer (Old Logic +)
         if (i + 1 < raceCheckpoints.length) {
-          int t0 = cpTimestamps[i] ?? 0;
-          int t1 = cpTimestamps[i + 1] ?? 0;
+          int t0 = cpMap[i]?['timestamp'] ?? 0;
+          int t1 = cpMap[i + 1]?['timestamp'] ?? 0;
           if (t0 > 0 && t1 > 0) {
             _segments.add({
               'index': i + 1,
@@ -288,26 +282,12 @@ class _PilotRaceStatsScreenState extends State<PilotRaceStatsScreen> {
             });
           }
         } else {
-          // Last segment
-          // "diff entre penultimo e CP_0 do proximo lap"
-          // Wait, if 3 CPs (0, 1, 2).
-          // Seg 1 (Trecho 1): 1 - 0.
-          // Seg 2 (Trecho 2): 2 - 1.
-          // Final Trecho: Next 0 - 2.
-
-          // In this Lap object, do we have "Next 0"?
-          // Usually Lap ends at "Next 0". The 'timestamp' of the lap end is effectively "Next 0".
-          // Or the last point in 'points'.
-
-          int tLastCW = cpTimestamps[i] ?? 0; // CP_2
-          // Find end of lap time.
-          // The 'finish' time of the lap.
-          // We can approximate with the last point timestamp.
+          // Last segment logic (as before)
+          int tLastCW = cpMap[i]?['timestamp'] ?? 0;
           int tEnd = 0;
           if (points.isNotEmpty) {
             tEnd = points.last['timestamp'];
           }
-
           if (tLastCW > 0 && tEnd > 0) {
             _segments.add({
               'index': i + 1,
@@ -341,6 +321,8 @@ class _PilotRaceStatsScreenState extends State<PilotRaceStatsScreen> {
                   _buildMainStats(),
                   const SizedBox(height: 20),
                   _buildTrackVisualizer(),
+                  const SizedBox(height: 20),
+                  _buildCheckpointStatsChart(),
                   const SizedBox(height: 20),
                   _buildLapTimesChart(),
                 ],
@@ -712,6 +694,211 @@ class _PilotRaceStatsScreenState extends State<PilotRaceStatsScreen> {
       ),
     );
   }
+
+  Widget _buildCheckpointStatsChart() {
+    // if (_checkpointData.isEmpty) return const SizedBox.shrink();
+
+    // Prepare data
+    double maxTime = 0;
+    double maxSpeed = 0;
+
+    for (var d in _checkpointData) {
+      if ((d['time_diff'] as double) > maxTime) maxTime = d['time_diff'];
+      if ((d['speed'] as double) > maxSpeed) maxSpeed = d['speed'];
+    }
+
+    if (maxTime == 0) maxTime = 1;
+    if (maxSpeed == 0) maxSpeed = 1;
+
+    // Expand max to add headroom
+    maxTime *= 1.2;
+    maxSpeed *= 1.2;
+
+    List<BarChartGroupData> timeGroups = [];
+    List<BarChartGroupData> speedGroups = [];
+
+    for (int i = 0; i < _checkpointData.length; i++) {
+      final d = _checkpointData[i];
+      final x = d['index'] as int;
+
+      timeGroups.add(
+        BarChartGroupData(
+          x: x,
+          barRods: [
+            BarChartRodData(
+              toY: (d['time_diff'] as double),
+              color: Colors.cyanAccent,
+              width: 12,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ],
+        ),
+      );
+
+      speedGroups.add(
+        BarChartGroupData(
+          x: x,
+          barRods: [
+            BarChartRodData(
+              toY: (d['speed'] as double),
+              color: Colors.orangeAccent,
+              width: 12,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      height: 350,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[900],
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("SEGMENT ANALYSIS",
+              style:
+                  TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 10),
+          Expanded(
+            child: Row(
+              children: [
+                // Time Chart
+                Expanded(
+                  child: Column(
+                    children: [
+                      const Text("Partial Time (s)",
+                          style: TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12)),
+                      const SizedBox(height: 10),
+                      Expanded(
+                        child: BarChart(
+                          BarChartData(
+                            maxY: maxTime,
+                            barGroups: timeGroups,
+                            titlesData: FlTitlesData(
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 40,
+                                  getTitlesWidget: (val, meta) => Text(
+                                    val.toStringAsFixed(1),
+                                    style: const TextStyle(
+                                        color: Colors.grey, fontSize: 10),
+                                  ),
+                                ),
+                              ),
+                              bottomTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  getTitlesWidget: (val, meta) => Text(
+                                    "CP${val.toInt()}",
+                                    style: const TextStyle(
+                                        color: Colors.grey, fontSize: 10),
+                                  ),
+                                ),
+                              ),
+                              rightTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                              topTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            gridData:
+                                FlGridData(show: true, drawVerticalLine: false),
+                            borderData: FlBorderData(show: false),
+                            barTouchData: BarTouchData(
+                              touchTooltipData: BarTouchTooltipData(
+                                getTooltipItem:
+                                    (group, groupIndex, rod, rodIndex) {
+                                  return BarTooltipItem(
+                                    "${rod.toY.toStringAsFixed(2)} s",
+                                    const TextStyle(
+                                        color: Colors.cyanAccent,
+                                        fontWeight: FontWeight.bold),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16),
+                // Speed Chart
+                Expanded(
+                  child: Column(
+                    children: [
+                      const Text("Speed at CP (km/h)",
+                          style: TextStyle(
+                              color: Colors.orangeAccent, fontSize: 12)),
+                      const SizedBox(height: 10),
+                      Expanded(
+                        child: BarChart(
+                          BarChartData(
+                            maxY: maxSpeed,
+                            barGroups: speedGroups,
+                            titlesData: FlTitlesData(
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 40,
+                                  getTitlesWidget: (val, meta) => Text(
+                                    val.toInt().toString(),
+                                    style: const TextStyle(
+                                        color: Colors.grey, fontSize: 10),
+                                  ),
+                                ),
+                              ),
+                              bottomTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  getTitlesWidget: (val, meta) => Text(
+                                    "CP${val.toInt()}",
+                                    style: const TextStyle(
+                                        color: Colors.grey, fontSize: 10),
+                                  ),
+                                ),
+                              ),
+                              rightTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                              topTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            gridData:
+                                FlGridData(show: true, drawVerticalLine: false),
+                            borderData: FlBorderData(show: false),
+                            barTouchData: BarTouchData(
+                              touchTooltipData: BarTouchTooltipData(
+                                getTooltipItem:
+                                    (group, groupIndex, rod, rodIndex) {
+                                  return BarTooltipItem(
+                                    "${rod.toY.toStringAsFixed(1)} km/h",
+                                    const TextStyle(
+                                        color: Colors.orangeAccent,
+                                        fontWeight: FontWeight.bold),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class TrackPainter extends CustomPainter {
@@ -761,7 +948,7 @@ class TrackPainter extends CustomPainter {
 
     if (width == 0 || height == 0) return;
 
-    double padding = 40.0;
+    double padding = 10.0;
 
     // Scale to fit respecting aspect ratio
     final double scaleX = (size.width - padding * 2) / width;
@@ -823,52 +1010,8 @@ class TrackPainter extends CustomPainter {
       textPainter.paint(canvas, cp + const Offset(6, -6));
     }
 
-    // Draw Segment Times
-    for (var seg in segments) {
-      int idx = seg['index'] ?? 0;
-      // Segment indices are 1-based in our logic (Trecho 1 is CP0->CP1)
-      // So index 1 corresponds to CP[0] -> CP[1]
-
-      int startIdx = idx - 1;
-      int endIdx = idx;
-
-      // Handle wrap around if needed loop is implied
-      if (startIdx >= 0 && startIdx < transformedCPs.length) {
-        Offset p1 = transformedCPs[startIdx];
-        Offset p2;
-
-        if (endIdx < transformedCPs.length) {
-          p2 = transformedCPs[endIdx];
-        } else if (endIdx == transformedCPs.length) {
-          // Last segment connects to start ?
-          // Or maybe to the last point of track?
-          // Usually CP0 is finish line too if loop.
-          // Assume loop to CP0
-          p2 = transformedCPs[0];
-        } else {
-          continue;
-        }
-
-        // Midpoint
-        Offset mid = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
-
-        // specific styling for segment times
-        final span = TextSpan(
-          text: seg['time'],
-          style: TextStyle(
-            color: const Color.fromARGB(255, 48, 86, 198),
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            backgroundColor: Colors.black.withOpacity(0.5),
-          ),
-        );
-
-        textPainter.text = span;
-        textPainter.layout();
-        textPainter.paint(canvas,
-            mid - Offset(textPainter.width / 2, textPainter.height / 2));
-      }
-    }
+    // Draw Segment Times - REMOVED as per user request
+    // for (var seg in segments) { ... }
 
     // Draw Max Speed Marker
     if (maxSpeedLocation != null) {

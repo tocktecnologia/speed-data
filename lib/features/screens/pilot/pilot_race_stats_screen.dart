@@ -318,23 +318,30 @@ class _PilotRaceStatsScreenState extends State<PilotRaceStatsScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildLapSelector(),
-                  const SizedBox(height: 20),
-                  _buildMainStats(),
-                  const SizedBox(height: 20),
-                  _buildTrackVisualizer(),
-                  const SizedBox(height: 20),
-                  _buildCheckpointStatsChart(),
-                  const SizedBox(height: 20),
-                  _buildLapTimesChart(),
-                ],
-              ),
-            ),
+          : _laps.isEmpty
+              ? const Center(
+                  child: Text(
+                    "Nenhuma volta registrada nesta sessão.",
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                )
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildLapSelector(),
+                      const SizedBox(height: 20),
+                      _buildMainStats(),
+                      const SizedBox(height: 20),
+                      _buildTrackVisualizer(),
+                      const SizedBox(height: 20),
+                      _buildCheckpointStatsChart(),
+                      const SizedBox(height: 20),
+                      _buildLapTimesChart(),
+                    ],
+                  ),
+                ),
     );
   }
 

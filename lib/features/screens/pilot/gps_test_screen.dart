@@ -349,6 +349,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
                     'GPS Hz', '${_currentHz.toStringAsFixed(1)} Hz',
                     valueColor: _getGpsColor(_currentHz)),
                 _buildStatusIndicator(_isSimulating),
+                _buildDeleteButton(),
               ],
             ),
           ),
@@ -502,6 +503,54 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildDeleteButton() {
+    final bool enabled = !_isSimulating;
+    return IconButton(
+      icon: Icon(Icons.delete, color: enabled ? Colors.red : Colors.grey),
+      onPressed: enabled ? _confirmDeleteLaps : null,
+      tooltip: 'Clear Laps',
+    );
+  }
+
+  Future<void> _confirmDeleteLaps() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Laps?'),
+        content: const Text(
+            'Are you sure you want to clear the laps? The session will be saved in history.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Clear', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await _firestoreService.archiveCurrentLaps(
+            widget.raceId, widget.userId, _currentSessionId!);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Laps archived and cleared.')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error clearing laps: $e')),
+          );
+        }
+      }
+    }
   }
 
   Future<void> _syncData() async {

@@ -232,6 +232,31 @@ class FirestoreService {
         .snapshots();
   }
 
+  Stream<QuerySnapshot> getHistorySessions(String raceId, String uid) {
+    return _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .doc(uid)
+        .collection('history_sessions')
+        .orderBy('archived_at', descending: true)
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot> getHistorySessionLaps(
+      String raceId, String uid, String historySessionId) {
+    return _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .doc(uid)
+        .collection('history_sessions')
+        .doc(historySessionId)
+        .collection('laps')
+        .orderBy('number', descending: true)
+        .snapshots();
+  }
+
   Future<void> clearRaceParticipantsLaps(String raceId) async {
     final participantsRef =
         _db.collection('races').doc(raceId).collection('participants');
@@ -266,5 +291,46 @@ class FirestoreService {
       }
     }
     if (count > 0) await batch.commit();
+  }
+
+  Future<void> archiveCurrentLaps(
+      String raceId, String uid, String sessionId) async {
+    final lapsRef = _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .doc(uid)
+        .collection('laps');
+    final snapshot = await lapsRef.get();
+
+    if (snapshot.docs.isEmpty) return;
+
+    // Target: .../participants/{uid}/history_sessions/{sessionId}
+    final historySessionDocRef = _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .doc(uid)
+        .collection('history_sessions')
+        .doc(sessionId);
+
+    // Save session metadata
+    await historySessionDocRef.set({
+      'archived_at': FieldValue.serverTimestamp(),
+      'session_id': sessionId,
+      'race_id': raceId,
+    }, SetOptions(merge: true));
+
+    final historyLapsRef = historySessionDocRef.collection('laps');
+
+    final batch = _db.batch();
+    for (var doc in snapshot.docs) {
+      // Copy to history/session/laps
+      batch.set(historyLapsRef.doc(doc.id), doc.data());
+      // Delete from current laps
+      batch.delete(doc.reference);
+    }
+
+    await batch.commit();
   }
 }

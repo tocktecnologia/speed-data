@@ -83,7 +83,9 @@ class PilotDashboard extends StatelessWidget {
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      TextButton(
+                      IconButton(
+                        tooltip: 'Test GPS',
+                        icon: const Icon(Icons.gps_fixed, color: Colors.green),
                         onPressed: () async {
                           if (user == null) return;
 
@@ -119,37 +121,160 @@ class PilotDashboard extends StatelessWidget {
                             finalName,
                             finalColor,
                           );
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => GpsTestScreen(
-                                raceId: raceId,
-                                userId: user.uid,
-                                raceName: raceName,
+                          if (context.mounted) {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => GpsTestScreen(
+                                  raceId: raceId,
+                                  userId: user.uid,
+                                  raceName: raceName,
+                                ),
                               ),
-                            ),
-                          );
+                            );
+                          }
                         },
-                        child: const Text('TEST GPS'),
                       ),
-                      TextButton(
+                      IconButton(
+                        tooltip: 'Stats',
+                        icon: const Icon(Icons.bar_chart, color: Colors.orange),
                         onPressed: () {
                           if (user == null) return;
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => PilotRaceStatsScreen(
-                                raceId: raceId,
-                                userId: user.uid,
-                                raceName: raceName,
-                              ),
-                            ),
+
+                          showModalBottomSheet(
+                            context: context,
+                            backgroundColor: Colors.grey[900],
+                            shape: const RoundedRectangleBorder(
+                                borderRadius: BorderRadius.vertical(
+                                    top: Radius.circular(20))),
+                            builder: (context) {
+                              return Container(
+                                padding: const EdgeInsets.all(16),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text("Select Session",
+                                        style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold)),
+                                    const SizedBox(height: 10),
+                                    ListTile(
+                                      leading: const Icon(
+                                          Icons.play_circle_outline,
+                                          color: Colors.greenAccent),
+                                      title: const Text(
+                                          "Current / Active Session",
+                                          style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold)),
+                                      trailing: const Icon(
+                                          Icons.arrow_forward_ios,
+                                          color: Colors.white,
+                                          size: 14),
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) =>
+                                                PilotRaceStatsScreen(
+                                              raceId: raceId,
+                                              userId: user.uid,
+                                              raceName: raceName,
+                                              historySessionId: null,
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    const Divider(color: Colors.grey),
+                                    Expanded(
+                                      child: StreamBuilder<QuerySnapshot>(
+                                        stream:
+                                            firestoreService.getHistorySessions(
+                                                raceId, user.uid),
+                                        builder: (context, snapshot) {
+                                          if (snapshot.connectionState ==
+                                              ConnectionState.waiting) {
+                                            return const Center(
+                                                child:
+                                                    CircularProgressIndicator());
+                                          }
+                                          if (!snapshot.hasData ||
+                                              snapshot.data!.docs.isEmpty) {
+                                            return const Center(
+                                                child: Text(
+                                                    "No history sessions found",
+                                                    style: TextStyle(
+                                                        color: Colors.white)));
+                                          }
+
+                                          final sessions = snapshot.data!.docs;
+                                          return ListView.builder(
+                                            itemCount: sessions.length,
+                                            itemBuilder: (context, index) {
+                                              final session =
+                                                  sessions[index].data()
+                                                      as Map<String, dynamic>;
+                                              final sessionId =
+                                                  sessions[index].id;
+                                              final archivedAt =
+                                                  session['archived_at']
+                                                      as Timestamp?;
+                                              final dateStr = archivedAt != null
+                                                  ? archivedAt
+                                                      .toDate()
+                                                      .toString()
+                                                      .split('.')[0]
+                                                  : "Unknown Date";
+
+                                              return ListTile(
+                                                title: Text("Session: $dateStr",
+                                                    style: const TextStyle(
+                                                        color: Colors.white)),
+                                                subtitle: Text(sessionId,
+                                                    style: const TextStyle(
+                                                        color: Colors.grey,
+                                                        fontSize: 10)),
+                                                trailing: const Icon(
+                                                    Icons.arrow_forward_ios,
+                                                    color: Colors.white,
+                                                    size: 14),
+                                                onTap: () {
+                                                  Navigator.pop(
+                                                      context); // Close modal
+                                                  Navigator.push(
+                                                    context,
+                                                    MaterialPageRoute(
+                                                      builder: (context) =>
+                                                          PilotRaceStatsScreen(
+                                                        raceId: raceId,
+                                                        userId: user.uid,
+                                                        raceName: raceName,
+                                                        historySessionId:
+                                                            sessionId,
+                                                      ),
+                                                    ),
+                                                  );
+                                                },
+                                              );
+                                            },
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
                           );
                         },
-                        child: const Text('STATS'),
                       ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
+                      IconButton(
+                        tooltip: 'Join & Start',
+                        icon: const Icon(Icons.flag, color: Colors.blueAccent),
                         onPressed: () async {
                           if (user == null) return;
 
@@ -200,11 +325,6 @@ class PilotDashboard extends StatelessWidget {
                             );
                           }
                         },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blueAccent,
-                          foregroundColor: Colors.white,
-                        ),
-                        child: const Text('JOIN & START'),
                       ),
                     ],
                   ),

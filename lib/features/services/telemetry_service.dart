@@ -26,6 +26,7 @@ class TelemetryService extends ChangeNotifier {
   String? _currentRaceId;
   String? _currentUserId;
   String? _currentSessionId;
+  String? get currentSessionId => _currentSessionId;
   List<Map<String, dynamic>>? _checkpoints;
 
   // Buffer for telemetry points (volatile memory)

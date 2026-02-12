@@ -65,7 +65,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
 
                 // Find closest PP that meets conditions
                 let bestPP = null;
-                let minDist = 40; // Max allowed distance (40m)
+                let minDist = 50; // Max allowed distance (40m)
 
                 for (const pp of points) {
                     const dist = getDistance(pm.lat, pm.lng, pp.lat, pp.lng);

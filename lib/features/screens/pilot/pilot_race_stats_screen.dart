@@ -8,12 +8,14 @@ class PilotRaceStatsScreen extends StatefulWidget {
   final String raceId;
   final String userId;
   final String raceName;
+  final String? historySessionId;
 
   const PilotRaceStatsScreen({
     Key? key,
     required this.raceId,
     required this.userId,
     required this.raceName,
+    this.historySessionId,
   }) : super(key: key);
 
   @override
@@ -67,7 +69,12 @@ class _PilotRaceStatsScreenState extends State<PilotRaceStatsScreen> {
 
     // 2. Fetch Laps
     // We listen to the stream but for initial calculation we take the first snapshot
-    _firestoreService.getLaps(widget.raceId, widget.userId).listen((snapshot) {
+    final stream = widget.historySessionId != null
+        ? _firestoreService.getHistorySessionLaps(
+            widget.raceId, widget.userId, widget.historySessionId!)
+        : _firestoreService.getLaps(widget.raceId, widget.userId);
+
+    stream.listen((snapshot) {
       if (snapshot.docs.isNotEmpty) {
         final laps = snapshot.docs.where((doc) {
           final data = doc.data() as Map<String, dynamic>;

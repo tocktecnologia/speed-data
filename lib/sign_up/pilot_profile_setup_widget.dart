@@ -1,11 +1,12 @@
 import '/auth/firebase_auth/auth_util.dart';
 import '/flutter_flow/flutter_flow_theme.dart';
 import '/flutter_flow/flutter_flow_util.dart';
-import '/flutter_flow/flutter_flow_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import '/index.dart';
+import '../theme/speed_data_theme.dart';
+import '../theme/speed_data_components.dart';
 
 class PilotProfileSetupWidget extends StatefulWidget {
   const PilotProfileSetupWidget({super.key});
@@ -76,15 +77,16 @@ class _PilotProfileSetupWidgetState extends State<PilotProfileSetupWidget> {
       onTap: () => FocusScope.of(context).unfocus(),
       child: Scaffold(
         key: scaffoldKey,
-        backgroundColor: FlutterFlowTheme.of(context).secondaryBackground,
+        backgroundColor: SpeedDataTheme.bgBase,
         appBar: AppBar(
-          backgroundColor: FlutterFlowTheme.of(context).secondaryBackground,
+          backgroundColor: SpeedDataTheme.bgBase,
           automaticallyImplyLeading: false,
           title: Text(
             'Pilot Profile',
-            style: FlutterFlowTheme.of(context).headlineMedium,
+            style: SpeedDataTheme.themeData.textTheme.headlineMedium,
           ),
           elevation: 0,
+          centerTitle: false,
         ),
         body: SafeArea(
           child: Padding(
@@ -96,13 +98,15 @@ class _PilotProfileSetupWidgetState extends State<PilotProfileSetupWidget> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Complete your profile',
-                      style: FlutterFlowTheme.of(context).labelLarge,
+                      'Complete your profile details to get started on the track.',
+                      style: SpeedDataTheme.themeData.textTheme.bodyMedium?.copyWith(
+                        color: SpeedDataTheme.textSecondary,
+                      ),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 32),
                     Text(
                       'Pilot Name',
-                      style: FlutterFlowTheme.of(context).bodyMedium,
+                      style: SpeedDataTheme.themeData.textTheme.labelLarge,
                     ),
                     const SizedBox(height: 8),
                     TextFormField(
@@ -110,31 +114,39 @@ class _PilotProfileSetupWidgetState extends State<PilotProfileSetupWidget> {
                       focusNode: _nameFocusNode,
                       decoration: InputDecoration(
                         hintText: 'Enter your pilot name',
-                        hintStyle: FlutterFlowTheme.of(context)
-                            .bodyLarge
-                            .override(
-                              font: GoogleFonts.inter(),
-                              color: FlutterFlowTheme.of(context).secondaryText,
-                            ),
+                         hintStyle: SpeedDataTheme.themeData.textTheme.bodyMedium?.copyWith(color: SpeedDataTheme.textDisabled),
                         enabledBorder: OutlineInputBorder(
-                          borderSide: BorderSide(
-                            color: FlutterFlowTheme.of(context).alternate,
-                            width: 2,
+                          borderSide: const BorderSide(
+                            color: SpeedDataTheme.borderSubtle,
+                            width: 1,
                           ),
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(SpeedDataTheme.radiusMd),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderSide: BorderSide(
-                            color: FlutterFlowTheme.of(context).primary,
-                            width: 2,
+                          borderSide: const BorderSide(
+                            color: SpeedDataTheme.accentPrimary,
+                            width: 1,
                           ),
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(SpeedDataTheme.radiusMd),
+                        ),
+                        errorBorder: OutlineInputBorder(
+                          borderSide: const BorderSide(
+                            color: SpeedDataTheme.accentDanger,
+                            width: 1,
+                          ),
+                          borderRadius: BorderRadius.circular(SpeedDataTheme.radiusMd),
+                        ),
+                         focusedErrorBorder: OutlineInputBorder(
+                          borderSide: const BorderSide(
+                            color: SpeedDataTheme.accentDanger,
+                            width: 1,
+                          ),
+                          borderRadius: BorderRadius.circular(SpeedDataTheme.radiusMd),
                         ),
                         filled: true,
-                        fillColor:
-                            FlutterFlowTheme.of(context).secondaryBackground,
+                        fillColor: SpeedDataTheme.bgSurface,
                       ),
-                      style: FlutterFlowTheme.of(context).bodyLarge,
+                      style: SpeedDataTheme.themeData.textTheme.bodyLarge,
                       validator: (val) {
                         if (val == null || val.isEmpty) {
                           return 'Field is required';
@@ -142,69 +154,76 @@ class _PilotProfileSetupWidgetState extends State<PilotProfileSetupWidget> {
                         return null;
                       },
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 32),
                     Text(
                       'Car Color',
-                      style: FlutterFlowTheme.of(context).bodyMedium,
+                      style: SpeedDataTheme.themeData.textTheme.labelLarge,
                     ),
                     const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: _palette.map((colorVal) {
-                        final isSelected = _selectedColor == colorVal;
-                        return InkWell(
-                          onTap: () {
-                            setState(() {
-                              _selectedColor = colorVal;
-                            });
-                          },
-                          child: Container(
-                            width: 48,
-                            height: 48,
-                            decoration: BoxDecoration(
-                              color: Color(colorVal),
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: isSelected
-                                    ? FlutterFlowTheme.of(context).primary
-                                    : FlutterFlowTheme.of(context).alternate,
-                                width: isSelected ? 4 : 1,
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                         color: SpeedDataTheme.bgSurface,
+                         borderRadius: BorderRadius.circular(SpeedDataTheme.radiusMd),
+                         border: Border.all(color: SpeedDataTheme.borderSubtle),
+                      ),
+                      child: Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: _palette.map((colorVal) {
+                          final isSelected = _selectedColor == colorVal;
+                          return InkWell(
+                            onTap: () {
+                              setState(() {
+                                _selectedColor = colorVal;
+                              });
+                            },
+                            child: Container(
+                              width: 48,
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: Color(colorVal),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: isSelected
+                                      ? SpeedDataTheme.accentPrimary
+                                      : SpeedDataTheme.borderSubtle,
+                                  width: isSelected ? 3 : 1,
+                                ),
+                                boxShadow: isSelected
+                                    ? [
+                                        BoxShadow(
+                                          color: SpeedDataTheme.accentPrimary
+                                              .withOpacity(0.3),
+                                          blurRadius: 8,
+                                          spreadRadius: 2,
+                                        )
+                                      ]
+                                    : [],
                               ),
-                              boxShadow: isSelected
-                                  ? [
-                                      BoxShadow(
-                                        color: FlutterFlowTheme.of(context)
-                                            .primary
-                                            .withOpacity(0.3),
-                                        blurRadius: 8,
-                                        spreadRadius: 2,
-                                      )
-                                    ]
-                                  : [],
+                              child: isSelected
+                                  ? Icon(
+                                      Icons.check,
+                                      color: colorVal == 0xFFFFFFFF
+                                          ? Colors.black
+                                          : Colors.white,
+                                      size: 24,
+                                    )
+                                  : null,
                             ),
-                            child: isSelected
-                                ? Icon(
-                                    Icons.check,
-                                    color: colorVal == 0xFFFFFFFF
-                                        ? Colors.black
-                                        : Colors.white,
-                                    size: 24,
-                                  )
-                                : null,
-                          ),
-                        );
-                      }).toList(),
+                          );
+                        }).toList(),
+                      ),
                     ),
                     const SizedBox(height: 48),
-                    FFButtonWidget(
+                    SpeedButton.primary(
                       onPressed: () async {
                         if (!_formKey.currentState!.validate()) return;
 
                         final user = currentUser;
                         if (user != null) {
                           await FirestoreService().updatePilotProfile(
-                            user.uid!,
+                            user!.uid!,
                             _nameController!.text,
                             _selectedColor,
                           );
@@ -218,18 +237,7 @@ class _PilotProfileSetupWidgetState extends State<PilotProfileSetupWidget> {
                         }
                       },
                       text: 'Save & Continue',
-                      options: FFButtonOptions(
-                        width: double.infinity,
-                        height: 50,
-                        color: FlutterFlowTheme.of(context).primary,
-                        textStyle:
-                            FlutterFlowTheme.of(context).titleSmall.override(
-                                  font: GoogleFonts.inter(),
-                                  color: Colors.white,
-                                ),
-                        elevation: 2,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
+                      fullWidth: true,
                     ),
                   ],
                 ),

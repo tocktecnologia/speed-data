@@ -5,15 +5,21 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/features/screens/admin/admin_dashboard.dart';
 import 'package:speed_data/features/screens/admin/widgets/leaderboard_panel.dart';
+import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/utils/map_utils.dart';
 
 class AdminMapView extends StatefulWidget {
   final String raceId;
   final String raceName;
+  final SessionType sessionType;
 
-  const AdminMapView({Key? key, required this.raceId, required this.raceName})
-      : super(key: key);
+  const AdminMapView({
+    Key? key, 
+    required this.raceId, 
+    required this.raceName,
+    this.sessionType = SessionType.race,
+  }) : super(key: key);
 
   @override
   State<AdminMapView> createState() => _AdminMapViewState();
@@ -50,8 +56,11 @@ class _AdminMapViewState extends State<AdminMapView> {
 
           for (int i = 0; i < checkpoints.length; i++) {
             final point = checkpoints[i];
-            final lat = (point['lat'] as num).toDouble();
-            final lng = (point['lng'] as num).toDouble();
+            if (point == null) continue;
+            final lat = (point['lat'] as num?)?.toDouble() ?? 0.0;
+            final lng = (point['lng'] as num?)?.toDouble() ?? 0.0;
+            
+            if (lat == 0.0 && lng == 0.0) continue;
 
             // Skip drawing the last marker if it is identical to the first one (closed loop)
             if (i == checkpoints.length - 1 && checkpoints.length > 1) {
@@ -86,9 +95,10 @@ class _AdminMapViewState extends State<AdminMapView> {
         // Parse Route
         if (savedRoutePath != null && savedRoutePath.isNotEmpty) {
           final routePoints = savedRoutePath.map((p) {
+            if (p == null) return const LatLng(0, 0); 
             return LatLng(
-                (p['lat'] as num).toDouble(), (p['lng'] as num).toDouble());
-          }).toList();
+                (p['lat'] as num?)?.toDouble() ?? 0.0, (p['lng'] as num?)?.toDouble() ?? 0.0);
+          }).where((p) => p.latitude != 0 && p.longitude != 0).toList();
 
           polylines.add(
             Polyline(
@@ -226,6 +236,7 @@ class _AdminMapViewState extends State<AdminMapView> {
           LeaderboardPanel(
             raceId: widget.raceId,
             checkpoints: _checkpoints,
+            sessionType: widget.sessionType,
           ),
         ],
       ),

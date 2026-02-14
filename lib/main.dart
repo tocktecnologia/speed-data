@@ -12,6 +12,7 @@ import '/flutter_flow/flutter_flow_theme.dart';
 import 'flutter_flow/flutter_flow_util.dart';
 import 'flutter_flow/nav/nav.dart';
 import 'index.dart';
+import 'theme/speed_data_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -87,15 +88,8 @@ class _MyAppState extends State<MyApp> {
         GlobalCupertinoLocalizations.delegate,
       ],
       supportedLocales: const [Locale('en', '')],
-      theme: ThemeData(
-        brightness: Brightness.light,
-        useMaterial3: false,
-      ),
-      darkTheme: ThemeData(
-        brightness: Brightness.dark,
-        useMaterial3: false,
-      ),
-      themeMode: _themeMode,
+      theme: SpeedDataTheme.themeData,
+      themeMode: ThemeMode.dark, // Enforce Dark Theme
       routerConfig: _router,
     );
   }

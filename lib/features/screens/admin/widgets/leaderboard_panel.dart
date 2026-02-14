@@ -1,16 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
+import 'package:speed_data/features/models/race_session_model.dart';
+import 'package:speed_data/theme/speed_data_theme.dart';
 import 'dart:async';
 
 class LeaderboardPanel extends StatefulWidget {
   final String raceId;
   final List<dynamic> checkpoints;
+  final SessionType sessionType;
 
   const LeaderboardPanel({
     Key? key,
     required this.raceId,
     required this.checkpoints,
+    this.sessionType = SessionType.race,
   }) : super(key: key);
 
   @override
@@ -169,165 +173,104 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
     // Sort: 0 is best
     // Sort: 1. Completed Laps (desc), 2. Best Lap Time (asc)
     pilots.sort((a, b) {
-      // 1. Completed Laps (Descending)
-      if (b.completedLaps != a.completedLaps) {
-        return b.completedLaps.compareTo(a.completedLaps);
+      if (widget.sessionType == SessionType.qualifying || widget.sessionType == SessionType.practice) {
+          // Sort by Best Lap Time (Ascending)
+          if (a.bestLapTime == 0 && b.bestLapTime == 0) return 0;
+          if (a.bestLapTime == 0) return 1; 
+          if (b.bestLapTime == 0) return -1;
+          return a.bestLapTime.compareTo(b.bestLapTime);
+      } else {
+        // Race: 1. Completed Laps (Descending)
+        if (b.completedLaps != a.completedLaps) {
+          return b.completedLaps.compareTo(a.completedLaps);
+        }
+        // 2. Best Lap Time (Ascending) - fallback if laps are equal
+        if (a.bestLapTime == 0 && b.bestLapTime == 0) return 0;
+        if (a.bestLapTime == 0) return 1; 
+        if (b.bestLapTime == 0) return -1;
+        return a.bestLapTime.compareTo(b.bestLapTime);
       }
-
-      // 2. Best Lap Time (Ascending)
-      if (a.bestLapTime == 0 && b.bestLapTime == 0) return 0;
-      if (a.bestLapTime == 0) return 1; // Put 0 at bottom
-      if (b.bestLapTime == 0) return -1;
-      return a.bestLapTime.compareTo(b.bestLapTime);
     });
 
-    return Container(
-      width: 300,
-      margin: const EdgeInsets.only(top: 100, left: 16, bottom: 32),
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.8),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white24),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: Colors.white24)),
-            ),
-            child: const Text(
-              "LEADERBOARD",
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-              ),
-            ),
+    return Column(
+      children: [
+        // Header
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          color: SpeedDataTheme.bgElevated,
+          child: Row(
+            children: const [
+              SizedBox(width: 40, child: Text('POS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+              SizedBox(width: 40, child: Text('#', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+              Expanded(flex: 3, child: Text('NAME', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+              SizedBox(width: 40, child: Text('LAPS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+              Expanded(flex: 2, child: Text('TOTAL', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+              Expanded(flex: 2, child: Text('DIFF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+              Expanded(flex: 2, child: Text('GAP', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+              Expanded(flex: 2, child: Text('BEST', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+              Expanded(flex: 2, child: Text('LAST', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+            ],
           ),
-          Expanded(
-            child: ListView.builder(
-              itemCount: pilots.length,
-              itemBuilder: (context, index) {
-                final pilot = pilots[index];
-                final isExpanded = _expandedPilotId == pilot.uid;
+        ),
+        const Divider(height: 1, color: SpeedDataTheme.borderColor),
+        Expanded(
+          child: ListView.separated(
+            itemCount: pilots.length,
+            separatorBuilder: (context, index) => const Divider(height: 1, color: SpeedDataTheme.borderSubtle),
+            itemBuilder: (context, index) {
+              final stat = pilots[index];
+              final pos = index + 1;
+              final diff = index == 0 ? '-' : '+12.345'; // TODO: Calculate actual Diff
+              final gap = index == 0 ? '-' : '+0.567'; // TODO: Calculate actual Gap
+              final totalTime = '15:23.456'; // TODO: Calculate total time
+              final bestLap = stat.bestLapTime > 0 ? (stat.bestLapTime / 1000).toStringAsFixed(3) : '-';
+              final lastLap = stat.intervalStrings.isNotEmpty ? stat.intervalStrings.last : '-';
 
-                return Column(
-                  children: [
-                    InkWell(
-                      onTap: () {
-                        setState(() {
-                          _expandedPilotId = isExpanded ? null : pilot.uid;
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 8, horizontal: 12),
-                        color: index % 2 == 0
-                            ? Colors.white.withOpacity(0.05)
-                            : Colors.transparent,
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 24,
-                              alignment: Alignment.center,
-                              child: Text(
-                                "${index + 1}",
-                                style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    pilot.displayName,
-                                    style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  Text(
-                                    "Best: ${pilot.bestLapTime > 0 ? _formatDuration(pilot.bestLapTime.toInt()) : '-'}",
-                                    style: const TextStyle(
-                                        color: Colors.greenAccent,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 12),
-                                  ),
-                                  Text(
-                                    "Avg: ${pilot.averageLapTime > 0 ? _formatDuration(pilot.averageLapTime.toInt()) : '-'}",
-                                    style: const TextStyle(
-                                        color: Colors.white70, fontSize: 11),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    "Lap ${pilot.currentLapNumber}",
-                                    style: const TextStyle(
-                                        color: Colors.white70, fontSize: 12),
-                                  ),
-                                ])
-                          ],
-                        ),
-                      ),
+              return GestureDetector(
+                onSecondaryTapDown: (details) {
+                  showMenu(
+                    context: context,
+                    position: RelativeRect.fromLTRB(
+                      details.globalPosition.dx,
+                      details.globalPosition.dy,
+                      details.globalPosition.dx,
+                      details.globalPosition.dy,
                     ),
-                    if (isExpanded)
-                      Container(
-                        color: Colors.black45,
-                        padding: const EdgeInsets.all(8),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              "INTERVALS (CURRENT LAP)",
-                              style: TextStyle(
-                                  color: Colors.white54, fontSize: 10),
-                            ),
-                            const SizedBox(height: 4),
-                            ...List.generate(pilot.intervalStrings.length, (i) {
-                              return Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 2),
-                                child: Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                        "Interval ${String.fromCharCode(65 + i)}-${String.fromCharCode(65 + i + 1)}",
-                                        style: const TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 12)),
-                                    Text(pilot.intervalStrings[i],
-                                        style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.bold)),
-                                  ],
-                                ),
-                              );
-                            }),
-                            if (pilot.intervalStrings.isEmpty)
-                              const Text("No intervals recorded",
-                                  style: TextStyle(
-                                      color: Colors.white30, fontSize: 12))
-                          ],
-                        ),
-                      )
-                  ],
-                );
-              },
-            ),
+                    items: [
+                      const PopupMenuItem(value: 'dns', child: Text('Set DNS')),
+                      const PopupMenuItem(value: 'dnf', child: Text('Set DNF')),
+                      const PopupMenuItem(value: 'dq', child: Text('Set DQ')),
+                      const PopupMenuItem(value: 'garage', child: Text('Send to Garage')),
+                      const PopupMenuItem(value: 'penalty', child: Text('Apply Penalty...')),
+                    ],
+                  ).then((value) {
+                    if (value != null) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Action $value selected for ${stat.displayName}')));
+                    }
+                  });
+                },
+                child: Container(
+                  color: index % 2 == 0 ? SpeedDataTheme.bgSurface : SpeedDataTheme.bgBase, // Striped rows
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Row(
+                    children: [
+                      SizedBox(width: 40, child: Text('$pos', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+                      SizedBox(width: 40, child: Text('?', style: const TextStyle(fontSize: 12, color: SpeedDataTheme.textSecondary))), // Car Number
+                      Expanded(flex: 3, child: Text(stat.displayName, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
+                      SizedBox(width: 40, child: Text('${stat.completedLaps}', style: const TextStyle(fontSize: 12))),
+                      Expanded(flex: 2, child: Text(totalTime, style: const TextStyle(fontSize: 12, fontFamily: 'monospace'))),
+                      Expanded(flex: 2, child: Text(diff, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: SpeedDataTheme.textSecondary))),
+                      Expanded(flex: 2, child: Text(gap, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: SpeedDataTheme.textSecondary))),
+                      Expanded(flex: 2, child: Text(bestLap, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: SpeedDataTheme.dataSpeed))),
+                      Expanded(flex: 2, child: Text(lastLap, style: const TextStyle(fontSize: 12, fontFamily: 'monospace'))),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

@@ -4,6 +4,8 @@ import '/flutter_flow/flutter_flow_util.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '/index.dart'; // To access Login/SignUp routes
+import '../theme/speed_data_theme.dart';
+import '../theme/speed_data_components.dart';
 
 class LandingPageWidget extends StatelessWidget {
   const LandingPageWidget({Key? key}) : super(key: key);
@@ -14,128 +16,77 @@ class LandingPageWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black, // Dark theme for "Speed Data"
+      backgroundColor: SpeedDataTheme.bgBase,
       body: SafeArea(
         child: Container(
           width: double.infinity,
           height: double.infinity,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Colors.black, Color(0xFF1A1A1A)],
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-            ),
-          ),
+          color: SpeedDataTheme.bgBase,
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
+              const Icon(
                 Icons.speed,
-                color: Colors.white,
+                color: SpeedDataTheme.accentPrimary,
                 size: 80,
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
               Text(
                 'SPEED DATA',
-                style: GoogleFonts.inter(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
+                style: SpeedDataTheme.themeData.textTheme.displayMedium?.copyWith(
                   letterSpacing: 2.0,
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 12),
               Text(
                 'Select your role to continue',
-                style: GoogleFonts.inter(
-                  fontSize: 16,
-                  color: Colors.grey[400],
+                style: SpeedDataTheme.themeData.textTheme.bodyLarge?.copyWith(
+                  color: SpeedDataTheme.textSecondary,
                 ),
               ),
-              const SizedBox(height: 50),
+              const SizedBox(height: 64),
 
               // Pilot Button
-              _buildRoleButton(
-                context,
-                label: 'PILOT',
-                icon: Icons.sports_motorsports,
-                color: Colors.blueAccent,
-                onPressed: () {
-                  // Navigate to Login/Signup passing the role context
-                  context.pushNamed(
-                    SignUpWidget.routeName,
-                    queryParameters: {'role': 'pilot'},
-                  );
-                },
+              SizedBox(
+                width: 280,
+                child: SpeedButton.primary(
+                  text: 'PILOT',
+                  icon: const Icon(Icons.sports_motorsports, size: 24),
+                  onPressed: () {
+                    context.pushNamed(
+                      SignUpWidget.routeName,
+                      queryParameters: {'role': 'pilot'},
+                    );
+                  },
+                ),
               ),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
 
               // Admin Button
-              _buildRoleButton(
-                context,
-                label: 'ADMIN',
-                icon: Icons.admin_panel_settings,
-                color: Colors.redAccent,
-                onPressed: () {
-                  context.pushNamed(
-                    SignUpWidget.routeName,
-                    queryParameters: {'role': 'admin'},
-                  );
-                },
+              SizedBox(
+                width: 280,
+                child: SpeedButton.secondary(
+                  text: 'ADMIN',
+                  icon: const Icon(Icons.admin_panel_settings, size: 24),
+                  onPressed: () {
+                    context.pushNamed(
+                      SignUpWidget.routeName,
+                      queryParameters: {'role': 'admin'},
+                    );
+                  },
+                ),
               ),
 
               const SizedBox(height: 40),
-              TextButton(
+              SpeedButton.ghost(
+                text: 'Already have an account? Login',
                 onPressed: () {
                   context.pushNamed(LoginWidget.routeName);
                 },
-                child: Text(
-                  'Already have an account? Login',
-                  style: TextStyle(color: Colors.grey[500]),
-                ),
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildRoleButton(
-    BuildContext context, {
-    required String label,
-    required IconData icon,
-    required Color color,
-    required VoidCallback onPressed,
-  }) {
-    return Container(
-      width: 280,
-      height: 60,
-      child: ElevatedButton(
-        onPressed: onPressed,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: color.withOpacity(0.2),
-          foregroundColor: color,
-          side: BorderSide(color: color, width: 2),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-          elevation: 0,
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 28),
-            const SizedBox(width: 12),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.2,
-              ),
-            ),
-          ],
         ),
       ),
     );

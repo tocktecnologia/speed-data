@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/features/models/user_role.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:speed_data/features/models/event_model.dart';
+import 'package:speed_data/features/models/race_session_model.dart';
+import 'package:speed_data/features/models/competitor_model.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -32,6 +35,96 @@ class FirestoreService {
       'name': name,
       'color': color,
     }, SetOptions(merge: true));
+  }
+
+  // --- Races ---
+  
+  // --- Events ---
+
+  Future<String> createEvent(RaceEvent event) async {
+    final docRef = await _db.collection('events').add(event.toMap());
+    return docRef.id;
+  }
+
+  Future<void> updateEvent(RaceEvent event) async {
+    await _db.collection('events').doc(event.id).update(event.toMap());
+  }
+
+  Stream<List<RaceEvent>> getEventsStream() {
+    return _db
+        .collection('events')
+        .orderBy('date', descending: false)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => RaceEvent.fromMap(doc.id, doc.data()))
+            .toList());
+  }
+  
+  Stream<RaceEvent> getEventStream(String eventId) {
+    return _db.collection('events').doc(eventId).snapshots().map((doc) {
+      if (doc.exists && doc.data() != null) {
+        return RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>);
+      } else {
+        throw Exception('Event not found');
+      }
+    });
+  }
+
+  Future<RaceEvent?> getEvent(String eventId) async {
+    try {
+      final doc = await _db.collection('events').doc(eventId).get();
+      if (doc.exists && doc.data() != null) {
+        return RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>);
+      }
+      return null;
+    } catch (e) {
+      print('Error getting event: $e');
+      return null;
+    }
+  }
+
+  Future<void> deleteEvent(String eventId) async {
+    await _db.collection('events').doc(eventId).delete();
+  }
+
+  // --- Competitors (Sub-collection of Events) ---
+
+  Future<void> addCompetitor(String eventId, Competitor competitor) async {
+    await _db
+        .collection('events')
+        .doc(eventId)
+        .collection('competitors')
+        .doc(competitor.id)
+        .set(competitor.toMap());
+  }
+
+  Future<void> removeCompetitor(String eventId, String competitorId) async {
+    await _db
+        .collection('events')
+        .doc(eventId)
+        .collection('competitors')
+        .doc(competitorId)
+        .delete();
+  }
+
+  Stream<List<Competitor>> getCompetitorsStream(String eventId) {
+    return _db
+        .collection('events')
+        .doc(eventId)
+        .collection('competitors')
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => Competitor.fromMap(doc.data()))
+            .toList());
+  }
+
+  Future<List<Competitor>> getCompetitors(String eventId) async {
+    final snapshot = await _db
+        .collection('events')
+        .doc(eventId)
+        .collection('competitors')
+        .get();
+    return snapshot.docs.map((doc) => Competitor.fromMap(doc.data())).toList();
   }
 
   // --- Races ---

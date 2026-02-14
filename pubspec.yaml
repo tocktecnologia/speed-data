@@ -96,11 +96,12 @@ dependencies:
   http: ^1.4.0
   cloud_functions: ^5.5.2
   wakelock_plus: ^1.4.0
-  fl_chart: ^1.1.1
+  fl_chart: ^1.1.0
 
 dependency_overrides:
   http: 1.4.0
   uuid: ^4.0.0
+  vector_math: ^2.2.0
 
 dev_dependencies:
   flutter_lints: 4.0.0

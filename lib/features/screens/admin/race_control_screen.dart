@@ -8,6 +8,8 @@ import 'package:speed_data/features/screens/admin/admin_map_view.dart';
 import 'package:speed_data/features/screens/admin/widgets/passings_panel.dart';
 import 'package:speed_data/features/screens/admin/widgets/leaderboard_panel.dart';
 import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
+import 'package:speed_data/features/screens/admin/create_event_screen.dart';
+import 'package:speed_data/features/screens/admin/event_registration_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/theme/speed_data_theme.dart';
 import 'package:flutter/services.dart';
@@ -166,16 +168,46 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
               ],
             ),
             actions: [
-              IconButton(onPressed: () {}, icon: const Icon(Icons.settings), tooltip: 'Settings'),
-              const SizedBox(width: 10),
-              ElevatedButton.icon(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.arrow_back),
-                label: const Text('Back to Groups'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: SpeedDataTheme.bgSurface,
-                  foregroundColor: SpeedDataTheme.textPrimary,
-                ),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.settings),
+                tooltip: 'Settings',
+                onSelected: (value) {
+                  if (value == 'edit_event') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (context) => CreateEventScreen(event: event)),
+                    );
+                  } else if (value == 'edit_groups') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (context) => EventRegistrationScreen(event: event)),
+                    );
+                  }
+                },
+                itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                  const PopupMenuItem<String>(
+                    value: 'edit_event',
+                    child: Row(
+                      children: [
+                        Icon(Icons.edit, color: Colors.black),
+                        SizedBox(width: 8),
+                        Text('Edit Event'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'edit_groups',
+                    child: Row(
+                      children: [
+                        Icon(Icons.group, color: Colors.black),
+                        SizedBox(width: 8),
+                        Text('Edit Groups'),
+                      ],
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(width: 16),
             ],

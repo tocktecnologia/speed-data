@@ -50,13 +50,18 @@ class FirestoreService {
     await _db.collection('events').doc(event.id).update(event.toMap());
   }
 
-  Stream<List<RaceEvent>> getEventsStream() {
-    return _db
-        .collection('events')
+  Stream<List<RaceEvent>> getEventsStream({String? organizerId}) {
+    Query query = _db.collection('events');
+
+    if (organizerId != null) {
+      query = query.where('organizer_id', isEqualTo: organizerId);
+    }
+
+    return query
         .orderBy('date', descending: false)
         .snapshots()
         .map((snapshot) => snapshot.docs
-            .map((doc) => RaceEvent.fromMap(doc.id, doc.data()))
+            .map((doc) => RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>))
             .toList());
   }
   

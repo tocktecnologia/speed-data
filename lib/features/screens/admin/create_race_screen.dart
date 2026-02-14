@@ -9,8 +9,9 @@ import 'package:speed_data/features/services/route_service.dart';
 class CreateRaceScreen extends StatefulWidget {
   final String? raceId;
   final Map<String, dynamic>? initialData;
+  final bool readOnly;
 
-  const CreateRaceScreen({Key? key, this.raceId, this.initialData})
+  const CreateRaceScreen({Key? key, this.raceId, this.initialData, this.readOnly = false})
       : super(key: key);
 
   @override
@@ -29,7 +30,7 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
   Set<Polyline> _polylines = {};
 
   final LatLng _initialPos =
-      const LatLng(-15.793889, -47.882778); // Brasilia (Fall back)
+      const LatLng(-3.8903, -38.4556); // Eusébio, Ceará
 
   @override
   void initState() {
@@ -83,7 +84,17 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
 
   void _onMapCreated(GoogleMapController controller) {
     _mapController = controller;
-    Future.delayed(const Duration(milliseconds: 500), _getCurrentLocation);
+    if (_checkpoints.isNotEmpty) {
+      // If we have checkpoints (editing/viewing), center on the first one immediately
+      _mapController?.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(target: _checkpoints.first, zoom: 16),
+        ),
+      );
+    } else {
+      // Otherwise try to get current location
+      Future.delayed(const Duration(milliseconds: 500), _getCurrentLocation);
+    }
   }
 
   Future<void> _getCurrentLocation() async {
@@ -309,21 +320,24 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title:
-            Text(widget.raceId != null ? 'Edit Race Plan' : 'Create Race Plan'),
+        title: Text(widget.readOnly
+            ? 'View Race Plan'
+            : (widget.raceId != null ? 'Edit Race Plan' : 'Create Race Plan')),
         backgroundColor: Colors.black,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.undo),
-            onPressed: _undoCheckpoint,
-            tooltip: 'Undo Last Checkpoint',
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _clearCheckpoints,
-            tooltip: 'Clear All',
-          )
-        ],
+        actions: widget.readOnly
+            ? []
+            : [
+                IconButton(
+                  icon: const Icon(Icons.undo),
+                  onPressed: _undoCheckpoint,
+                  tooltip: 'Undo Last Checkpoint',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _clearCheckpoints,
+                  tooltip: 'Clear All',
+                )
+              ],
       ),
       body: Column(
         children: [
@@ -331,6 +345,7 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
             padding: const EdgeInsets.all(16.0),
             child: TextField(
               controller: _raceNameController,
+              readOnly: widget.readOnly,
               decoration: const InputDecoration(
                 labelText: 'Race Name',
                 border: OutlineInputBorder(),
@@ -347,38 +362,41 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
                     target: _initialPos,
                     zoom: 12,
                   ),
-                  onTap: _onMapTap,
+                  onTap: widget.readOnly ? null : _onMapTap,
                   markers: _markers,
                   polylines: _polylines,
                   myLocationEnabled: true,
                   myLocationButtonEnabled: true,
                 ),
-                Positioned(
-                  top: 10,
-                  left: 10,
-                  right: 100,
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    color: Colors.black54,
-                    child: const Text(
-                      'Tap to add checkpoints in order ',
-                      style: TextStyle(color: Colors.white),
-                      textAlign: TextAlign.center,
+                if (!widget.readOnly)
+                  Positioned(
+                    top: 10,
+                    left: 10,
+                    right: 100,
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      color: Colors.black54,
+                      child: const Text(
+                        'Tap to add checkpoints in order ',
+                        style: TextStyle(color: Colors.white),
+                        textAlign: TextAlign.center,
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: _saveRace,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.black),
-                child: Text(widget.raceId != null
+          if (!widget.readOnly)
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: _saveRace,
+                  style:
+                      ElevatedButton.styleFrom(backgroundColor: Colors.black),
+                  child: Text(widget.raceId != null
                     ? 'UPDATE RACE'
                     : 'SAVE & CREATE RACE'),
               ),

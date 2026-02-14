@@ -1,9 +1,12 @@
 
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:speed_data/flutter_flow/nav/nav.dart';
 import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/screens/admin/create_event_screen.dart';
+import 'package:speed_data/features/screens/admin/race_track_list_screen.dart';
 import 'package:speed_data/features/screens/admin/race_control_screen.dart';
-import 'package:speed_data/features/screens/admin/event_registration_screen.dart'; // Will implement next
+import 'package:speed_data/features/screens/admin/event_registration_screen.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:intl/intl.dart';
 
@@ -16,6 +19,7 @@ class EventListScreen extends StatefulWidget {
 
 class _EventListScreenState extends State<EventListScreen> {
   final FirestoreService _firestoreService = FirestoreService();
+  final User? user = FirebaseAuth.instance.currentUser;
 
   void _deleteEvent(String eventId) async {
     final confirmed = await showDialog<bool>(
@@ -41,12 +45,65 @@ class _EventListScreenState extends State<EventListScreen> {
     }
   }
 
+  late Stream<List<RaceEvent>> _eventsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshEvents();
+  }
+
+  Future<void> _refreshEvents() async {
+    setState(() {
+      _eventsStream = _firestoreService.getEventsStream(
+          organizerId: FirebaseAuth.instance.currentUser?.uid);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Events Schedule'),
+        title: const Text('Speed Data Events'),
         backgroundColor: Colors.black,
+      ),
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            UserAccountsDrawerHeader(
+              accountName: const Text('Admin User'),
+              accountEmail: Text(FirebaseAuth.instance.currentUser?.email ?? ''),
+              currentAccountPicture: const CircleAvatar(
+                backgroundColor: Colors.white,
+                child: Icon(Icons.person, color: Colors.black),
+              ),
+              decoration: const BoxDecoration(color: Colors.black),
+            ),
+            ListTile(
+              leading: const Icon(Icons.map),
+              title: const Text('Manage Race Tracks'),
+              onTap: () {
+                Navigator.pop(context); // Close drawer
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const RaceTrackListScreen()),
+                );
+              },
+            ),
+             ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Sign Out'),
+              onTap: () async {
+                await FirebaseAuth.instance.signOut();
+                if (context.mounted) {
+                  context.goNamedAuth('Login', context.mounted,
+                      ignoreRedirect: true);
+                }
+              },
+            ),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: Colors.black,
@@ -59,7 +116,7 @@ class _EventListScreenState extends State<EventListScreen> {
         },
       ),
       body: StreamBuilder<List<RaceEvent>>(
-        stream: _firestoreService.getEventsStream(),
+        stream: _eventsStream,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(child: Text('Error: ${snapshot.error}'));
@@ -71,58 +128,45 @@ class _EventListScreenState extends State<EventListScreen> {
           final events = snapshot.data!;
 
           if (events.isEmpty) {
-             return const Center(child: Text('No events scheduled.'));
+             return RefreshIndicator(
+               onRefresh: _refreshEvents,
+               child: ListView(
+                 children: const [
+                   SizedBox(height: 100),
+                   Center(child: Text('No events scheduled.')),
+                 ],
+               ),
+             );
           }
 
-          return ListView.builder(
-            itemCount: events.length,
-            itemBuilder: (context, index) {
-              final event = events[index];
-              return Card(
-                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: ListTile(
-                  title: Text(event.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Date: ${DateFormat('yyyy-MM-dd').format(event.date)}'),
-                      Text('Sessions: ${event.sessions.map((s) => s.type.name.toUpperCase()).join(", ")}'),
-                    ],
+          return RefreshIndicator(
+            onRefresh: _refreshEvents,
+            child: ListView.builder(
+              itemCount: events.length,
+              itemBuilder: (context, index) {
+                final event = events[index];
+                return Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: ListTile(
+                    title: Text(event.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Date: ${DateFormat('yyyy-MM-dd').format(event.date)}'),
+                        Text('Sessions: ${event.sessions.map((s) => s.type.name.toUpperCase()).join(", ")}'),
+                      ],
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => RaceControlScreen(event: event)),
+                      );
+                    },
                   ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                       IconButton(
-                        icon: const Icon(Icons.play_arrow, color: Colors.green),
-                        tooltip: 'Race Control',
-                        onPressed: () {
-                           // Navigate to Race Control
-                           Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => RaceControlScreen(event: event)),
-                          );
-                        },
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.edit, color: Colors.blue),
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) =>
-                                    EventRegistrationScreen(event: event)),
-                          );
-                        },
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () => _deleteEvent(event.id),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           );
         },
       ),

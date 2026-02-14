@@ -9,7 +9,7 @@ export 'home_page_model.dart';
 
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/models/user_role.dart';
-import 'package:speed_data/features/screens/admin/admin_dashboard.dart';
+import 'package:speed_data/features/screens/admin/event_list_screen.dart';
 import 'package:speed_data/features/screens/pilot/pilot_dashboard.dart';
 
 class HomePageWidget extends StatefulWidget {
@@ -62,7 +62,7 @@ class _HomePageWidgetState extends State<HomePageWidget> {
         final role = snapshot.data ?? UserRole.unknown;
 
         if (role == UserRole.admin || role == UserRole.root) {
-          return const AdminDashboard();
+          return const EventListScreen();
         } else if (role == UserRole.pilot) {
           return const PilotDashboard();
         } else {

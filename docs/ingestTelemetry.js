@@ -1,0 +1,273 @@
+const functions = require('firebase-functions');
+const admin = require('firebase-admin');
+const { PubSub } = require('@google-cloud/pubsub');
+const { BigQuery } = require('@google-cloud/bigquery');
+
+admin.initializeApp();
+
+// Instantiate Pub/Sub client
+const pubsub = new PubSub();
+const TOPIC_NAME = 'telemetry-topic';
+
+/**
+ * Cloud Function: ingestTelemetry
+ * Receives a batch of telemetry points and publishes them to Pub/Sub.
+ * This ensures fast response to the client and asynchronous processing.
+ */
+exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
+    // 1. Authentication Check
+    if (!context.auth) {
+        throw new functions.https.HttpsError(
+            'unauthenticated',
+            'User must be logged in to send telemetry.'
+        );
+    }
+
+    const { raceId, uid, points, checkpoints, session } = data;
+
+    // 2. Validation
+    if (!points || !Array.isArray(points)) {
+        throw new functions.https.HttpsError(
+            'invalid-argument',
+            'Points must be an array.'
+        );
+    }
+
+    if (points.length === 0) {
+        return { success: true, count: 0 };
+    }
+
+    console.log(`Received ${points.length} points for race ${raceId} from user ${uid}`);
+
+    // --- ALGORITHM START ---
+    try {
+        if (checkpoints && checkpoints.length > 1) {
+            const db = admin.firestore();
+
+            // Helper: distance in meters
+            function getDistance(lat1, lon1, lat2, lon2) {
+                const R = 6371e3; // metres
+                const φ1 = lat1 * Math.PI / 180;
+                const φ2 = lat2 * Math.PI / 180;
+                const Δφ = (lat2 - lat1) * Math.PI / 180;
+                const Δλ = (lon2 - lon1) * Math.PI / 180;
+                const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                    Math.cos(φ1) * Math.cos(φ2) *
+                    Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                return R * c;
+            }
+
+            // Iterate over Checkpoints (PM)
+            for (let i = 0; i < checkpoints.length - 1; i++) {
+                const pm = checkpoints[i];
+                const nextPm = checkpoints[(i + 1) % checkpoints.length];
+
+                // Find closest PP that meets conditions
+                let bestPP = null;
+                let minDist = 40; // Max allowed distance (40m)
+
+                for (const pp of points) {
+                    const dist = getDistance(pm.lat, pm.lng, pp.lat, pp.lng);
+
+                    if (dist < minDist) {
+                        // Check "Posterior" / Direction
+                        // Vector Track: PM -> NextPM
+                        const vTrackLat = nextPm.lat - pm.lat;
+                        const vTrackLng = nextPm.lng - pm.lng;
+
+                        // Vector Pilot: PM -> PP
+                        const vPilotLat = pp.lat - pm.lat;
+                        const vPilotLng = pp.lng - pm.lng;
+
+                        // Dot Product: if > 0, pilot is "ahead" or aligned with track direction from PM
+                        const dot = (vPilotLat * vTrackLat) + (vPilotLng * vTrackLng);
+                        const lenSq = vTrackLat * vTrackLat + vTrackLng * vTrackLng;
+
+                        // check if the point is between PM and NextPM
+                        if (dot >= 0 && dot <= lenSq) {
+                            minDist = dist;
+                            bestPP = pp;
+                        }
+                    }
+                }
+
+                if (bestPP) {
+                    // Interaction with Firestore Laps
+                    const lapsRef = db.collection('races').doc(raceId).collection('participants').doc(uid).collection('laps');
+
+                    // Get 'latest' lap
+                    const lapsSnapshot = await lapsRef.orderBy('number', 'desc').limit(1).get();
+
+                    let currentLapDoc = null;
+                    let currentLapData = null;
+
+                    // if no laps, create new lap
+                    if (lapsSnapshot.empty) {
+                        // Create Lap 1
+                        const newLapRef = lapsRef.doc('lap_1');
+                        const newLapData = {
+                            number: 1,
+                            created_at: admin.firestore.FieldValue.serverTimestamp(),
+                            points: {}
+                        };
+                        await newLapRef.set(newLapData);
+                        currentLapDoc = newLapRef;
+                        currentLapData = newLapData;
+                    }
+                    // if there is, get the latest lap
+                    else {
+                        currentLapDoc = lapsSnapshot.docs[0].ref;
+                        currentLapData = lapsSnapshot.docs[0].data();
+                    }
+
+
+                    // if the best found is related to the first checkpoint and the best point already added, create new lap
+                    if (i === 0) {
+                        const cp0Key = `cp_0`;
+
+                        if (currentLapData.points && currentLapData.points[cp0Key]) {
+
+                            if (bestPP.timestamp - currentLapData.points[cp0Key].timestamp > 20000) {
+                                // Calculate Last Lap Time
+                                const startTimestamp = currentLapData.points[cp0Key].timestamp;
+                                const finishTimestamp = bestPP.timestamp;
+                                const lapTimeMs = finishTimestamp - startTimestamp;
+                                
+                                await currentLapDoc.update({
+                                    totalLapTime: lapTimeMs
+                                });
+
+                                // ===== CREATE PASSING RECORD FOR ADMIN PANEL =====
+                                const passingsRef = db.collection('races').doc(raceId).collection('passings');
+                                const passingData = {
+                                    participant_uid: uid, // Admin will resolve name dynamically
+                                    lap_number: currentLapData.number,
+                                    lap_time: lapTimeMs,
+                                    timestamp: admin.firestore.Timestamp.fromMillis(finishTimestamp),
+                                    session_id: session || null,
+                                    checkpoint_index: 0, // Finish line
+                                    flags: [],
+                                    sector_time: null
+                                };
+
+                                await passingsRef.add(passingData);
+                                console.log(`Created passing record for user ${uid} - Lap ${currentLapData.number} - Time: ${lapTimeMs}ms`);
+                                // ===== END PASSING RECORD =====
+
+                                // Create Next Lap
+                                const nextLapNum = currentLapData.number + 1;
+                                const nextLapRef = lapsRef.doc(`lap_${nextLapNum}`);
+
+                                await nextLapRef.set({
+                                    number: nextLapNum,
+                                    created_at: admin.firestore.FieldValue.serverTimestamp(),
+                                    points: {
+                                        [cp0Key]: bestPP // Add the point to the NEW lap
+                                    }
+                                });
+                            }
+
+                        } else {
+                            await currentLapDoc.update({
+                                points: {
+                                    [cp0Key]: bestPP // Add the point to the current lap
+                                }
+                            });
+                        }
+                    }
+                    else {
+                        // Check if point for the other checkpoints
+                        const cpKey = `cp_${i}`;
+                        const existingPoint = currentLapData.points && currentLapData.points[cpKey];
+
+                        if (!existingPoint) {
+                            // Add point
+                            const updateData = {};
+                            updateData[`points.${cpKey}`] = bestPP;
+                            await currentLapDoc.update(updateData);
+                            
+                            // Update local data for subsequent loop checks
+                            if (!currentLapData.points) {
+                                currentLapData.points = {};
+                            }
+                            currentLapData.points[cpKey] = bestPP;
+                        }
+                    }
+
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Error in algorithm:', e);
+        // Continue to PubSub even if algorithm fails
+    }
+    // --- ALGORITHM END ---
+
+    // 3. Publish to Pub/Sub
+    const messagePayload = {
+        raceId,
+        uid,
+        points,
+        ingestedAt: Date.now(),
+        userEmail: context.auth.token.email || null
+    };
+
+    const dataBuffer = Buffer.from(JSON.stringify(messagePayload));
+
+    try {
+        const topic = pubsub.topic(TOPIC_NAME);
+        const messageId = await topic.publishMessage({ data: dataBuffer });
+        console.log(`Message ${messageId} published.`);
+
+        return { success: true, messageId };
+    } catch (error) {
+        console.error('Processing Error:', error);
+        throw new functions.https.HttpsError(
+            'internal',
+            'Failed to process telemetry.'
+        );
+    }
+});
+
+/**
+ * (Optional) Pub/Sub Trigger to Process Data
+ */
+exports.processTelemetry = functions.pubsub.topic(TOPIC_NAME).onPublish(async (message) => {
+    const payload = message.json;
+    const { raceId, uid, points, ingestedAt } = payload;
+
+    console.log(`Processing batch for race: ${raceId}, user: ${uid}`);
+
+    const tasks = [];
+
+    // TASK 1: Update Real-Time State (Firestore)
+    if (points && points.length > 0) {
+        const lastPoint = points[points.length - 1];
+        const updateTask = admin.firestore()
+            .collection('races')
+            .doc(raceId)
+            .collection('participants')
+            .doc(uid)
+            .set({
+                current: {
+                    lat: lastPoint.lat,
+                    lng: lastPoint.lng,
+                    speed: lastPoint.speed,
+                    heading: lastPoint.heading,
+                    altitude: lastPoint.altitude || 0,
+                    timestamp: lastPoint.timestamp,
+                    last_updated: admin.firestore.FieldValue.serverTimestamp()
+                }
+            }, { merge: true });
+
+        tasks.push(updateTask);
+    }
+
+    // TASK 2: Insert into BigQuery
+    const bigquery = new BigQuery();
+    tasks.push(bigquery.dataset('telemetry').table('raw_points').insert(points.map(p => ({ ...p, raceId, uid }))));
+
+    await Promise.all(tasks);
+});
+

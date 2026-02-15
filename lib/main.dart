@@ -13,6 +13,7 @@ import 'flutter_flow/flutter_flow_util.dart';
 import 'flutter_flow/nav/nav.dart';
 import 'index.dart';
 import 'theme/speed_data_theme.dart';
+import 'features/services/active_session_telemetry_manager.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -70,6 +71,14 @@ class _MyAppState extends State<MyApp> {
       Duration(milliseconds: 1000),
       () => _appStateNotifier.stopShowingSplashImage(),
     );
+
+    ActiveSessionTelemetryManager.instance.start();
+  }
+
+  @override
+  void dispose() {
+    ActiveSessionTelemetryManager.instance.dispose();
+    super.dispose();
   }
 
   void setThemeMode(ThemeMode mode) => safeSetState(() {

@@ -1,4 +1,3 @@
-
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/event_model.dart';
@@ -7,7 +6,7 @@ import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/features/models/race_group_model.dart';
 import 'package:speed_data/features/models/competitor_model.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
-import 'package:speed_data/features/screens/admin/admin_map_view.dart'; 
+import 'package:speed_data/features/screens/admin/admin_map_view.dart';
 import 'package:speed_data/features/screens/admin/widgets/passings_panel.dart';
 import 'package:speed_data/features/screens/admin/widgets/leaderboard_panel.dart';
 import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
@@ -27,7 +26,8 @@ class RaceControlScreen extends StatefulWidget {
   State<RaceControlScreen> createState() => _RaceControlScreenState();
 }
 
-class _RaceControlScreenState extends State<RaceControlScreen> with SingleTickerProviderStateMixin {
+class _RaceControlScreenState extends State<RaceControlScreen>
+    with SingleTickerProviderStateMixin {
   final FirestoreService _firestoreService = FirestoreService();
   late TabController _tabController;
   String? _selectedSessionId;
@@ -44,7 +44,8 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
     super.dispose();
   }
 
-  Future<void> _startSession(RaceSession session, RaceEvent currentEvent) async {
+  Future<void> _startSession(
+      RaceSession session, RaceEvent currentEvent) async {
     final updatedSession = session.copyWith(
       status: SessionStatus.active,
       actualStartTime: DateTime.now(),
@@ -52,17 +53,20 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
     await _updateSessionStatus(updatedSession, currentEvent);
   }
 
-  Future<void> _finishSession(RaceSession session, RaceEvent currentEvent) async {
-     final updatedSession = session.copyWith(
-       status: SessionStatus.finished,
-       actualEndTime: DateTime.now(),
-      );
+  Future<void> _finishSession(
+      RaceSession session, RaceEvent currentEvent) async {
+    final updatedSession = session.copyWith(
+      status: SessionStatus.finished,
+      actualEndTime: DateTime.now(),
+    );
     await _updateSessionStatus(updatedSession, currentEvent);
   }
 
-   Future<void> _updateSessionStatus(RaceSession updatedSession, RaceEvent currentEvent) async {
+  Future<void> _updateSessionStatus(
+      RaceSession updatedSession, RaceEvent currentEvent) async {
     // Find the session index
-    final index = currentEvent.sessions.indexWhere((s) => s.id == updatedSession.id);
+    final index =
+        currentEvent.sessions.indexWhere((s) => s.id == updatedSession.id);
     if (index != -1) {
       final updatedSessions = List<RaceSession>.from(currentEvent.sessions);
       updatedSessions[index] = updatedSession;
@@ -73,7 +77,8 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
     }
   }
 
-  Future<void> _updateFlag(RaceFlag flag, {RaceSession? session, RaceEvent? currentEvent}) async {
+  Future<void> _updateFlag(RaceFlag flag,
+      {RaceSession? session, RaceEvent? currentEvent}) async {
     try {
       // 1. Update global track flag
       await _firestoreService.updateRaceFlag(widget.event.trackId, flag);
@@ -93,11 +98,13 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
         case RaceFlag.green:
           flagName = 'GREEN FLAG';
           passingFlags.add('flag_green');
-          
+
           // Start session if scheduled or active-without-start-time
-          if (session != null && currentEvent != null && 
-             (session.status == SessionStatus.scheduled || 
-              (session.status == SessionStatus.active && session.actualStartTime == null))) {
+          if (session != null &&
+              currentEvent != null &&
+              (session.status == SessionStatus.scheduled ||
+                  (session.status == SessionStatus.active &&
+                      session.actualStartTime == null))) {
             await _startSession(session, currentEvent);
           }
           break;
@@ -112,10 +119,17 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
         case RaceFlag.checkered:
           flagName = 'CHECKERED FLAG';
           passingFlags.add('flag_checkered');
-          
+
           // Finish session if active
-          if (session != null && currentEvent != null && session.status == SessionStatus.active) {
+          if (session != null &&
+              currentEvent != null &&
+              session.status == SessionStatus.active) {
             await _finishSession(session, currentEvent);
+            if (mounted) {
+              setState(() {
+                _selectedSessionId = session.id;
+              });
+            }
           }
           break;
         default:
@@ -139,399 +153,548 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Flag updated to ${flag.name.toUpperCase()}')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Flag updated to ${flag.name.toUpperCase()}')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error updating flag: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error updating flag: $e')));
       }
     }
   }
 
   Color _getFlagColor(RaceFlag flag) {
     switch (flag) {
-      case RaceFlag.green: return SpeedDataTheme.flagGreen;
-      case RaceFlag.yellow: return SpeedDataTheme.flagYellow;
-      case RaceFlag.red: return SpeedDataTheme.flagRed;
-      case RaceFlag.checkered: return Colors.white;
-      default: return SpeedDataTheme.textSecondary;
+      case RaceFlag.green:
+        return SpeedDataTheme.flagGreen;
+      case RaceFlag.yellow:
+        return SpeedDataTheme.flagYellow;
+      case RaceFlag.red:
+        return SpeedDataTheme.flagRed;
+      case RaceFlag.checkered:
+        return Colors.white;
+      default:
+        return SpeedDataTheme.textSecondary;
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<RaceEvent>(
       stream: _firestoreService.getEventStream(widget.event.id),
       builder: (context, snapshot) {
-         if (!snapshot.hasData) {
-            return const Scaffold(body: Center(child: CircularProgressIndicator()));
-         }
-         
-         final eventData = snapshot.data!;
-         
-         // 1. Determine "Active" session (running or next scheduled)
-         RaceSession? defaultActiveSession;
-         if (eventData.sessions.isNotEmpty) {
-           defaultActiveSession = eventData.sessions.firstWhere(
-             (s) => s.status == SessionStatus.active, 
-             orElse: () => eventData.sessions.firstWhere(
-               (s) => s.status == SessionStatus.scheduled, 
-               orElse: () => eventData.sessions.last
-             )
-           );
-         }
+        if (!snapshot.hasData) {
+          return const Scaffold(
+              body: Center(child: CircularProgressIndicator()));
+        }
 
-         // 2. Determine "Selected" session (user override)
-         // If user selected a session, use it. Otherwise use default active.
-         RaceSession? displaySession = defaultActiveSession;
-         if (_selectedSessionId != null) {
-            try {
-              displaySession = eventData.sessions.firstWhere((s) => s.id == _selectedSessionId);
-            } catch (e) {
-              // Selected session might have been deleted
-              _selectedSessionId = null;
-            }
-         }
+        final eventData = snapshot.data!;
 
+        // 1. Determine "Active" session (running or next scheduled)
+        RaceSession? defaultActiveSession;
+        if (eventData.sessions.isNotEmpty) {
+          defaultActiveSession = eventData.sessions.firstWhere(
+              (s) => s.status == SessionStatus.active,
+              orElse: () => eventData.sessions.firstWhere(
+                  (s) => s.status == SessionStatus.scheduled,
+                  orElse: () => eventData.sessions.last));
+        }
 
-         return KeyboardListener(
-          focusNode: FocusNode(), 
+        // 2. Determine "Selected" session (user override)
+        // If user selected a session, use it. Otherwise use default active.
+        RaceSession? displaySession = defaultActiveSession;
+        if (_selectedSessionId != null) {
+          try {
+            displaySession = eventData.sessions
+                .firstWhere((s) => s.id == _selectedSessionId);
+          } catch (e) {
+            // Selected session might have been deleted
+            _selectedSessionId = null;
+          }
+        }
+
+        return KeyboardListener(
+          focusNode: FocusNode(),
           autofocus: true,
           onKeyEvent: (event) {
-             if (event is KeyDownEvent) {
-               if (event.logicalKey == LogicalKeyboardKey.f5) {
-                  _updateFlag(RaceFlag.green, session: displaySession, currentEvent: eventData);
-               } else if (event.logicalKey == LogicalKeyboardKey.f6) {
-                  _updateFlag(RaceFlag.yellow, session: displaySession, currentEvent: eventData);
-               } else if (event.logicalKey == LogicalKeyboardKey.f7) {
-                  _updateFlag(RaceFlag.red, session: displaySession, currentEvent: eventData);
-                } else if (event.logicalKey == LogicalKeyboardKey.f8) {
-                   _updateFlag(RaceFlag.checkered, session: displaySession, currentEvent: eventData);
-                } else if (event.logicalKey == LogicalKeyboardKey.f10) {
-                   if (displaySession != null) _showManualEntryDialog(widget.event.trackId, sessionId: displaySession.id);
-               }
-             }
+            if (event is KeyDownEvent) {
+              if (event.logicalKey == LogicalKeyboardKey.f5) {
+                _updateFlag(RaceFlag.green,
+                    session: displaySession, currentEvent: eventData);
+              } else if (event.logicalKey == LogicalKeyboardKey.f6) {
+                _updateFlag(RaceFlag.yellow,
+                    session: displaySession, currentEvent: eventData);
+              } else if (event.logicalKey == LogicalKeyboardKey.f7) {
+                _updateFlag(RaceFlag.red,
+                    session: displaySession, currentEvent: eventData);
+              } else if (event.logicalKey == LogicalKeyboardKey.f8) {
+                _updateFlag(RaceFlag.checkered,
+                    session: displaySession, currentEvent: eventData);
+              } else if (event.logicalKey == LogicalKeyboardKey.f10) {
+                if (displaySession != null)
+                  _showManualEntryDialog(widget.event.trackId,
+                      sessionId: displaySession.id);
+              }
+            }
           },
           child: Builder(
             builder: (context) {
               final currentFlag = displaySession?.currentFlag ?? RaceFlag.green;
 
               return Scaffold(
-          appBar: AppBar(
-            title: Row(
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(eventData.name, style: const TextStyle(fontSize: 14, color: SpeedDataTheme.textSecondary)),
-                    if (displaySession != null)
-                      Text(
-                        eventData.groups.firstWhere((g) => g.id == displaySession!.groupId, orElse: () => RaceGroup(id: '', name: 'Unknown')).name,
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                appBar: AppBar(
+                  title: Row(
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(eventData.name,
+                              style: const TextStyle(
+                                  fontSize: 14,
+                                  color: SpeedDataTheme.textSecondary)),
+                          if (displaySession != null)
+                            Text(
+                              eventData.groups
+                                  .firstWhere(
+                                      (g) => g.id == displaySession!.groupId,
+                                      orElse: () =>
+                                          RaceGroup(id: '', name: 'Unknown'))
+                                  .name,
+                              style: const TextStyle(
+                                  fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                        ],
                       ),
-                  ],
-                ),
-                const SizedBox(width: 20),
-                if (displaySession != null)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: (displaySession.status == SessionStatus.active ? _getFlagColor(currentFlag) : _getStatusColor(displaySession.status)).withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(color: displaySession.status == SessionStatus.active ? _getFlagColor(currentFlag) : _getStatusColor(displaySession.status)),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          '${displaySession.name.isNotEmpty ? displaySession.name : displaySession.type.name.toUpperCase()} :',
-                          style: const TextStyle(fontWeight: FontWeight.bold, color: SpeedDataTheme.textSecondary, fontSize: 12),
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          displaySession.status == SessionStatus.active 
-                            ? currentFlag.name.toUpperCase() 
-                            : displaySession.status.name.toUpperCase(),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        if (_selectedSessionId != null) ...[
-                          const SizedBox(width: 8),
-                          InkWell(
-                            onTap: () => setState(() => _selectedSessionId = null),
-                            child: const Icon(Icons.close, size: 16, color: SpeedDataTheme.textSecondary),
-                          )
-                        ]
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-            actions: [
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.settings),
-                tooltip: 'Settings',
-                onSelected: (value) {
-                  if (value == 'edit_event') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (context) => CreateEventScreen(event: eventData)),
-                    );
-                  } else if (value == 'edit_groups') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (context) => EventRegistrationScreen(event: eventData)),
-                    );
-                  }
-                },
-                itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                  const PopupMenuItem<String>(
-                    value: 'edit_event',
-                    child: Row(
-                      children: [
-                        Icon(Icons.edit, color: Colors.black),
-                        SizedBox(width: 8),
-                        Text('Edit Event'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem<String>(
-                    value: 'edit_groups',
-                    child: Row(
-                      children: [
-                        Icon(Icons.group, color: Colors.black),
-                        SizedBox(width: 8),
-                        Text('Edit Groups'),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(width: 16),
-            ],
-            backgroundColor: SpeedDataTheme.bgBase,
-          ),
-          body: Column(
-            children: [
-              // Top Control Bar (Flags & Status)
-              Container(
-                padding: const EdgeInsets.all(8),
-                color: SpeedDataTheme.bgSurface,
-                child: Row(
-                  children: [
-                    // Flag Control with Reactive Status
-                    Row(
-                      children: [
+                      const SizedBox(width: 20),
+                      if (displaySession != null)
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(
-                            color: (displaySession?.status == SessionStatus.active 
-                                ? _getFlagColor(currentFlag) 
-                                : _getStatusColor(displaySession?.status ?? SessionStatus.scheduled)).withOpacity(0.1),
+                            color: (displaySession.status ==
+                                        SessionStatus.active
+                                    ? _getFlagColor(currentFlag)
+                                    : _getStatusColor(displaySession.status))
+                                .withOpacity(0.2),
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(
-                                color: (displaySession?.status == SessionStatus.active 
-                                    ? _getFlagColor(currentFlag) 
-                                    : _getStatusColor(displaySession?.status ?? SessionStatus.scheduled)).withOpacity(0.5), 
-                                width: 2),
+                                color: displaySession.status ==
+                                        SessionStatus.active
+                                    ? _getFlagColor(currentFlag)
+                                    : _getStatusColor(displaySession.status)),
                           ),
-                          child: Text(
-                            displaySession?.status == SessionStatus.active 
-                              ? 'RACE STATUS: ${currentFlag.name.toUpperCase()} FLAG'
-                              : 'SESSION: ${displaySession?.status.name.toUpperCase() ?? "UNKNOWN"}',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                              color: displaySession?.status == SessionStatus.active 
-                                ? (currentFlag == RaceFlag.checkered ? Colors.white : _getFlagColor(currentFlag))
-                                : _getStatusColor(displaySession?.status ?? SessionStatus.scheduled),
-                            ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                '${displaySession.name.isNotEmpty ? displaySession.name : displaySession.type.name.toUpperCase()} :',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: SpeedDataTheme.textSecondary,
+                                    fontSize: 12),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                displaySession.status == SessionStatus.active
+                                    ? currentFlag.name.toUpperCase()
+                                    : displaySession.status.name.toUpperCase(),
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold),
+                              ),
+                              if (_selectedSessionId != null) ...[
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: () =>
+                                      setState(() => _selectedSessionId = null),
+                                  child: const Icon(Icons.close,
+                                      size: 16,
+                                      color: SpeedDataTheme.textSecondary),
+                                )
+                              ]
+                            ],
                           ),
                         ),
-                        const SizedBox(width: 16),
-                        Wrap(
-                          spacing: 8,
-                          children: [
-                            _buildActionButton('GREEN', Icons.flag, SpeedDataTheme.flagGreen, () => _updateFlag(RaceFlag.green, session: displaySession, currentEvent: eventData), isActive: displaySession?.status == SessionStatus.active && currentFlag == RaceFlag.green),
-                            _buildActionButton('SC', Icons.flag, SpeedDataTheme.flagYellow, () => _updateFlag(RaceFlag.yellow, session: displaySession, currentEvent: eventData), isActive: displaySession?.status == SessionStatus.active && currentFlag == RaceFlag.yellow),
-                            _buildActionButton('RED', Icons.flag, SpeedDataTheme.flagRed, () => _updateFlag(RaceFlag.red, session: displaySession, currentEvent: eventData), isActive: displaySession?.status == SessionStatus.active && currentFlag == RaceFlag.red),
-                            _buildActionButton('FINISH', Icons.flag, Colors.white, () => _updateFlag(RaceFlag.checkered, session: displaySession, currentEvent: eventData), textColor: Colors.black, isActive: displaySession?.status == SessionStatus.active && currentFlag == RaceFlag.checkered),
-                            const SizedBox(width: 8),
-                            _buildActionButton('STOP', Icons.stop, Colors.grey.shade800, () {}, isOutlined: true),
-                          ],
+                    ],
+                  ),
+                  actions: [
+                    PopupMenuButton<String>(
+                      icon: const Icon(Icons.settings),
+                      tooltip: 'Settings',
+                      onSelected: (value) {
+                        if (value == 'edit_event') {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (context) =>
+                                    CreateEventScreen(event: eventData)),
+                          );
+                        } else if (value == 'edit_groups') {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (context) =>
+                                    EventRegistrationScreen(event: eventData)),
+                          );
+                        }
+                      },
+                      itemBuilder: (BuildContext context) =>
+                          <PopupMenuEntry<String>>[
+                        const PopupMenuItem<String>(
+                          value: 'edit_event',
+                          child: Row(
+                            children: [
+                              Icon(Icons.edit, color: Colors.black),
+                              SizedBox(width: 8),
+                              Text('Edit Event'),
+                            ],
+                          ),
+                        ),
+                        const PopupMenuItem<String>(
+                          value: 'edit_groups',
+                          child: Row(
+                            children: [
+                              Icon(Icons.group, color: Colors.black),
+                              SizedBox(width: 8),
+                              Text('Edit Groups'),
+                            ],
+                          ),
                         ),
                       ],
                     ),
-                    const SizedBox(width: 24),
-                    if (displaySession != null)
-                      Row(
-                        children: [
-                          _buildInfoItem('Duration', '${displaySession.durationMinutes} min'),
-                          const SizedBox(width: 16),
-                          _buildInfoItem('Laps', '${displaySession.totalLaps ?? "-"}'),
-                          const SizedBox(width: 16),
-                          _buildInfoItem('Start', displaySession.startMethod),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            icon: const Icon(Icons.edit, size: 16, color: SpeedDataTheme.textSecondary),
-                            onPressed: () async {
-                               await Navigator.push(
-                                 context,
-                                 MaterialPageRoute(
-                                   builder: (context) => SessionSettingsScreen(
-                                     session: displaySession!,
-                                     onSave: (updatedSession) {
-                                        _updateSessionStatus(updatedSession, eventData);
-                                     },
-                                   ),
-                                 ),
-                               );
-                            },
-                            tooltip: 'Edit Session Settings',
-                          ),
-                        ],
-                      ),
-                    const Spacer(),
-                    // Session Timer
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: displaySession != null 
-                        ? StreamBuilder<List<PassingModel>>(
-                            stream: _firestoreService.getPassingsStream(eventData.trackId),
-                            builder: (context, psnaps) {
-                               int maxLap = 0;
-                               if (psnaps.hasData) {
-                                 for (var p in psnaps.data!) {
-                                   if (p.participantUid != 'SYSTEM' && p.lapNumber > maxLap) {
-                                      maxLap = p.lapNumber;
-                                   }
-                                 }
-                               }
-                               return SessionClock(session: displaySession!, currentLeaderLap: maxLap);
-                            }
-                        )
-                        : const Text('00:00:00', style: TextStyle(fontFamily: 'monospace', fontSize: 24, color: SpeedDataTheme.flagGreen)),
-                    ),
+                    const SizedBox(width: 16),
                   ],
+                  backgroundColor: SpeedDataTheme.bgBase,
                 ),
-              ),
-              const Divider(height: 1, color: SpeedDataTheme.borderColor),
-              // Main Content Area...
-              Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                body: Column(
                   children: [
-                    // Pane 1: Passings (Left)
-                    Expanded(
-                      flex: 3,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    // Top Control Bar (Flags & Status)
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      color: SpeedDataTheme.bgSurface,
+                      child: Row(
                         children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            color: SpeedDataTheme.bgSurface,
-                            child: const Text('Passings', style: TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                          Expanded(
-                            child: PassingsPanel(
-                              raceId: eventData.trackId,
-                              sessionId: displaySession?.id,
-                              sessionType: displaySession?.type ?? SessionType.practice,
-                              session: displaySession, // Pass full session for time-based filtering
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const VerticalDivider(width: 1, color: SpeedDataTheme.borderColor),
-                    // Pane 2: Results (Middle)
-                    Expanded(
-                      flex: 4,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                           Container(
-                            padding: const EdgeInsets.all(8),
-                            color: SpeedDataTheme.bgSurface,
-                            child: const Text('Results', style: TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                          Expanded(
-                            child: FutureBuilder<Map<String, dynamic>?>(
-                               future: _firestoreService.getRace(eventData.trackId),
-                               builder: (context, trackSnapshot) {
-                                 final checkpoints = trackSnapshot.data?['checkpoints'] as List<dynamic>? ?? [];
-                                 return StreamBuilder<List<Competitor>>(
-                                   stream: _firestoreService.getCompetitorsStream(eventData.id),
-                                   builder: (context, compSnapshot) {
-                                     final competitors = compSnapshot.data ?? [];
-                                     final compMap = { for (var item in competitors) item.uid : item };
-                                     
-                                     return LeaderboardPanel(
-                                        raceId: eventData.trackId,
-                                        sessionId: displaySession?.id,
-                                        checkpoints: checkpoints,
-                                        sessionType: displaySession?.type ?? SessionType.race,
-                                        competitorsByUid: compMap,
-                                     );
-                                   }
-                                 );
-                               }
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const VerticalDivider(width: 1, color: SpeedDataTheme.borderColor),
-                    // Pane 3: Visualizations (Right) - Track Chart & Sessions List
-                    Expanded(
-                      flex: 3,
-                      child: Column(
-                        children: [
-                          // Track Chart
-                          Expanded(
-                             flex: 2,
-                             child: Stack(
-                               children: [
-                                 AdminMapView(
-                                   raceId: eventData.trackId, 
-                                   raceName: eventData.name,
-                                   sessionType: displaySession?.type ?? SessionType.practice,
-                                 ),
-                                  const Positioned(
-                                    top: 8, left: 8,
-                                    child: Card(child: Padding(padding: EdgeInsets.all(4.0), child: Text('Track Chart', style: TextStyle(fontSize: 10))))
-                                  )
-                               ],
-                             ),
-                          ),
-                          const Divider(height: 1, color: SpeedDataTheme.borderColor),
-                          // Sessions List (Bottom Right - traditionally helpful for quick switching)
-                          Expanded(
-                            flex: 1,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(8),
-                                  color: SpeedDataTheme.bgSurface,
-                                  child: const Text('Sessions (Click to Select)', style: TextStyle(fontWeight: FontWeight.bold)),
+                          // Flag Control with Reactive Status
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: (displaySession?.status ==
+                                              SessionStatus.active
+                                          ? _getFlagColor(currentFlag)
+                                          : _getStatusColor(
+                                              displaySession?.status ??
+                                                  SessionStatus.scheduled))
+                                      .withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                      color: (displaySession?.status ==
+                                                  SessionStatus.active
+                                              ? _getFlagColor(currentFlag)
+                                              : _getStatusColor(
+                                                  displaySession?.status ??
+                                                      SessionStatus.scheduled))
+                                          .withOpacity(0.5),
+                                      width: 2),
                                 ),
-                                Expanded(child: _buildSessionsList(eventData, displaySession?.id)),
+                                child: Text(
+                                  displaySession?.status == SessionStatus.active
+                                      ? 'RACE STATUS: ${currentFlag.name.toUpperCase()} FLAG'
+                                      : 'SESSION: ${displaySession?.status.name.toUpperCase() ?? "UNKNOWN"}',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                    color: displaySession?.status ==
+                                            SessionStatus.active
+                                        ? (currentFlag == RaceFlag.checkered
+                                            ? Colors.white
+                                            : _getFlagColor(currentFlag))
+                                        : _getStatusColor(
+                                            displaySession?.status ??
+                                                SessionStatus.scheduled),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  _buildActionButton(
+                                      'GREEN',
+                                      Icons.flag,
+                                      SpeedDataTheme.flagGreen,
+                                      () => _updateFlag(RaceFlag.green,
+                                          session: displaySession,
+                                          currentEvent: eventData),
+                                      isActive: displaySession?.status ==
+                                              SessionStatus.active &&
+                                          currentFlag == RaceFlag.green),
+                                  _buildActionButton(
+                                      'SC',
+                                      Icons.flag,
+                                      SpeedDataTheme.flagYellow,
+                                      () => _updateFlag(RaceFlag.yellow,
+                                          session: displaySession,
+                                          currentEvent: eventData),
+                                      isActive: displaySession?.status ==
+                                              SessionStatus.active &&
+                                          currentFlag == RaceFlag.yellow),
+                                  _buildActionButton(
+                                      'RED',
+                                      Icons.flag,
+                                      SpeedDataTheme.flagRed,
+                                      () => _updateFlag(RaceFlag.red,
+                                          session: displaySession,
+                                          currentEvent: eventData),
+                                      isActive: displaySession?.status ==
+                                              SessionStatus.active &&
+                                          currentFlag == RaceFlag.red),
+                                  _buildActionButton(
+                                      'FINISH',
+                                      Icons.flag,
+                                      Colors.white,
+                                      () => _updateFlag(RaceFlag.checkered,
+                                          session: displaySession,
+                                          currentEvent: eventData),
+                                      textColor: Colors.black,
+                                      isActive: displaySession?.status ==
+                                              SessionStatus.active &&
+                                          currentFlag == RaceFlag.checkered),
+                                  const SizedBox(width: 8),
+                                  _buildActionButton('STOP', Icons.stop,
+                                      Colors.grey.shade800, () {},
+                                      isOutlined: true),
+                                ],
+                              ),
+                            ],
+                          ),
+                          const SizedBox(width: 24),
+                          if (displaySession != null)
+                            Row(
+                              children: [
+                                _buildInfoItem('Duration',
+                                    '${displaySession.durationMinutes} min'),
+                                const SizedBox(width: 16),
+                                _buildInfoItem('Laps',
+                                    '${displaySession.totalLaps ?? "-"}'),
+                                const SizedBox(width: 16),
+                                _buildInfoItem(
+                                    'Start', displaySession.startMethod),
+                                const SizedBox(width: 8),
+                                IconButton(
+                                  icon: const Icon(Icons.edit,
+                                      size: 16,
+                                      color: SpeedDataTheme.textSecondary),
+                                  onPressed: () async {
+                                    await Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) =>
+                                            SessionSettingsScreen(
+                                          session: displaySession!,
+                                          onSave: (updatedSession) {
+                                            _updateSessionStatus(
+                                                updatedSession, eventData);
+                                          },
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  tooltip: 'Edit Session Settings',
+                                ),
                               ],
                             ),
+                          const Spacer(),
+                          // Session Timer
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 8),
+                            child: displaySession != null
+                                ? StreamBuilder<List<PassingModel>>(
+                                    stream: _firestoreService
+                                        .getPassingsStream(eventData.trackId),
+                                    builder: (context, psnaps) {
+                                      int maxLap = 0;
+                                      if (psnaps.hasData) {
+                                        for (var p in psnaps.data!) {
+                                          if (p.participantUid != 'SYSTEM' &&
+                                              p.lapNumber > maxLap) {
+                                            maxLap = p.lapNumber;
+                                          }
+                                        }
+                                      }
+                                      return SessionClock(
+                                          session: displaySession!,
+                                          currentLeaderLap: maxLap);
+                                    })
+                                : const Text('00:00:00',
+                                    style: TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 24,
+                                        color: SpeedDataTheme.flagGreen)),
                           ),
                         ],
                       ),
                     ),
+                    const Divider(height: 1, color: SpeedDataTheme.borderColor),
+                    // Main Content Area...
+                    Expanded(
+                      child: StreamBuilder<List<Competitor>>(
+                        stream: _firestoreService
+                            .getCompetitorsStream(eventData.id),
+                        builder: (context, compSnapshot) {
+                          final competitors = compSnapshot.data ?? [];
+                          final compMap = {
+                            for (var competitor in competitors)
+                              if (competitor.uid.isNotEmpty)
+                                competitor.uid: competitor,
+                          };
+                          return FutureBuilder<Map<String, dynamic>?>(
+                            future:
+                                _firestoreService.getRace(eventData.trackId),
+                            builder: (context, trackSnapshot) {
+                              final checkpoints = trackSnapshot
+                                      .data?['checkpoints'] as List<dynamic>? ??
+                                  [];
+                              return Row(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  // Pane 1: Passings (Left)
+                                  Expanded(
+                                    flex: 3,
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          color: SpeedDataTheme.bgSurface,
+                                          child: const Text('Passings',
+                                              style: TextStyle(
+                                                  fontWeight: FontWeight.bold)),
+                                        ),
+                                        Expanded(
+                                          child: PassingsPanel(
+                                            raceId: eventData.trackId,
+                                            sessionId: displaySession?.id,
+                                            sessionType: displaySession?.type ??
+                                                SessionType.practice,
+                                            session: displaySession,
+                                            competitorsByUid: compMap,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const VerticalDivider(
+                                      width: 1,
+                                      color: SpeedDataTheme.borderColor),
+                                  // Pane 2: Results (Middle)
+                                  Expanded(
+                                    flex: 4,
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          color: SpeedDataTheme.bgSurface,
+                                          child: const Text('Results',
+                                              style: TextStyle(
+                                                  fontWeight: FontWeight.bold)),
+                                        ),
+                                        Expanded(
+                                          child: LeaderboardPanel(
+                                            raceId: eventData.trackId,
+                                            sessionId: displaySession?.id,
+                                            checkpoints: checkpoints,
+                                            sessionType: displaySession?.type ??
+                                                SessionType.race,
+                                            competitorsByUid: compMap,
+                                            session: displaySession,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const VerticalDivider(
+                                      width: 1,
+                                      color: SpeedDataTheme.borderColor),
+                                  // Pane 3: Visualizations (Right) - Track Chart & Sessions List
+                                  Expanded(
+                                    flex: 3,
+                                    child: Column(
+                                      children: [
+                                        // Track Chart
+                                        Expanded(
+                                          flex: 2,
+                                          child: Stack(
+                                            children: [
+                                              AdminMapView(
+                                                raceId: eventData.trackId,
+                                                eventId: eventData.id,
+                                                raceName: eventData.name,
+                                                sessionType:
+                                                    displaySession?.type ??
+                                                        SessionType.practice,
+                                              ),
+                                              const Positioned(
+                                                  top: 8,
+                                                  left: 8,
+                                                  child: Card(
+                                                      child: Padding(
+                                                          padding:
+                                                              EdgeInsets.all(
+                                                                  4.0),
+                                                          child: Text(
+                                                              'Track Chart',
+                                                              style: TextStyle(
+                                                                  fontSize:
+                                                                      10)))))
+                                            ],
+                                          ),
+                                        ),
+                                        const Divider(
+                                            height: 1,
+                                            color: SpeedDataTheme.borderColor),
+                                        // Sessions List (Bottom Right - traditionally helpful for quick switching)
+                                        Expanded(
+                                          flex: 1,
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.all(8),
+                                                color: SpeedDataTheme.bgSurface,
+                                                child: const Text(
+                                                    'Sessions (Click to Select)',
+                                                    style: TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.bold)),
+                                              ),
+                                              Expanded(
+                                                  child: _buildSessionsList(
+                                                      eventData,
+                                                      displaySession?.id)),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
                   ],
                 ),
-              ),
-            ],
-          ),
               );
             },
           ),
@@ -542,7 +705,9 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
 
   Widget _buildSessionsList(RaceEvent event, String? currentSessionId) {
     if (event.sessions.isEmpty) {
-      return const Center(child: Text('No sessions scheduled', style: TextStyle(color: SpeedDataTheme.textSecondary)));
+      return const Center(
+          child: Text('No sessions scheduled',
+              style: TextStyle(color: SpeedDataTheme.textSecondary)));
     }
 
     // Sort by scheduled time
@@ -551,13 +716,14 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
 
     return ListView.separated(
       itemCount: sortedSessions.length,
-      separatorBuilder: (context, index) => const Divider(height: 1, color: SpeedDataTheme.borderSubtle),
+      separatorBuilder: (context, index) =>
+          const Divider(height: 1, color: SpeedDataTheme.borderSubtle),
       itemBuilder: (context, index) {
         final session = sortedSessions[index];
         final isSelected = session.id == currentSessionId;
         final statusColor = _getStatusColor(session.status);
-        final timeString = '${session.scheduledTime.hour.toString().padLeft(2, '0')}:${session.scheduledTime.minute.toString().padLeft(2, '0')}';
-
+        final timeString =
+            '${session.scheduledTime.hour.toString().padLeft(2, '0')}:${session.scheduledTime.minute.toString().padLeft(2, '0')}';
 
         return InkWell(
           onTap: () {
@@ -566,35 +732,49 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
             });
           },
           child: Container(
-            color: isSelected ? SpeedDataTheme.accentPrimary.withOpacity(0.1) : null,
+            color: isSelected
+                ? SpeedDataTheme.accentPrimary.withOpacity(0.1)
+                : null,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Row(
               children: [
                 Container(
-                  width: 8, height: 8,
-                  decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
+                  width: 8,
+                  height: 8,
+                  decoration:
+                      BoxDecoration(color: statusColor, shape: BoxShape.circle),
                 ),
                 const SizedBox(width: 8),
-                Text(timeString, style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: SpeedDataTheme.textSecondary)),
+                Text(timeString,
+                    style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        color: SpeedDataTheme.textSecondary)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('${session.type.name.toUpperCase()} ${session.name.isNotEmpty ? "- ${session.name}" : ""}', 
+                      Text(
+                        '${session.type.name.toUpperCase()} ${session.name.isNotEmpty ? "- ${session.name}" : ""}',
                         style: TextStyle(
-                            fontWeight: FontWeight.bold, 
-                            color: isSelected ? SpeedDataTheme.accentPrimary : SpeedDataTheme.textPrimary,
-                            fontSize: 12
-                        ),
+                            fontWeight: FontWeight.bold,
+                            color: isSelected
+                                ? SpeedDataTheme.accentPrimary
+                                : SpeedDataTheme.textPrimary,
+                            fontSize: 12),
                         overflow: TextOverflow.ellipsis,
                       ),
-                      Text(session.status.name.toUpperCase(), style: const TextStyle(color: SpeedDataTheme.textSecondary, fontSize: 10)),
+                      Text(session.status.name.toUpperCase(),
+                          style: const TextStyle(
+                              color: SpeedDataTheme.textSecondary,
+                              fontSize: 10)),
                     ],
                   ),
                 ),
                 if (isSelected)
-                  const Icon(Icons.check, size: 16, color: SpeedDataTheme.accentPrimary)
+                  const Icon(Icons.check,
+                      size: 16, color: SpeedDataTheme.accentPrimary)
               ],
             ),
           ),
@@ -605,10 +785,14 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
 
   Color _getStatusColor(SessionStatus status) {
     switch (status) {
-      case SessionStatus.scheduled: return SpeedDataTheme.textSecondary;
-      case SessionStatus.active: return SpeedDataTheme.flagGreen;
-      case SessionStatus.finished: return SpeedDataTheme.textDisabled;
-      default: return SpeedDataTheme.textSecondary;
+      case SessionStatus.scheduled:
+        return SpeedDataTheme.textSecondary;
+      case SessionStatus.active:
+        return SpeedDataTheme.flagGreen;
+      case SessionStatus.finished:
+        return SpeedDataTheme.textDisabled;
+      default:
+        return SpeedDataTheme.textSecondary;
     }
   }
 
@@ -617,22 +801,46 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(label.toUpperCase(), style: const TextStyle(color: SpeedDataTheme.textSecondary, fontSize: 10, fontWeight: FontWeight.bold)),
+        Text(label.toUpperCase(),
+            style: const TextStyle(
+                color: SpeedDataTheme.textSecondary,
+                fontSize: 10,
+                fontWeight: FontWeight.bold)),
         const SizedBox(height: 2),
-        Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+        Text(value,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
       ],
     );
   }
 
-  Widget _buildActionButton(String label, IconData icon, Color color, VoidCallback onPressed, {Color textColor = Colors.white, bool isOutlined = false, bool isActive = false}) {
+  Widget _buildActionButton(
+      String label, IconData icon, Color color, VoidCallback onPressed,
+      {Color textColor = Colors.white,
+      bool isOutlined = false,
+      bool isActive = false}) {
     return ElevatedButton.icon(
       onPressed: onPressed,
-      icon: Icon(icon, color: isActive && !isOutlined ? (color == Colors.white ? Colors.black : Colors.white) : textColor, size: 18),
-      label: Text(label, style: TextStyle(color: isActive && !isOutlined ? (color == Colors.white ? Colors.black : Colors.white) : textColor, fontWeight: FontWeight.bold)),
+      icon: Icon(icon,
+          color: isActive && !isOutlined
+              ? (color == Colors.white ? Colors.black : Colors.white)
+              : textColor,
+          size: 18),
+      label: Text(label,
+          style: TextStyle(
+              color: isActive && !isOutlined
+                  ? (color == Colors.white ? Colors.black : Colors.white)
+                  : textColor,
+              fontWeight: FontWeight.bold)),
       style: ElevatedButton.styleFrom(
-        backgroundColor: isActive ? color : (isOutlined ? Colors.transparent : color.withOpacity(0.3)),
+        backgroundColor: isActive
+            ? color
+            : (isOutlined ? Colors.transparent : color.withOpacity(0.3)),
         foregroundColor: textColor,
-        side: BorderSide(color: isActive ? Colors.white : (isOutlined ? color : Colors.transparent), width: isActive ? 2 : 1),
+        side: BorderSide(
+            color: isActive
+                ? Colors.white
+                : (isOutlined ? color : Colors.transparent),
+            width: isActive ? 2 : 1),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
         elevation: isActive ? 8 : 0,
@@ -646,7 +854,8 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: SpeedDataTheme.bgElevated,
-        title: const Text('Manual Passing Entry', style: TextStyle(color: Colors.white)),
+        title: const Text('Manual Passing Entry',
+            style: TextStyle(color: Colors.white)),
         content: TextField(
           controller: carController,
           autofocus: true,
@@ -654,33 +863,39 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
           decoration: const InputDecoration(
             labelText: 'Car Number',
             labelStyle: TextStyle(color: SpeedDataTheme.textSecondary),
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: SpeedDataTheme.borderColor)),
+            enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: SpeedDataTheme.borderColor)),
           ),
           keyboardType: TextInputType.number,
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('CANCEL')),
           ElevatedButton(
             onPressed: () async {
               if (carController.text.isNotEmpty) {
-                 final passing = PassingModel(
-                   id: '',
-                   raceId: raceId,
-                   sessionId: sessionId,
-                   participantUid: 'MANUAL',
-                   driverName: 'MANUAL ENTRY',
-                   carNumber: carController.text,
-                   timestamp: DateTime.now(),
-                   checkpointIndex: 0, 
-                   lapNumber: 0,
-                   flags: ['manual'],
-                 );
-                 await _firestoreService.addPassing(passing);
-                 if (mounted) Navigator.pop(context);
+                final passing = PassingModel(
+                  id: '',
+                  raceId: raceId,
+                  sessionId: sessionId,
+                  participantUid: 'MANUAL',
+                  driverName: 'MANUAL ENTRY',
+                  carNumber: carController.text,
+                  timestamp: DateTime.now(),
+                  checkpointIndex: 0,
+                  lapNumber: 0,
+                  flags: ['manual'],
+                );
+                await _firestoreService.addPassing(passing);
+                if (mounted) Navigator.pop(context);
               }
             },
-            style: ElevatedButton.styleFrom(backgroundColor: SpeedDataTheme.flagGreen),
-            child: const Text('ADD PASSING', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: SpeedDataTheme.flagGreen),
+            child: const Text('ADD PASSING',
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -691,7 +906,8 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
 class SessionClock extends StatefulWidget {
   final RaceSession session;
   final int? currentLeaderLap; // Optional, for lap-based finish
-  const SessionClock({Key? key, required this.session, this.currentLeaderLap}) : super(key: key);
+  const SessionClock({Key? key, required this.session, this.currentLeaderLap})
+      : super(key: key);
 
   @override
   State<SessionClock> createState() => _SessionClockState();
@@ -700,6 +916,7 @@ class SessionClock extends StatefulWidget {
 class _SessionClockState extends State<SessionClock> {
   Timer? _timer;
   String _displayTime = '00:00:00';
+  bool _sessionFinished = false;
 
   @override
   void initState() {
@@ -710,7 +927,7 @@ class _SessionClockState extends State<SessionClock> {
   @override
   void didUpdateWidget(SessionClock oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session.status != widget.session.status || 
+    if (oldWidget.session.status != widget.session.status ||
         oldWidget.session.actualStartTime != widget.session.actualStartTime) {
       _startTimer();
     }
@@ -718,6 +935,10 @@ class _SessionClockState extends State<SessionClock> {
 
   void _startTimer() {
     _timer?.cancel();
+    if (widget.session.status == SessionStatus.finished) {
+      _updateTime();
+      return;
+    }
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) _updateTime();
     });
@@ -731,19 +952,36 @@ class _SessionClockState extends State<SessionClock> {
   }
 
   void _updateTime() {
-    if (widget.session.status == SessionStatus.scheduled || widget.session.actualStartTime == null) {
-      setState(() => _displayTime = '00:00:00');
+    if (widget.session.status == SessionStatus.scheduled ||
+        widget.session.actualStartTime == null) {
+      setState(() {
+        _displayTime = '00:00:00';
+        _sessionFinished = false;
+      });
       return;
     }
 
-    final now = DateTime.now();
-    final elapsed = now.difference(widget.session.actualStartTime!);
-    
+    final endTime = widget.session.status == SessionStatus.finished
+        ? widget.session.actualEndTime
+        : null;
+    final referenceTime = endTime ?? DateTime.now();
+    final elapsed = referenceTime.difference(widget.session.actualStartTime!);
+
     String elapsedStr = _formatShortDuration(elapsed);
     String remainingStr = '--:--:--';
 
-    if (widget.session.finishMode == 'Laps' && widget.session.totalLaps != null) {
-      final lapsLeft = widget.session.totalLaps! - (widget.currentLeaderLap ?? 0);
+    if (endTime != null) {
+      setState(() {
+        _displayTime = '$elapsedStr / ENCERRADA';
+        _sessionFinished = true;
+      });
+      return;
+    }
+
+    if (widget.session.finishMode == 'Laps' &&
+        widget.session.totalLaps != null) {
+      final lapsLeft =
+          widget.session.totalLaps! - (widget.currentLeaderLap ?? 0);
       remainingStr = lapsLeft > 0 ? '$lapsLeft LAPS LEFT' : 'FINAL LAP';
     } else {
       // Countdown logic
@@ -756,7 +994,10 @@ class _SessionClockState extends State<SessionClock> {
       }
     }
 
-    setState(() => _displayTime = '$elapsedStr / $remainingStr');
+    setState(() {
+      _displayTime = '$elapsedStr / $remainingStr';
+      _sessionFinished = false;
+    });
   }
 
   String _formatShortDuration(Duration d) {
@@ -781,7 +1022,11 @@ class _SessionClockState extends State<SessionClock> {
           crossAxisAlignment: CrossAxisAlignment.baseline,
           textBaseline: TextBaseline.alphabetic,
           children: [
-            const Text('ELAPSED: ', style: TextStyle(fontSize: 10, color: SpeedDataTheme.textSecondary, fontWeight: FontWeight.bold)),
+            const Text('ELAPSED: ',
+                style: TextStyle(
+                    fontSize: 10,
+                    color: SpeedDataTheme.textSecondary,
+                    fontWeight: FontWeight.bold)),
             Text(
               elapsed,
               style: const TextStyle(
@@ -799,16 +1044,24 @@ class _SessionClockState extends State<SessionClock> {
           textBaseline: TextBaseline.alphabetic,
           children: [
             Text(
-              remaining.contains('LAPS') ? 'LAPS: ' : 'REMAINING: ', 
-              style: const TextStyle(fontSize: 10, color: SpeedDataTheme.textSecondary, fontWeight: FontWeight.bold)
-            ),
+                _sessionFinished
+                    ? 'STATUS: '
+                    : (remaining.contains('LAPS') ? 'LAPS: ' : 'REMAINING: '),
+                style: const TextStyle(
+                    fontSize: 10,
+                    color: SpeedDataTheme.textSecondary,
+                    fontWeight: FontWeight.bold)),
             Text(
               remaining,
               style: TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                color: _displayTime.contains('OVER') ? SpeedDataTheme.flagRed : SpeedDataTheme.textSecondary,
+                color: _sessionFinished
+                    ? SpeedDataTheme.flagRed
+                    : _displayTime.contains('OVER')
+                        ? SpeedDataTheme.flagRed
+                        : SpeedDataTheme.textSecondary,
               ),
             ),
           ],

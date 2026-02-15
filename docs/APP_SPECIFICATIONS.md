@@ -331,6 +331,48 @@ UI StreamBuilders (atualização automática)
 
 ---
 
+## Atualizacoes Recentes (Implementado)
+
+### Piloto - Available Races / Eventos
+- **Card de evento ativo**: exibe evento registrado no periodo atual, nome do evento e pista. Quando ha sessao ativa, card fica verde (bandeira) e mostra CTA para abrir Live Timer.
+- **CTA destacado**: botao "GO TO LIVE TIMER" com alto contraste (texto na cor da bandeira, fundo claro).
+- **Texto em ingles**: mensagens do card e da lista de pistas em ingles.
+- **Proxima sessao**: mostra horario previsto de inicio (HH:mm).
+- **Practice tracks bloqueadas**: quando ha sessao ativa para o usuario, a lista de pistas de treino fica desabilitada e com aviso explicativo.
+- **Eventos (area nova)**: tela de eventos para piloto com "My events" e "Other events" e cronograma por evento em ordem cronologica.
+
+### Piloto - Live Timer
+- **Tres modos**: Simple (Best/Previous/Current), Classic (Current + Track Chart), Gauge (Gauge + Current).
+- **Status da sessao**: indicador reflete bandeira (verde/amarela/vermelha/quadriculada).
+- **Borda por bandeira**: borda do Live Timer acompanha a bandeira da sessao.
+- **Nome da sessao**: exibido no AppBar; nome do evento em label discreto.
+- **Best/Previous/Current**: calculados por passings da sessao atual; Best respeita tempo minimo (Minimum Lap Time) e validade.
+- **Current fluido**: cronometro atualizado em intervalos curtos para evitar saltos.
+- **Simulacao**: botao Start/Stop Simulation e controle de velocidade; simulacao envia telemetria para a sessao ativa.
+- **Sem START/FINISH**: removidos os botoes manuais de start/finish do Live Timer.
+
+### Telemetria (Piloto)
+- **Envio automatico em sessao ativa**: quando ha sessao ativa, GPS fica capturando mesmo fora do Live Timer.
+- **Simulacao persistente**: simulacao continua mesmo ao sair da tela Live Timer.
+- **Bloqueio de envio real durante simulacao**: enquanto simula, nao envia dados reais.
+- **TelemetryService singleton**: centraliza estado e evita duplicidade de streams.
+
+### Admin - Timing / Results / Passings / Track Chart
+- **Results**: mostra resultado da sessao (treino/qualificacao por melhor tempo valido; corrida por numero de voltas).
+- **Best/Last/Total/Laps**: calculados por passings; Total = tempo entre primeira e ultima passagem.
+- **Best mostra numero da volta**: formato "tempo (volta)".
+- **Min lap time**: voltas abaixo do minimo sao invalidas para resultado.
+- **Passings com cores/icone**:
+  - Roxo = melhor volta geral, Verde = melhor volta pessoal.
+  - Vermelho = violacao de tempo minimo.
+  - Icone relogio = manual; icone lampada/pin = fotocelula sem transponder.
+  - X vermelha = deletada (linha cinza, texto vermelho).
+  - Simbolo de proibido = volta invalidada (conta volta, nao recorde).
+- **Passings ordenado por time**: mistura bandeiras e competidores por timestamp.
+- **Track Chart admin**: posicoes atualizam direto (sem interpolacao) para evitar bolinha fora da pista.
+
+---
+
 ## Estrutura do Firestore
 
 ```

@@ -48,7 +48,6 @@ class PassingModel {
 
   factory PassingModel.fromMap(String id, Map<String, dynamic> map) {
     // Debug: print raw data to see what we're receiving
-    print('DEBUG [PassingModel]: Raw data = $map');
     
     return PassingModel(
       id: id,

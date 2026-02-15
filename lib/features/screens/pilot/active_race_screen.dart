@@ -6,22 +6,29 @@ import 'package:speed_data/features/services/telemetry_service.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/utils/map_utils.dart';
+import 'package:speed_data/features/widgets/track_shape_widget.dart';
 
 class ActiveRaceScreen extends StatefulWidget {
   final String raceId;
   final String userId;
   final String raceName;
+  final String? eventId;
 
   const ActiveRaceScreen({
     Key? key,
     required this.raceId,
     required this.userId,
     required this.raceName,
+    this.eventId,
   }) : super(key: key);
 
   @override
   State<ActiveRaceScreen> createState() => _ActiveRaceScreenState();
 }
+
+enum LiveTimerMode { simple, classic, gauge }
+
+enum GaugeType { speed, gps }
 
 class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   GoogleMapController? _mapController;
@@ -32,6 +39,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
   LatLng? _startLocation;
   Set<Polyline> _polylines = {};
+  List<LatLng> _routePath = [];
+  List<Map<String, dynamic>> _checkpoints = [];
   Color _userColor = Colors.blue; // Default
 
   // Auto-sync & Flag state
@@ -39,78 +48,77 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   RaceSession? _activeSession;
   StreamSubscription? _statusSubscription;
   Color _sessionBackgroundColor = Colors.black;
+  LiveTimerMode _mode = LiveTimerMode.simple;
+  GaugeType _gaugeType = GaugeType.speed;
+  Timer? _uiTimer;
+  DateTime _uiNow = DateTime.now();
+
 
   @override
   void initState() {
     super.initState();
-    _telemetryService = TelemetryService();
-    // Start GPS immediately but disable cloud sync
-    _telemetryService.enableSendDataToCloud = false;
-
-    // Use post-frame callback to ensure context is ready if needed,
-    // though startRecording handles mostly logic.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _telemetryService.startRecording(widget.raceId, widget.userId);
-    });
+    _telemetryService = TelemetryService.instance;
 
     _loadRaceDetails();
+    _startUiTimer();
   }
 
   @override
   void dispose() {
-    // Ensure we stop recording and dispose the service
-    _telemetryService.stopRecording();
-    _telemetryService.dispose();
     _statusSubscription?.cancel(); // Cancel subscription on dispose
+    _uiTimer?.cancel();
     super.dispose();
+  }
+
+  void _startUiTimer() {
+    _uiTimer?.cancel();
+    _uiTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (!mounted) return;
+      setState(() {
+        _uiNow = DateTime.now();
+      });
+    });
   }
 
   Future<void> _loadRaceDetails() async {
     final stream = _firestoreService.getRaceStream(widget.raceId);
-    
-    // Auto-discover event for this track
-    print('DEBUG [ActiveRace]: Looking for active event on track: ${widget.raceId}');
-    _firestoreService.getActiveEventForTrack(widget.raceId).then((event) {
-      if (event == null) {
-        print('DEBUG [ActiveRace]: No active event found for track ${widget.raceId}');
-        return;
-      }
-      
-      if (mounted) {
-        print('DEBUG [ActiveRace]: Found event "${event.name}" (${event.id})');
-        setState(() => _currentEventId = event.id);
-        
-        // Listen to active session
-        _statusSubscription?.cancel();
-        _statusSubscription = _firestoreService.getEventActiveSessionStream(event.id).listen((session) {
-          if (mounted) {
-            if (session != null) {
-              print('DEBUG [ActiveRace]: Active session detected: ${session.name} | Status: ${session.status.name} | Flag: ${session.currentFlag.name}');
-            } else {
-              print('DEBUG [ActiveRace]: No active session in event');
-            }
-            
-            setState(() {
-              _activeSession = session;
-              if (session != null) {
-                // Sync telemetry with active session
-                _telemetryService.setSessionId(session.id);
-                _telemetryService.enableSendDataToCloud = true;
-                
-                // Update UI Color
-                _sessionBackgroundColor = _getFlagColor(session.currentFlag);
-                print('DEBUG [ActiveRace]: Background color updated to ${session.currentFlag.name}');
-              } else {
-                _telemetryService.enableSendDataToCloud = false;
-                _sessionBackgroundColor = Colors.black;
+
+    Future<void> attachEventListeners(String eventId) async {
+      if (!mounted) return;
+      setState(() => _currentEventId = eventId);
+
+      _statusSubscription?.cancel();
+      _statusSubscription = _firestoreService
+          .getEventActiveSessionStream(eventId)
+          .listen((session) {
+        if (!mounted) return;
+        setState(() {
+          _activeSession = session;
+          if (session != null) {
+            _telemetryService.setSessionId(session.id);
+            if (!_telemetryService.isSimulating) {
+              _telemetryService.enableSendDataToCloud = true;
+              if (!_telemetryService.isRecording) {
+                _telemetryService.startRecording(widget.raceId, widget.userId);
               }
-            });
+            }
+            _sessionBackgroundColor = _getFlagColor(session.currentFlag);
+          } else {
+            _telemetryService.enableSendDataToCloud = false;
+            _sessionBackgroundColor = Colors.black;
           }
         });
-      }
-    }).catchError((e) {
-      print('DEBUG [ActiveRace]: Error finding event: $e');
-    });
+      });
+    }
+
+    if (widget.eventId != null && widget.eventId!.isNotEmpty) {
+      await attachEventListeners(widget.eventId!);
+    } else {
+      _firestoreService.getActiveEventForTrack(widget.raceId).then((event) {
+        if (event == null) return;
+        attachEventListeners(event.id);
+      }).catchError((_) {});
+    }
 
     final snapshot = await stream.first;
 
@@ -139,12 +147,13 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       if (checkpoints != null) {
         final markers = <Marker>{};
         final straightRoutePoints = <LatLng>[];
+        _checkpoints = checkpoints
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
 
         if (checkpoints.isNotEmpty) {
           // Pass checkpoints to telemetry service for cloud function processing
-          _telemetryService.setCheckpoints(checkpoints
-              .map((e) => Map<String, dynamic>.from(e as Map))
-              .toList());
+          _telemetryService.setCheckpoints(_checkpoints);
 
           final firstPoint = checkpoints[0];
           final fLat = (firstPoint['lat'] as num).toDouble();
@@ -221,6 +230,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
           setState(() {
             _raceMarkers = markers;
             _polylines = polylines;
+            _routePath = finalRoutePoints;
           });
         }
       }
@@ -251,6 +261,277 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     }
   }
 
+  String _formatLapTime(int ms) {
+    final minutes = (ms ~/ 60000).toString().padLeft(2, '0');
+    final seconds = ((ms % 60000) ~/ 1000).toString().padLeft(2, '0');
+    final milliseconds = (ms % 1000).toString().padLeft(3, '0');
+    return '$minutes:$seconds.$milliseconds';
+  }
+
+  String _sessionDisplayName(RaceSession session) {
+    if (session.name.isNotEmpty) return session.name;
+    return session.type.name.toUpperCase();
+  }
+
+  int? _extractLapStartTimestamp(Map<String, dynamic> lapData) {
+    final points = lapData['points'];
+    if (points is Map && points['cp_0'] is Map) {
+      final cp0 = points['cp_0'] as Map;
+      final ts = cp0['timestamp'];
+      if (ts is int) return ts;
+      if (ts is num) return ts.toInt();
+    }
+    return null;
+  }
+
+  Future<void> _startSimulation() async {
+    if (_activeSession == null || _activeSession!.id.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No active session to simulate')));
+      return;
+    }
+    if (_routePath.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No route path available')));
+      return;
+    }
+    await _telemetryService.startSimulation(
+      routePath: _routePath,
+      checkpoints: _checkpoints,
+      raceId: widget.raceId,
+      userId: widget.userId,
+      sessionId: _activeSession!.id,
+    );
+  }
+
+  Future<void> _stopSimulation() async {
+    await _telemetryService.stopSimulation();
+  }
+
+  Widget _buildModeToggle() {
+    Color colorFor(LiveTimerMode mode) =>
+        _mode == mode ? Colors.white : Colors.white70;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        IconButton(
+          tooltip: 'Simple Mode',
+          icon: Icon(Icons.timer, color: colorFor(LiveTimerMode.simple)),
+          onPressed: () => setState(() => _mode = LiveTimerMode.simple),
+        ),
+        IconButton(
+          tooltip: 'Classic Mode',
+          icon: Icon(Icons.map, color: colorFor(LiveTimerMode.classic)),
+          onPressed: () => setState(() => _mode = LiveTimerMode.classic),
+        ),
+        IconButton(
+          tooltip: 'Gauge Mode',
+          icon: Icon(Icons.speed, color: colorFor(LiveTimerMode.gauge)),
+          onPressed: () => setState(() => _mode = LiveTimerMode.gauge),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildGauge({
+    required String label,
+    required double value,
+    required double maxValue,
+    required Color color,
+  }) {
+    final normalized = (value / maxValue).clamp(0.0, 1.0);
+    return SizedBox(
+      width: 220,
+      height: 220,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          CircularProgressIndicator(
+            value: normalized,
+            strokeWidth: 16,
+            backgroundColor: Colors.white10,
+            color: color,
+          ),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(label.toUpperCase(),
+                  style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(
+                value.toStringAsFixed(1),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 40,
+                    fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrackChart({
+    required TelemetryService telemetry,
+  }) {
+    final checkpoints = _checkpoints
+        .map((p) => LatLng(
+              (p['lat'] as num).toDouble(),
+              (p['lng'] as num).toDouble(),
+            ))
+        .toList();
+    final route = _routePath;
+
+    LatLng? pilotPosition;
+    if (_telemetryService.isSimulating &&
+        _telemetryService.simulatedPosition != null) {
+      pilotPosition = _telemetryService.simulatedPosition;
+    } else if (telemetry.currentPosition != null) {
+      pilotPosition = LatLng(
+        telemetry.currentPosition!.latitude,
+        telemetry.currentPosition!.longitude,
+      );
+    }
+
+    final pilots = pilotPosition == null
+        ? <PilotPosition>[]
+        : [
+            PilotPosition(
+              uid: widget.userId,
+              location: pilotPosition,
+              color: _userColor,
+              label: 'YOU',
+            )
+          ];
+
+    return Container(
+      color: Colors.black,
+      width: double.infinity,
+      height: double.infinity,
+      padding: const EdgeInsets.all(12),
+      child: CustomPaint(
+        painter: TrackPainter(
+          checkpoints: checkpoints,
+          routePath: route,
+          pilotPositions: pilots,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSimpleMode({
+    required String best,
+    required String previous,
+    required String current,
+  }) {
+    Widget row(String title, String value, Color color) {
+      return Expanded(
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+          color: color,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              Text(value,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 56,
+                      fontWeight: FontWeight.bold,
+                      fontFamily: 'monospace')),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        row('Best', best, const Color(0xFF0D2BFF)),
+        row('Previous', previous, const Color(0xFF0D2BFF)),
+        row('Current', current, const Color(0xFF0D2BFF)),
+      ],
+    );
+  }
+
+  Widget _buildClassicMode({
+    required String currentLap,
+    required TelemetryService telemetry,
+  }) {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          width: double.infinity,
+          color: Colors.black,
+          child: Text(
+            currentLap,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 48,
+                fontWeight: FontWeight.bold,
+                fontFamily: 'monospace'),
+          ),
+        ),
+        Expanded(
+          child: _buildTrackChart(telemetry: telemetry),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildGaugeMode({
+    required String currentLap,
+    required TelemetryService telemetry,
+  }) {
+    final speedKmh = _telemetryService.isSimulating
+        ? _telemetryService.simulationSpeed * 3.6
+        : (telemetry.currentPosition?.speed ?? 0) * 3.6;
+    final gpsHz = telemetry.currentFrequency;
+    final isSpeed = _gaugeType == GaugeType.speed;
+    final gaugeValue = isSpeed ? speedKmh : gpsHz;
+    final gaugeLabel = isSpeed ? 'Speed (km/h)' : 'GPS (Hz)';
+    final gaugeMax = isSpeed ? 200.0 : 5.0;
+
+    return Column(
+      children: [
+        const SizedBox(height: 12),
+        GestureDetector(
+          onTap: () => setState(() {
+            _gaugeType = isSpeed ? GaugeType.gps : GaugeType.speed;
+          }),
+          child: _buildGauge(
+            label: gaugeLabel,
+            value: gaugeValue,
+            maxValue: gaugeMax,
+            color: Colors.greenAccent,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          currentLap,
+          style: const TextStyle(
+              color: Colors.white,
+              fontSize: 40,
+              fontWeight: FontWeight.bold,
+              fontFamily: 'monospace'),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider.value(
@@ -258,7 +539,22 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       child: Scaffold(
         backgroundColor: _sessionBackgroundColor,
         appBar: AppBar(
-          title: Text('Race: ${widget.raceName}'),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Live Timer${_activeSession != null ? ' - ${_sessionDisplayName(_activeSession!)}' : ''}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              Text(
+                widget.raceName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Colors.white70),
+              ),
+            ],
+          ),
           backgroundColor: Colors.black,
           foregroundColor: Colors.white,
         ),
@@ -275,117 +571,224 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
               _isInitLocationSet = true;
             }
 
-            return Column(
-              children: [
-                // Info Panel - Now uses session flag color
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  color: _sessionBackgroundColor,
-                  width: double.infinity,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildInfoMetric('Speed',
-                          '${((telemetry.currentPosition?.speed ?? 0) * 3.6).toStringAsFixed(1)} km/h'),
-                      _buildInfoMetric(
-                        'GPS Hz',
-                        '${telemetry.currentFrequency.toStringAsFixed(1)} Hz',
-                        valueColor: _getGpsColor(telemetry.currentFrequency),
-                      ),
-                      _buildStatusIndicator(telemetry.enableSendDataToCloud),
-                      _buildDeleteButton(!telemetry.enableSendDataToCloud,
-                          telemetry.currentSessionId!),
-                    ],
-                  ),
-                ),
+            final sessionId = _activeSession?.id;
+            final lapsStream = sessionId == null
+                ? null
+                : _firestoreService.getLaps(
+                    widget.raceId,
+                    widget.userId,
+                  );
 
-                // Map
-                Expanded(
-                  child: Stack(
-                    children: [
-                      GoogleMap(
-                        initialCameraPosition: const CameraPosition(
-                          target: LatLng(
-                              -15.793889, -47.882778), // Default before GPS
-                          zoom: 16,
+            final borderColor = _activeSession != null
+                ? _getFlagColor(_activeSession!.currentFlag)
+                : Colors.transparent;
+
+            return Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: borderColor, width: 4),
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    color: Colors.black,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildStatusIndicator(
+                          telemetry.enableSendDataToCloud,
+                          isSimulating: _telemetryService.isSimulating,
+                          flag: _activeSession?.currentFlag,
                         ),
-                        onMapCreated: _onMapCreated,
-                        myLocationEnabled: true,
-                        myLocationButtonEnabled: true,
-                        markers: {
-                          ..._raceMarkers,
-                          if (telemetry.currentPosition != null)
-                            Marker(
-                              markerId: const MarkerId('my_position'),
-                              position: LatLng(
-                                telemetry.currentPosition!.latitude,
-                                telemetry.currentPosition!.longitude,
-                              ),
-                              icon: BitmapDescriptor.defaultMarkerWithHue(
-                                HSVColor.fromColor(_userColor).hue,
-                              ),
-                              zIndex: 10,
+                        _buildModeToggle(),
+                        _buildInfoMetric(
+                          'Speed',
+                          _telemetryService.isSimulating
+                              ? '${(_telemetryService.simulationSpeed * 3.6).toStringAsFixed(1)} km/h'
+                              : '${((telemetry.currentPosition?.speed ?? 0) * 3.6).toStringAsFixed(1)} km/h',
+                          valueColor: Colors.white,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: sessionId == null
+                        ? const Center(
+                            child: Text(
+                              'Aguardando sessao ativa...',
+                              style: TextStyle(color: Colors.white70),
                             ),
-                        },
-                        polylines: _polylines,
-                      ),
-                    ],
-                  ),
-                ),
+                          )
+                        : StreamBuilder(
+                            stream: lapsStream,
+                            builder: (context, snapshot) {
+                              if (!snapshot.hasData) {
+                                return const Center(
+                                    child: CircularProgressIndicator());
+                              }
 
-                // Controls - Also uses session flag color
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  color: _sessionBackgroundColor.withOpacity(0.9),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: telemetry.enableSendDataToCloud
-                              ? null
-                              : () {
-                                  telemetry.enableSendDataToCloud = true;
-                                  // Force rebuild to update button state since setter doesn't notify
-                                  setState(() {});
-                                },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            disabledBackgroundColor: Colors.grey[800],
-                            disabledForegroundColor: Colors.grey,
+                              final docs = snapshot.data!.docs;
+                              int? currentLapStartTs;
+                              final completedLapTimes = <int>[];
+                              final sessionStartMs = _activeSession
+                                  ?.actualStartTime?.millisecondsSinceEpoch;
+                              final sessionEndMs = _activeSession
+                                  ?.actualEndTime?.millisecondsSinceEpoch;
+                              final minLapMs =
+                                  (_activeSession?.minLapTimeSeconds ?? 0) *
+                                      1000;
+
+                              bool inSessionWindow(int? lapStartMs) {
+                                if (lapStartMs == null)
+                                  return sessionStartMs == null;
+                                if (sessionStartMs != null &&
+                                    lapStartMs < sessionStartMs) {
+                                  return false;
+                                }
+                                if (sessionEndMs != null &&
+                                    lapStartMs > sessionEndMs) {
+                                  return false;
+                                }
+                                return true;
+                              }
+
+                              for (var i = 0; i < docs.length; i++) {
+                                final data =
+                                    docs[i].data() as Map<String, dynamic>;
+                                final lapStartTs =
+                                    _extractLapStartTimestamp(data);
+                                if (!inSessionWindow(lapStartTs)) {
+                                  continue;
+                                }
+                                if (currentLapStartTs == null) {
+                                  currentLapStartTs = lapStartTs;
+                                }
+                                final t = data['totalLapTime'];
+                                int? lapMs;
+                                if (t is int) {
+                                  lapMs = t;
+                                } else if (t is num) {
+                                  lapMs = t.toInt();
+                                }
+                                if (lapMs != null &&
+                                    (minLapMs == 0 || lapMs >= minLapMs)) {
+                                  completedLapTimes.add(lapMs);
+                                }
+                              }
+
+                              int? bestLapMs;
+                              int? previousLapMs;
+                              if (completedLapTimes.isNotEmpty) {
+                                previousLapMs = completedLapTimes.first;
+                                bestLapMs = completedLapTimes
+                                    .reduce((a, b) => a < b ? a : b);
+                              }
+
+                              int? currentLapMs;
+                              if (currentLapStartTs != null) {
+                                final nowMs = _uiNow.millisecondsSinceEpoch;
+                                final diff = nowMs - currentLapStartTs!;
+                                currentLapMs = diff > 0 ? diff : 0;
+                              }
+
+                              final best = bestLapMs != null
+                                  ? _formatLapTime(bestLapMs)
+                                  : '--:--.---';
+                              final previous = previousLapMs != null
+                                  ? _formatLapTime(previousLapMs)
+                                  : '--:--.---';
+                              final current = currentLapMs != null
+                                  ? _formatLapTime(currentLapMs)
+                                  : '--:--.---';
+
+                              if (_mode == LiveTimerMode.simple) {
+                                return _buildSimpleMode(
+                                  best: best,
+                                  previous: previous,
+                                  current: current,
+                                );
+                              }
+
+                              if (_mode == LiveTimerMode.classic) {
+                                return _buildClassicMode(
+                                  currentLap: current,
+                                  telemetry: telemetry,
+                                );
+                              }
+
+                              return _buildGaugeMode(
+                                currentLap: current,
+                                telemetry: telemetry,
+                              );
+                            },
                           ),
-                          child: const Text('START'),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: !telemetry.enableSendDataToCloud
-                              ? null
-                              : () async {
-                                  await telemetry.stopRecording();
-                                  if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                          content: Text(
-                                              'Race Finalized & Uploading...')),
-                                    );
-                                    Navigator.of(context).pop(); // Go back
-                                  }
-                                },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            disabledBackgroundColor: Colors.grey[800],
-                            disabledForegroundColor: Colors.grey,
-                          ),
-                          child: const Text('FINISH RACE'),
-                        ),
-                      ),
-                    ],
                   ),
-                ),
-              ],
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    color: Colors.black,
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            const Text('Sim speed',
+                                style: TextStyle(color: Colors.white70)),
+                            Expanded(
+                              child: Slider(
+                                value: _telemetryService.simulationSpeed,
+                                min: 1,
+                                max: 100,
+                                onChanged: (val) {
+                                  _telemetryService.setSimulationSpeed(val);
+                                },
+                              ),
+                            ),
+                            Text(
+                                '${_telemetryService.simulationSpeed.toStringAsFixed(1)} m/s',
+                                style: const TextStyle(color: Colors.white70)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: _telemetryService.isSimulating
+                                    ? null
+                                    : _startSimulation,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green,
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 12),
+                                  disabledBackgroundColor: Colors.grey[800],
+                                  disabledForegroundColor: Colors.grey,
+                                ),
+                                child: const Text('START SIMULATION'),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: !_telemetryService.isSimulating
+                                    ? null
+                                    : _stopSimulation,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red,
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 12),
+                                  disabledBackgroundColor: Colors.grey[800],
+                                  disabledForegroundColor: Colors.grey,
+                                ),
+                                child: const Text('STOP'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             );
           },
         ),
@@ -466,29 +869,57 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     );
   }
 
-  Widget _buildStatusIndicator(bool isSendingToCloud) {
-    // If we're not sending to cloud, but GPS is running (which it generally is), show READY/GPS ON
-    // If sending to cloud, show LIVE
-    final isLive = isSendingToCloud;
+  Widget _buildStatusIndicator(
+    bool isSendingToCloud, {
+    bool isSimulating = false,
+    RaceFlag? flag,
+  }) {
+    final isLive = isSendingToCloud || isSimulating;
+    String label;
+    Color color;
+
+    if (flag != null) {
+      switch (flag) {
+        case RaceFlag.green:
+          label = 'GREEN';
+          color = Colors.green;
+          break;
+        case RaceFlag.yellow:
+          label = 'YELLOW';
+          color = Colors.orange;
+          break;
+        case RaceFlag.red:
+          label = 'RED';
+          color = Colors.red;
+          break;
+        case RaceFlag.checkered:
+          label = 'CHECKERED';
+          color = Colors.white;
+          break;
+      }
+    } else if (isLive) {
+      label = 'LIVE';
+      color = Colors.green;
+    } else {
+      label = 'READY';
+      color = Colors.orange;
+    }
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: isLive
-            ? Colors.green.withOpacity(0.2)
-            : Colors.orange.withOpacity(0.2),
+        color: color.withOpacity(0.2),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: isLive ? Colors.green : Colors.orange),
+        border: Border.all(color: color),
       ),
       child: Row(
         children: [
-          Icon(Icons.circle,
-              size: 10, color: isLive ? Colors.green : Colors.orange),
+          Icon(Icons.circle, size: 10, color: color),
           const SizedBox(width: 8),
           Text(
-            isLive ? 'LIVE' : 'JÁ NO GRID',
+            label,
             style: TextStyle(
-              color: isLive ? Colors.green : Colors.orange,
+              color: color,
               fontWeight: FontWeight.bold,
             ),
           ),

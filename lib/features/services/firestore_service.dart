@@ -31,17 +31,18 @@ class FirestoreService {
       'role': role.toStringValue(),
     };
     if (email != null) data['email'] = email;
-    
+
     await _db.collection('users').doc(uid).set(data, SetOptions(merge: true));
   }
 
-  Future<void> updatePilotProfile(String uid, String name, int color, {String? email}) async {
+  Future<void> updatePilotProfile(String uid, String name, int color,
+      {String? email}) async {
     final data = {
       'name': name,
       'color': color,
     };
     if (email != null) data['email'] = email;
-    
+
     await _db.collection('users').doc(uid).set(data, SetOptions(merge: true));
   }
 
@@ -49,26 +50,27 @@ class FirestoreService {
     try {
       final trimmedEmail = email.trim();
       final variants = [trimmedEmail, trimmedEmail.toLowerCase()];
-      
+
       for (var variant in variants.toSet()) {
         final snapshot = await _db
             .collection('users')
             .where('email', isEqualTo: variant)
             .limit(1)
             .get();
-        
+
         if (snapshot.docs.isNotEmpty) {
           final doc = snapshot.docs.first;
           final data = doc.data();
           data['uid'] = doc.id;
-          
+
           // Normalize name/display_name
           if (data.containsKey('display_name') && !data.containsKey('name')) {
             data['name'] = data['display_name'];
-          } else if (data.containsKey('name') && !data.containsKey('display_name')) {
+          } else if (data.containsKey('name') &&
+              !data.containsKey('display_name')) {
             data['display_name'] = data['name'];
           }
-          
+
           return data;
         }
       }
@@ -79,7 +81,7 @@ class FirestoreService {
   }
 
   // --- Races ---
-  
+
   // --- Events ---
 
   Future<String> createEvent(RaceEvent event) async {
@@ -98,14 +100,13 @@ class FirestoreService {
       query = query.where('organizer_id', isEqualTo: organizerId);
     }
 
-    return query
-        .orderBy('date', descending: false)
-        .snapshots()
-        .map((snapshot) => snapshot.docs
-            .map((doc) => RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>))
+    return query.orderBy('date', descending: false).snapshots().map(
+        (snapshot) => snapshot.docs
+            .map((doc) =>
+                RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>))
             .toList());
   }
-  
+
   Stream<RaceEvent> getEventStream(String eventId) {
     return _db.collection('events').doc(eventId).snapshots().map((doc) {
       if (doc.exists && doc.data() != null) {
@@ -138,7 +139,7 @@ class FirestoreService {
     try {
       final now = DateTime.now();
       final startOfDay = DateTime(now.year, now.month, now.day);
-      
+
       final snapshot = await _db
           .collection('events')
           .where('track_id', isEqualTo: trackId)
@@ -147,7 +148,8 @@ class FirestoreService {
 
       if (snapshot.docs.isNotEmpty) {
         // Return the first one or logic to find the 'most active'
-        return RaceEvent.fromMap(snapshot.docs.first.id, snapshot.docs.first.data());
+        return RaceEvent.fromMap(
+            snapshot.docs.first.id, snapshot.docs.first.data());
       }
     } catch (e) {
       print('Error getting active event for track: $e');
@@ -178,9 +180,11 @@ class FirestoreService {
   Stream<RaceSession?> getEventActiveSessionStream(String eventId) {
     return _db.collection('events').doc(eventId).snapshots().map((doc) {
       if (doc.exists && doc.data() != null) {
-        final event = RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>);
+        final event =
+            RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>);
         try {
-          return event.sessions.firstWhere((s) => s.status == SessionStatus.active);
+          return event.sessions
+              .firstWhere((s) => s.status == SessionStatus.active);
         } catch (_) {
           return null;
         }
@@ -295,6 +299,31 @@ class FirestoreService {
       print('Error getting user profile: $e');
     }
     return null;
+  }
+
+  Future<bool> isUserRegisteredInEvent(String eventId, String uid) async {
+    try {
+      final uidSnapshot = await _db
+          .collection('events')
+          .doc(eventId)
+          .collection('competitors')
+          .where('uid', isEqualTo: uid)
+          .limit(1)
+          .get();
+      if (uidSnapshot.docs.isNotEmpty) return true;
+
+      final userIdSnapshot = await _db
+          .collection('events')
+          .doc(eventId)
+          .collection('competitors')
+          .where('user_id', isEqualTo: uid)
+          .limit(1)
+          .get();
+      return userIdSnapshot.docs.isNotEmpty;
+    } catch (e) {
+      print('Error checking registration: $e');
+      return false;
+    }
   }
 
   Future<void> joinRace(
@@ -433,7 +462,8 @@ class FirestoreService {
         .snapshots();
   }
 
-  Stream<QuerySnapshot> getLaps(String raceId, String uid, {String? sessionId}) {
+  Stream<QuerySnapshot> getLaps(String raceId, String uid,
+      {String? sessionId}) {
     if (sessionId != null) {
       return _db
           .collection('races')
@@ -527,7 +557,8 @@ class FirestoreService {
         .add(passing.toMap());
   }
 
-  Stream<List<PassingModel>> getPassingsStream(String raceId, {String? sessionId, RaceSession? session}) {
+  Stream<List<PassingModel>> getPassingsStream(String raceId,
+      {String? sessionId, RaceSession? session}) {
     return _db
         .collection('races')
         .doc(raceId)
@@ -536,42 +567,49 @@ class FirestoreService {
         .limit(1000) // Increase limit since we filter in memory
         .snapshots()
         .map((snapshot) {
-          final allPassings = snapshot.docs
-            .map((doc) => PassingModel.fromMap(doc.id, doc.data() as Map<String, dynamic>))
-            .toList();
-          
-          // Filter by time window if session is provided
-          if (session != null && session.actualStartTime != null) {
-            print('DEBUG [Passings]: Filtering by time window - Start: ${session.actualStartTime}, End: ${session.actualEndTime}');
-            print('DEBUG [Passings]: Total passings before filter: ${allPassings.length}');
-            
-            final filtered = allPassings.where((p) {
-              // Include passings within the session time window
-              final passingTime = p.timestamp;
-              final startTime = session.actualStartTime!;
-              final endTime = session.actualEndTime ?? DateTime.now().add(const Duration(days: 1)); // If not ended, use future date
-              
-              final isInRange = passingTime.isAfter(startTime.subtract(const Duration(seconds: 1))) && 
-                     passingTime.isBefore(endTime.add(const Duration(seconds: 1)));
-              
-              if (isInRange) {
-                print('DEBUG [Passings]: Including passing at ${p.timestamp} for ${p.driverName}');
-              }
-              
-              return isInRange;
-            }).toList();
-            
-            print('DEBUG [Passings]: Total passings after filter: ${filtered.length}');
-            return filtered;
-          }
-          
-          // Fallback to session ID filtering (for backward compatibility)
-          if (sessionId != null) {
-            return allPassings.where((p) => p.sessionId == sessionId).toList();
-          }
-          
-          return allPassings;
-        });
+      final allPassings = snapshot.docs
+          .map((doc) =>
+              PassingModel.fromMap(doc.id, doc.data() as Map<String, dynamic>))
+          .toList();
+
+      // Normalize ordering in-memory in case Firestore has mixed timestamp types
+      // (e.g. int and Timestamp), which can otherwise group by type.
+      void sortByTime(List<PassingModel> list) {
+        list.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      }
+
+      // Filter by time window if session is provided
+      if (session != null && session.actualStartTime != null) {
+        final filtered = allPassings.where((p) {
+          // Include passings within the session time window
+          final passingTime = p.timestamp;
+          final startTime = session.actualStartTime!;
+          final endTime = session.actualEndTime ??
+              DateTime.now().add(
+                  const Duration(days: 1)); // If not ended, use future date
+
+          final isInRange = passingTime
+                  .isAfter(startTime.subtract(const Duration(seconds: 1))) &&
+              passingTime.isBefore(endTime.add(const Duration(seconds: 1)));
+
+          return isInRange;
+        }).toList();
+
+        sortByTime(filtered);
+        return filtered;
+      }
+
+      // Fallback to session ID filtering (for backward compatibility)
+      if (sessionId != null) {
+        final filtered =
+            allPassings.where((p) => p.sessionId == sessionId).toList();
+        sortByTime(filtered);
+        return filtered;
+      }
+
+      sortByTime(allPassings);
+      return allPassings;
+    });
   }
 
   Future<void> updatePassingFlag(

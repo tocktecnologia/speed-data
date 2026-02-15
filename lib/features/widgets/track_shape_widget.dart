@@ -1,27 +1,45 @@
-
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'dart:math';
 import 'dart:ui' as ui;
 
+class PilotPosition {
+  final String uid;
+  final LatLng location;
+  final Color color;
+  final String label;
+
+  const PilotPosition({
+    required this.uid,
+    required this.location,
+    required this.color,
+    required this.label,
+  });
+}
+
 class TrackPainter extends CustomPainter {
   final List<LatLng> checkpoints;
   final List<LatLng> routePath;
+  final List<PilotPosition> pilotPositions;
 
-  TrackPainter({required this.checkpoints, required this.routePath});
+  TrackPainter({
+    required this.checkpoints,
+    required this.routePath,
+    this.pilotPositions = const [],
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     if (checkpoints.isEmpty && routePath.isEmpty) return;
 
     final paint = Paint()
-      ..color = Colors.blue
-      ..strokeWidth = 4.0
+      ..color = Colors.blue.withOpacity(0.6)
+      ..strokeWidth = 3.0
       ..style = PaintingStyle.stroke;
 
     final pointPaint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 6.0
+      ..color = Colors.white.withOpacity(0.35)
+      ..strokeWidth = 4.0
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke; // Draw as points
 
@@ -49,17 +67,17 @@ class TrackPainter extends CustomPainter {
     // 2. Scale transform
     // Mercator projection approximation for small areas (simple linear scaling)
     // Invert Y because screen Y goes down, Latitude Y goes up
-    
+
     // Determine scale factor to fit within size - 2*padding
     final availableWidth = size.width - 2 * padding;
     final availableHeight = size.height - 2 * padding;
 
     final scaleX = availableWidth / lngRange;
     final scaleY = availableHeight / latRange;
-    
+
     // Use the smaller scale to maintain aspect ratio
     final scale = min(scaleX, scaleY);
-    
+
     // Center the track
     final plotWidth = lngRange * scale;
     final plotHeight = latRange * scale;
@@ -67,9 +85,9 @@ class TrackPainter extends CustomPainter {
     final startY = padding + (availableHeight - plotHeight) / 2;
 
     Offset toScreen(LatLng latLng) {
-       final x = (latLng.longitude - minLng) * scale + startX;
-       final y = (maxLat - latLng.latitude) * scale + startY; // Invert Y
-       return Offset(x, y);
+      final x = (latLng.longitude - minLng) * scale + startX;
+      final y = (maxLat - latLng.latitude) * scale + startY; // Invert Y
+      return Offset(x, y);
     }
 
     // 3. Draw Route Path
@@ -83,30 +101,48 @@ class TrackPainter extends CustomPainter {
       // We assume routePath draws the line.
       canvas.drawPath(path, paint);
     } else {
-       // Fallback to checkpoints if no route
-       if (checkpoints.isNotEmpty) {
-         final path = Path();
-          path.moveTo(toScreen(checkpoints[0]).dx, toScreen(checkpoints[0]).dy);
-          for (var i = 1; i < checkpoints.length; i++) {
-            path.lineTo(toScreen(checkpoints[i]).dx, toScreen(checkpoints[i]).dy);
-          }
-          path.close(); // Assume closed loop for checkpoints-only
-          canvas.drawPath(path, paint);
-       }
+      // Fallback to checkpoints if no route
+      if (checkpoints.isNotEmpty) {
+        final path = Path();
+        path.moveTo(toScreen(checkpoints[0]).dx, toScreen(checkpoints[0]).dy);
+        for (var i = 1; i < checkpoints.length; i++) {
+          path.lineTo(toScreen(checkpoints[i]).dx, toScreen(checkpoints[i]).dy);
+        }
+        path.close(); // Assume closed loop for checkpoints-only
+        canvas.drawPath(path, paint);
+      }
     }
 
     // 4. Draw Checkpoints
     for (var p in checkpoints) {
-       canvas.drawPoints(ui.PointMode.points, [toScreen(p)], pointPaint);
+      canvas.drawPoints(ui.PointMode.points, [toScreen(p)], pointPaint);
     }
-    
+
     // Start/Finish Line (First checkpoint)
     if (checkpoints.isNotEmpty) {
-       final start = toScreen(checkpoints.first);
-       final sfPaint = Paint()
-         ..color = Colors.green
-         ..strokeWidth = 6.0;
-       canvas.drawCircle(start, 4.0, sfPaint);
+      final start = toScreen(checkpoints.first);
+      final sfPaint = Paint()
+        ..color = Colors.green.withOpacity(0.6)
+        ..strokeWidth = 4.0;
+      canvas.drawCircle(start, 3.0, sfPaint);
+    }
+
+    if (pilotPositions.isNotEmpty) {
+      final pilotPaint = Paint()..style = PaintingStyle.fill;
+      for (var pilot in pilotPositions) {
+        final point = toScreen(pilot.location);
+        pilotPaint.color = pilot.color;
+        canvas.drawCircle(point, 9.0, pilotPaint);
+        final builder = TextPainter(
+          text: TextSpan(
+            text: pilot.label,
+            style: TextStyle(
+                color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        builder.paint(canvas, point + const Offset(8, -8));
+      }
     }
   }
 

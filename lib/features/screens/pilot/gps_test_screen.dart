@@ -99,10 +99,8 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
         setState(() => _currentEventId = event.id);
         
         // Fetch driver name from competitor data (NOW that we have eventId)
-        print('DEBUG [GpsTest]: Fetching driver name for user ${widget.userId} in event ${event.id}');
         try {
           final competitor = await _firestoreService.getCompetitorByUid(event.id, widget.userId);
-          print('DEBUG [GpsTest]: Competitor data = $competitor');
           if (competitor != null) {
             final fullName = '${competitor.firstName} ${competitor.lastName}'.trim();
             if (mounted) {
@@ -110,12 +108,9 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
                 _driverName = fullName.isNotEmpty ? fullName : 'Unknown Driver';
               });
             }
-            print('DEBUG [GpsTest]: Driver name loaded: $_driverName');
           } else {
-            print('DEBUG [GpsTest]: Competitor not found for this user in event ${event.id}');
           }
         } catch (e) {
-          print('DEBUG [GpsTest]: Error fetching competitor name: $e');
         }
         
         // Listen to active session
@@ -291,7 +286,6 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
 
     final int intervalMs = (1000 / _updatesPerSecond).round();
 
-    print('DEBUG [GpsTest]: Starting simulation with session ID: $_currentSessionId');
     _buffer.clear();
     // Session ID is now set automatically from Firestore event listener
     // No need to generate a new one here

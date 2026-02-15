@@ -67,35 +67,35 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         style: TextStyle(
                             fontSize: 18, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 20),
-                      ElevatedButton.icon(
-                        icon: const Icon(Icons.calendar_today),
-                        label: const Text('MANAGE EVENTS SCHEDULE'),
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) => const EventListScreen()),
-                          );
-                        },
-                        style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.black87,
-                            padding: const EdgeInsets.symmetric(vertical: 20)),
-                      ),
-                      const SizedBox(height: 10),
-                      ElevatedButton.icon(
-                        icon: const Icon(Icons.map),
-                        label: const Text('DESIGN NEW RACE TRACK'),
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) => const CreateRaceScreen()),
-                          );
-                        },
-                        style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.grey[800],
-                            padding: const EdgeInsets.symmetric(vertical: 20)),
-                      ),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.calendar_today),
+                      label: const Text('MANAGE EVENTS SCHEDULE'),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) => const EventListScreen()),
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.black87,
+                          padding: const EdgeInsets.symmetric(vertical: 20)),
+                    ),
+                    const SizedBox(height: 10),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.map),
+                      label: const Text('DESIGN NEW RACE TRACK'),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) => const CreateRaceScreen()),
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey[800],
+                          padding: const EdgeInsets.symmetric(vertical: 20)),
+                    ),
                   ],
                 ),
               ),

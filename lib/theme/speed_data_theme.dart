@@ -1,6 +1,81 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+@immutable
+class SpeedDataColors extends ThemeExtension<SpeedDataColors> {
+  const SpeedDataColors({
+    required this.flagGreen,
+    required this.flagYellow,
+    required this.flagRed,
+    required this.flagBlue,
+    required this.flagCheckered,
+    required this.onFlagGreen,
+    required this.onFlagYellow,
+    required this.onFlagRed,
+    required this.onFlagBlue,
+    required this.onFlagCheckered,
+  });
+
+  final Color flagGreen;
+  final Color flagYellow;
+  final Color flagRed;
+  final Color flagBlue;
+  final Color flagCheckered;
+  final Color onFlagGreen;
+  final Color onFlagYellow;
+  final Color onFlagRed;
+  final Color onFlagBlue;
+  final Color onFlagCheckered;
+
+  @override
+  SpeedDataColors copyWith({
+    Color? flagGreen,
+    Color? flagYellow,
+    Color? flagRed,
+    Color? flagBlue,
+    Color? flagCheckered,
+    Color? onFlagGreen,
+    Color? onFlagYellow,
+    Color? onFlagRed,
+    Color? onFlagBlue,
+    Color? onFlagCheckered,
+  }) {
+    return SpeedDataColors(
+      flagGreen: flagGreen ?? this.flagGreen,
+      flagYellow: flagYellow ?? this.flagYellow,
+      flagRed: flagRed ?? this.flagRed,
+      flagBlue: flagBlue ?? this.flagBlue,
+      flagCheckered: flagCheckered ?? this.flagCheckered,
+      onFlagGreen: onFlagGreen ?? this.onFlagGreen,
+      onFlagYellow: onFlagYellow ?? this.onFlagYellow,
+      onFlagRed: onFlagRed ?? this.onFlagRed,
+      onFlagBlue: onFlagBlue ?? this.onFlagBlue,
+      onFlagCheckered: onFlagCheckered ?? this.onFlagCheckered,
+    );
+  }
+
+  @override
+  SpeedDataColors lerp(ThemeExtension<SpeedDataColors>? other, double t) {
+    if (other is! SpeedDataColors) return this;
+    return SpeedDataColors(
+      flagGreen: Color.lerp(flagGreen, other.flagGreen, t) ?? flagGreen,
+      flagYellow: Color.lerp(flagYellow, other.flagYellow, t) ?? flagYellow,
+      flagRed: Color.lerp(flagRed, other.flagRed, t) ?? flagRed,
+      flagBlue: Color.lerp(flagBlue, other.flagBlue, t) ?? flagBlue,
+      flagCheckered:
+          Color.lerp(flagCheckered, other.flagCheckered, t) ?? flagCheckered,
+      onFlagGreen: Color.lerp(onFlagGreen, other.onFlagGreen, t) ?? onFlagGreen,
+      onFlagYellow:
+          Color.lerp(onFlagYellow, other.onFlagYellow, t) ?? onFlagYellow,
+      onFlagRed: Color.lerp(onFlagRed, other.onFlagRed, t) ?? onFlagRed,
+      onFlagBlue: Color.lerp(onFlagBlue, other.onFlagBlue, t) ?? onFlagBlue,
+      onFlagCheckered:
+          Color.lerp(onFlagCheckered, other.onFlagCheckered, t) ??
+              onFlagCheckered,
+    );
+  }
+}
+
 class SpeedDataTheme {
   // ---------------------------------------------------------------------------
   // Color Palette
@@ -195,6 +270,20 @@ class SpeedDataTheme {
         onBackground: textPrimary,
         onError: Colors.white,
       ),
+      extensions: const <ThemeExtension<dynamic>>[
+        SpeedDataColors(
+          flagGreen: flagGreen,
+          flagYellow: flagYellow,
+          flagRed: flagRed,
+          flagBlue: flagBlue,
+          flagCheckered: flagCheckered,
+          onFlagGreen: Colors.white,
+          onFlagYellow: Color(0xFF111111),
+          onFlagRed: Colors.white,
+          onFlagBlue: Colors.white,
+          onFlagCheckered: bgBase,
+        ),
+      ],
 
       // Typography
       fontFamily: GoogleFonts.inter().fontFamily,

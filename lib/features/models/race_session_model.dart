@@ -2,7 +2,7 @@ enum SessionType { practice, qualifying, race }
 
 enum SessionStatus { scheduled, active, finished }
 
-enum RaceFlag { green, yellow, red, checkered }
+enum RaceFlag { green, warmup, yellow, red, checkered }
 
 class RaceSession {
   final String id;

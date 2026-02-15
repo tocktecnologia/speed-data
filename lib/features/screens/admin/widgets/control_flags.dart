@@ -21,6 +21,7 @@ class ControlFlags extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
           _buildFlagButton(RaceFlag.green, SpeedDataTheme.flagGreen),
+          _buildFlagButton(RaceFlag.warmup, SpeedDataTheme.flagPurple),
           _buildFlagButton(RaceFlag.yellow, SpeedDataTheme.flagYellow),
           _buildFlagButton(RaceFlag.red, SpeedDataTheme.flagRed),
           _buildFlagButton(RaceFlag.checkered, SpeedDataTheme.flagCheckered, isCheckered: true),

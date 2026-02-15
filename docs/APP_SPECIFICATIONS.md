@@ -350,6 +350,7 @@ UI StreamBuilders (atualização automática)
 - **Current fluido**: cronometro atualizado em intervalos curtos para evitar saltos.
 - **Simulacao**: botao Start/Stop Simulation e controle de velocidade; simulacao envia telemetria para a sessao ativa.
 - **Sem START/FINISH**: removidos os botoes manuais de start/finish do Live Timer.
+- **Warmup (bandeira)**: bandeira roxa WARMUP exibida no status e nas cores do Live Timer.
 
 ### Telemetria (Piloto)
 - **Envio automatico em sessao ativa**: quando ha sessao ativa, GPS fica capturando mesmo fora do Live Timer.
@@ -370,6 +371,7 @@ UI StreamBuilders (atualização automática)
   - Simbolo de proibido = volta invalidada (conta volta, nao recorde).
 - **Passings ordenado por time**: mistura bandeiras e competidores por timestamp.
 - **Track Chart admin**: posicoes atualizam direto (sem interpolacao) para evitar bolinha fora da pista.
+- **Warmup (bandeira)**: nova bandeira roxa no controle de corrida; ao acionar, inicia a sessao se estiver agendada e registra `flag_warmup` nas passagens.
 
 ---
 

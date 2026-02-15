@@ -8,6 +8,7 @@ import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/utils/map_utils.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:speed_data/theme/speed_data_theme.dart';
 
 class GpsTestScreen extends StatefulWidget {
   final String raceId;
@@ -81,6 +82,8 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
     switch (flag) {
       case RaceFlag.green:
         return Colors.green.withOpacity(0.8);
+      case RaceFlag.warmup:
+        return SpeedDataTheme.flagPurple.withOpacity(0.8);
       case RaceFlag.yellow:
         return Colors.orange.withOpacity(0.8);
       case RaceFlag.red:
@@ -91,6 +94,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
         return Colors.black;
     }
   }
+
 
   Future<void> _loadRaceDetails() async {
     // Auto-discover event for this track

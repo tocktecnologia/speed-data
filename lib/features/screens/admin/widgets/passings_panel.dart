@@ -253,6 +253,8 @@ class _PassingsPanelState extends State<PassingsPanel> {
                       Color flagColor = Colors.grey;
                       if (passing.flags.contains('flag_green'))
                         flagColor = SpeedDataTheme.flagGreen;
+                      else if (passing.flags.contains('flag_warmup'))
+                        flagColor = SpeedDataTheme.flagPurple;
                       else if (passing.flags.contains('flag_yellow'))
                         flagColor = SpeedDataTheme.flagYellow;
                       else if (passing.flags.contains('flag_red'))

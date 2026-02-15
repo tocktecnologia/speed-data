@@ -7,6 +7,7 @@ import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/utils/map_utils.dart';
 import 'package:speed_data/features/widgets/track_shape_widget.dart';
+import 'package:speed_data/theme/speed_data_theme.dart';
 
 class ActiveRaceScreen extends StatefulWidget {
   final String raceId;
@@ -250,16 +251,17 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     switch (flag) {
       case RaceFlag.green:
         return Colors.green.withOpacity(0.8);
+      case RaceFlag.warmup:
+        return SpeedDataTheme.flagPurple.withOpacity(0.8);
       case RaceFlag.yellow:
         return Colors.orange.withOpacity(0.8);
       case RaceFlag.red:
         return Colors.red.withOpacity(0.8);
       case RaceFlag.checkered:
         return Colors.white.withOpacity(0.9);
-      default:
-        return Colors.black;
     }
   }
+
 
   String _formatLapTime(int ms) {
     final minutes = (ms ~/ 60000).toString().padLeft(2, '0');
@@ -596,11 +598,11 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        _buildStatusIndicator(
-                          telemetry.enableSendDataToCloud,
-                          isSimulating: _telemetryService.isSimulating,
-                          flag: _activeSession?.currentFlag,
-                        ),
+                          _buildStatusIndicator(
+                            telemetry.enableSendDataToCloud,
+                            isSimulating: _telemetryService.isSimulating,
+                            flag: _activeSession?.currentFlag,
+                          ),
                         _buildModeToggle(),
                         _buildInfoMetric(
                           'Speed',
@@ -883,6 +885,10 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         case RaceFlag.green:
           label = 'GREEN';
           color = Colors.green;
+          break;
+        case RaceFlag.warmup:
+          label = 'WARMUP';
+          color = SpeedDataTheme.flagPurple;
           break;
         case RaceFlag.yellow:
           label = 'YELLOW';

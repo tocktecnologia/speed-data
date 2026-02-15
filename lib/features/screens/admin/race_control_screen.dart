@@ -53,6 +53,7 @@ class _RaceControlScreenState extends State<RaceControlScreen>
     await _updateSessionStatus(updatedSession, currentEvent);
   }
 
+
   Future<void> _finishSession(
       RaceSession session, RaceEvent currentEvent) async {
     final updatedSession = session.copyWith(
@@ -100,6 +101,18 @@ class _RaceControlScreenState extends State<RaceControlScreen>
           passingFlags.add('flag_green');
 
           // Start session if scheduled or active-without-start-time
+          if (session != null &&
+              currentEvent != null &&
+              (session.status == SessionStatus.scheduled ||
+                  (session.status == SessionStatus.active &&
+                      session.actualStartTime == null))) {
+            await _startSession(session, currentEvent);
+          }
+          break;
+        case RaceFlag.warmup:
+          flagName = 'WARMUP FLAG';
+          passingFlags.add('flag_warmup');
+
           if (session != null &&
               currentEvent != null &&
               (session.status == SessionStatus.scheduled ||
@@ -168,6 +181,8 @@ class _RaceControlScreenState extends State<RaceControlScreen>
     switch (flag) {
       case RaceFlag.green:
         return SpeedDataTheme.flagGreen;
+      case RaceFlag.warmup:
+        return SpeedDataTheme.flagPurple;
       case RaceFlag.yellow:
         return SpeedDataTheme.flagYellow;
       case RaceFlag.red:
@@ -221,6 +236,9 @@ class _RaceControlScreenState extends State<RaceControlScreen>
             if (event is KeyDownEvent) {
               if (event.logicalKey == LogicalKeyboardKey.f5) {
                 _updateFlag(RaceFlag.green,
+                    session: displaySession, currentEvent: eventData);
+              } else if (event.logicalKey == LogicalKeyboardKey.f4) {
+                _updateFlag(RaceFlag.warmup,
                     session: displaySession, currentEvent: eventData);
               } else if (event.logicalKey == LogicalKeyboardKey.f6) {
                 _updateFlag(RaceFlag.yellow,
@@ -421,6 +439,16 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                               Wrap(
                                 spacing: 8,
                                 children: [
+                                  _buildActionButton(
+                                      'WARMUP',
+                                      Icons.local_fire_department,
+                                      SpeedDataTheme.flagPurple,
+                                      () => _updateFlag(RaceFlag.warmup,
+                                          session: displaySession,
+                                          currentEvent: eventData),
+                                      isActive: displaySession?.status ==
+                                              SessionStatus.active &&
+                                          currentFlag == RaceFlag.warmup),
                                   _buildActionButton(
                                       'GREEN',
                                       Icons.flag,
@@ -791,8 +819,6 @@ class _RaceControlScreenState extends State<RaceControlScreen>
         return SpeedDataTheme.flagGreen;
       case SessionStatus.finished:
         return SpeedDataTheme.textDisabled;
-      default:
-        return SpeedDataTheme.textSecondary;
     }
   }
 

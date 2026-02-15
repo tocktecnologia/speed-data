@@ -106,6 +106,7 @@ class SpeedDataTheme {
 
   // Semantic Colors (Motorsport)
   static const Color flagGreen = Color(0xFF22C55E);
+  static const Color flagPurple = Color(0xFFA855F7);
   static const Color flagYellow = Color(0xFFEAB308);
   static const Color flagRed = Color(0xFFEF4444);
   static const Color flagBlue = Color(0xFF3B82F6);

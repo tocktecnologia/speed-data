@@ -50,7 +50,9 @@ class TimingTab extends StatelessWidget {
                   }
 
                   return Card(
-                    color: activeSession != null ? Colors.green.withOpacity(0.1) : null,
+                    color: activeSession != null
+                        ? Colors.green.withOpacity(0.1)
+                        : null,
                     child: ListTile(
                       leading: Icon(
                         Icons.timer, 

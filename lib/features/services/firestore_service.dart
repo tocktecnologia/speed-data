@@ -10,6 +10,22 @@ import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
+  String _normalizeEmail(String email) => email.trim().toLowerCase();
+
+  DateTime? _asDateTime(dynamic value) {
+    if (value == null) return null;
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
+    if (value is num) return DateTime.fromMillisecondsSinceEpoch(value.toInt());
+    return null;
+  }
+
+  double _asDouble(dynamic value, double fallback) {
+    if (value is num) return value.toDouble();
+    return fallback;
+  }
+
   // --- Users ---
 
   Future<UserRole> getUserRole(String uid) async {
@@ -78,6 +94,123 @@ class FirestoreService {
       print('Error getting user by email: $e');
     }
     return null;
+  }
+
+  /// Simulation config resolution:
+  /// 1) Global defaults in `app_config/simulation`
+  /// 2) User override in `simulation_testers/{normalized_email}`
+  ///
+  /// Expected fields:
+  /// - enabled_default (bool)
+  /// - default_speed_mps (num)
+  /// - auto_start_default (bool)
+  ///
+  /// User override fields:
+  /// - enabled (bool)
+  /// - speed_mps (num)
+  /// - auto_start (bool)
+  /// - valid_from (Timestamp/int, optional)
+  /// - valid_until (Timestamp/int, optional)
+  Future<Map<String, dynamic>> getSimulationRuntimeConfig({String? email}) async {
+    bool enabled = false;
+    bool autoStart = true;
+    double speedMps = 40.0;
+    String source = 'defaults';
+
+    try {
+      final globalDoc =
+          await _db.collection('app_config').doc('simulation').get();
+      final globalData = globalDoc.data();
+      if (globalData != null) {
+        enabled = globalData['enabled_default'] is bool
+            ? globalData['enabled_default']
+            : enabled;
+        autoStart = globalData['auto_start_default'] is bool
+            ? globalData['auto_start_default']
+            : autoStart;
+        speedMps = _asDouble(globalData['default_speed_mps'], speedMps);
+        source = 'global';
+      }
+    } catch (e) {
+      print('Error loading global simulation config: $e');
+    }
+
+    final normalizedEmail =
+        (email == null || email.trim().isEmpty) ? null : _normalizeEmail(email);
+    if (normalizedEmail != null) {
+      try {
+        final userDoc =
+            await _db.collection('simulation_testers').doc(normalizedEmail).get();
+        final userData = userDoc.data();
+        if (userData != null) {
+          final now = DateTime.now();
+          final validFrom = _asDateTime(userData['valid_from']);
+          final validUntil = _asDateTime(userData['valid_until']);
+          final inWindow = (validFrom == null || !now.isBefore(validFrom)) &&
+              (validUntil == null || !now.isAfter(validUntil));
+
+          if (inWindow) {
+            enabled = userData['enabled'] is bool ? userData['enabled'] : enabled;
+            autoStart =
+                userData['auto_start'] is bool ? userData['auto_start'] : autoStart;
+            speedMps = _asDouble(userData['speed_mps'], speedMps);
+            source = 'user';
+          } else {
+            // Keep global/default values when user override is out of validity window.
+            source = 'global_out_of_window';
+          }
+        }
+      } catch (e) {
+        print('Error loading user simulation config: $e');
+      }
+    }
+
+    return {
+      'enabled': enabled,
+      'auto_start': autoStart,
+      'speed_mps': speedMps,
+      'email': normalizedEmail,
+      'source': source,
+    };
+  }
+
+  Future<void> setSimulationDefaults({
+    required bool enabledDefault,
+    required bool autoStartDefault,
+    required double defaultSpeedMps,
+    String? updatedBy,
+  }) async {
+    await _db.collection('app_config').doc('simulation').set({
+      'enabled_default': enabledDefault,
+      'auto_start_default': autoStartDefault,
+      'default_speed_mps': defaultSpeedMps,
+      'updated_by': updatedBy,
+      'updated_at': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> setSimulationTesterByEmail({
+    required String email,
+    required bool enabled,
+    bool autoStart = true,
+    double? speedMps,
+    DateTime? validFrom,
+    DateTime? validUntil,
+    String? notes,
+    String? updatedBy,
+  }) async {
+    final normalizedEmail = _normalizeEmail(email);
+    await _db.collection('simulation_testers').doc(normalizedEmail).set({
+      'email': normalizedEmail,
+      'enabled': enabled,
+      'auto_start': autoStart,
+      'speed_mps': speedMps,
+      'valid_from': validFrom != null ? Timestamp.fromDate(validFrom) : null,
+      'valid_until': validUntil != null ? Timestamp.fromDate(validUntil) : null,
+      'notes': notes,
+      'updated_by': updatedBy,
+      'updated_at': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   // --- Races ---

@@ -224,9 +224,11 @@ Construído com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestore,
 - **Header e Barra de Controle**:
   -   **Header**: Exibe Nome do Evento, Nome do Grupo, e Nome da Sessão (com Status).
   -   **Seleção de Sessão**: Clique na lista de sessões atualiza todas as visualizações para a sessão selecionada.
-  -   **Botões de Ação**: START (Verde), SC (Amarela/Safety Car), RED (Vermelha), FINISH (Quadriculada), STOP.
+  -   **Botões de Ação**: WARMUP (Roxa), START (Verde), SC (Amarela/Safety Car), RED (Vermelha), FINISH (Quadriculada), STOP.
+  -   **Semântica de encerramento**: FINISH apenas muda a bandeira para quadriculada (sessão continua ativa). STOP finaliza a sessão.
+  -   **Confirmação no STOP**: alerta confirma que a sessão será encerrada e os competidores deixarão de enviar GPS.
   -   **Info**: Exibe Duração Restante, Voltas Totais e Método de Partida.
-  -   **Atalhos de Teclado**: F5 (Verde), F6 (Amarela), F7 (Vermelha), F8 (Quadriculada), F10 (Inserção Manual).
+  -   **Atalhos de Teclado**: F4 (WARMUP), F5 (Verde), F6 (Amarela), F7 (Vermelha), F8 (Quadriculada), F10 (Inserção Manual).
 - **Passings Panel (Detalhes)**:
   - **Filtragem por janela de tempo**: Exibe apenas passagens dentro do período `actualStartTime` a `actualEndTime` da sessão
   - **Resolução dinâmica de nomes**: Busca nomes dos competidores em tempo real do evento (não armazena nomes hardcoded)
@@ -346,9 +348,10 @@ UI StreamBuilders (atualização automática)
 - **Status da sessao**: indicador reflete bandeira (verde/amarela/vermelha/quadriculada).
 - **Borda por bandeira**: borda do Live Timer acompanha a bandeira da sessao.
 - **Nome da sessao**: exibido no AppBar; nome do evento em label discreto.
-- **Best/Previous/Current**: calculados por passings da sessao atual; Best respeita tempo minimo (Minimum Lap Time) e validade.
+- **Best/Previous/Current**: calculados na sessão ativa com base em laps (fallback passings); Best respeita tempo mínimo (Minimum Lap Time) e validade.
 - **Current fluido**: cronometro atualizado em intervalos curtos para evitar saltos.
-- **Simulacao**: botao Start/Stop Simulation e controle de velocidade; simulacao envia telemetria para a sessao ativa.
+- **Simulação (modo desenvolvimento)**: sem botões Start/Stop no Live Timer; quando habilitada para o usuário, inicia automaticamente com sessão ativa e exibe apenas label + controle de velocidade.
+- **Retorno para Live Timer**: ao reabrir a tela, a sessão ativa é pré-carregada para reduzir tempo de espera.
 - **Sem START/FINISH**: removidos os botoes manuais de start/finish do Live Timer.
 - **Warmup (bandeira)**: bandeira roxa WARMUP exibida no status e nas cores do Live Timer.
 
@@ -356,7 +359,12 @@ UI StreamBuilders (atualização automática)
 - **Envio automatico em sessao ativa**: quando ha sessao ativa, GPS fica capturando mesmo fora do Live Timer.
 - **Simulacao persistente**: simulacao continua mesmo ao sair da tela Live Timer.
 - **Bloqueio de envio real durante simulacao**: enquanto simula, nao envia dados reais.
+- **Parada no STOP (Admin)**: quando o admin finaliza com STOP, os competidores param de capturar/enviar GPS.
 - **TelemetryService singleton**: centraliza estado e evita duplicidade de streams.
+- **Config de simulacao por usuario (Firestore)**:
+  - Global: `app_config/simulation` com `enabled_default`, `auto_start_default`, `default_speed_mps`.
+  - Override por usuario: `simulation_testers/{email_normalizado}` com `enabled`, `auto_start`, `speed_mps`, `valid_from`, `valid_until`.
+  - O app resolve configuracao por e-mail autenticado; se habilitado, o modo simulacao inicia automaticamente quando a sessao ativa.
 
 ### Admin - Timing / Results / Passings / Track Chart
 - **Results**: mostra resultado da sessao (treino/qualificacao por melhor tempo valido; corrida por numero de voltas).
@@ -372,6 +380,7 @@ UI StreamBuilders (atualização automática)
 - **Passings ordenado por time**: mistura bandeiras e competidores por timestamp.
 - **Track Chart admin**: posicoes atualizam direto (sem interpolacao) para evitar bolinha fora da pista.
 - **Warmup (bandeira)**: nova bandeira roxa no controle de corrida; ao acionar, inicia a sessao se estiver agendada e registra `flag_warmup` nas passagens.
+- **STOP vs FINISH**: FINISH nao encerra sessao; STOP encerra sessao e interrompe coleta/envio de GPS dos competidores.
 
 ---
 

@@ -63,6 +63,49 @@ class _RaceControlScreenState extends State<RaceControlScreen>
     await _updateSessionStatus(updatedSession, currentEvent);
   }
 
+  Future<void> _confirmAndStopSession(
+      RaceSession? session, RaceEvent currentEvent) async {
+    if (session == null || session.status != SessionStatus.active) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No active session to stop.')),
+        );
+      }
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Session Stop'),
+        content: const Text(
+            'This will finalize the session and competitors will stop sending GPS data. Do you want to continue?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Stop Session'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    await _finishSession(session, currentEvent);
+    if (mounted) {
+      setState(() {
+        _selectedSessionId = session.id;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Session finalized.')),
+      );
+    }
+  }
+
   Future<void> _updateSessionStatus(
       RaceSession updatedSession, RaceEvent currentEvent) async {
     // Find the session index
@@ -132,18 +175,8 @@ class _RaceControlScreenState extends State<RaceControlScreen>
         case RaceFlag.checkered:
           flagName = 'CHECKERED FLAG';
           passingFlags.add('flag_checkered');
-
-          // Finish session if active
-          if (session != null &&
-              currentEvent != null &&
-              session.status == SessionStatus.active) {
-            await _finishSession(session, currentEvent);
-            if (mounted) {
-              setState(() {
-                _selectedSessionId = session.id;
-              });
-            }
-          }
+          // Checkered updates only the flag; session remains active.
+          // Session finalization is done exclusively via STOP.
           break;
         default:
           break;
@@ -492,7 +525,9 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                                           currentFlag == RaceFlag.checkered),
                                   const SizedBox(width: 8),
                                   _buildActionButton('STOP', Icons.stop,
-                                      Colors.grey.shade800, () {},
+                                      Colors.grey.shade800,
+                                      () => _confirmAndStopSession(
+                                          displaySession, eventData),
                                       isOutlined: true),
                                 ],
                               ),

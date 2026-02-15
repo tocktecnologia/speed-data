@@ -1,9 +1,6 @@
-
 import 'package:flutter/material.dart';
-
+import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/theme/speed_data_theme.dart';
-
-enum RaceFlag { green, yellow, red, checkered }
 
 class ControlFlags extends StatelessWidget {
   final Function(RaceFlag) onFlagSelected;

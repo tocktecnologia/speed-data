@@ -254,6 +254,73 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
     }
   }
 
+  Future<void> _cloneTrack() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clone Track?'),
+        content: Text(
+            'Do you want to create a copy of "${_raceNameController.text}"?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Clone')),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      final newName = '${_raceNameController.text} (Copy)';
+      final checkpoints = _checkpoints
+          .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+          .toList();
+      final routePath = _routePath
+          .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+          .toList();
+
+      final newRaceId = await _firestoreService.createRace(
+        newName,
+        user.uid,
+        checkpoints: checkpoints,
+        routePath: routePath,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Track cloned successfully!')));
+
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => CreateRaceScreen(
+              raceId: newRaceId,
+              initialData: {
+                'name': newName,
+                'checkpoints': checkpoints,
+                'route_path': routePath,
+                'creator_id': user.uid,
+              },
+              readOnly: false,
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error cloning track: $e')));
+      }
+    }
+  }
+
   Future<void> _saveRace() async {
     final name = _raceNameController.text.trim();
     final user = FirebaseAuth.instance.currentUser;
@@ -325,7 +392,13 @@ class _CreateRaceScreenState extends State<CreateRaceScreen> {
             : (widget.raceId != null ? 'Edit Race Plan' : 'Create Race Plan')),
         backgroundColor: Colors.black,
         actions: widget.readOnly
-            ? []
+            ? [
+                IconButton(
+                  icon: const Icon(Icons.copy),
+                  tooltip: 'Clone Track',
+                  onPressed: _cloneTrack,
+                )
+              ]
             : [
                 IconButton(
                   icon: const Icon(Icons.undo),

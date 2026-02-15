@@ -129,6 +129,9 @@ Construído com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestore,
   - Painel de telemetria: velocidade atual, Hz, coordenadas
   - Rota carregada do Firestore ou calculada dos checkpoints
   - Sistema de buffer/batch para dados de telemetria (sync a cada 5s)
+  - **Auto-sincronização inteligente**: Detecta evento ativo e envia telemetria automaticamente
+  - **Indicador visual de bandeiras**: Cor de fundo muda conforme bandeira da sessão ativa
+  - **Sincronização de sessão**: Usa `sessionId` da sessão ativa do evento
   - Toggle de envio para cloud (`enableSendDataToCloud`)
 - **Navegação**: Transiciona para ActiveRaceScreen ao iniciar simulação
 
@@ -141,7 +144,10 @@ Construído com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestore,
   - Mapa Google com marcadores e polylines em tempo real
   - Marcadores customizados com cor do piloto
   - Visualização da rota dos checkpoints
-  - Cloud sync desabilitado por padrão (gravação local)
+  - **Auto-sincronização de telemetria**: Detecta automaticamente eventos ativos e sincroniza dados
+  - **Indicador visual de bandeiras**: Cor de fundo muda dinamicamente baseado na bandeira da sessão (Verde, Amarela, Vermelha, Quadriculada)
+  - **Sincronização automática de sessão**: Monitora sessão ativa via Firestore e atualiza `sessionId` automaticamente
+  - Cloud sync habilitado automaticamente quando evento ativo é detectado
   - Carrega detalhes da corrida assincronamente
 
 ### Pilot Race Stats Screen
@@ -221,6 +227,12 @@ Construído com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestore,
   -   **Botões de Ação**: START (Verde), SC (Amarela/Safety Car), RED (Vermelha), FINISH (Quadriculada), STOP.
   -   **Info**: Exibe Duração Restante, Voltas Totais e Método de Partida.
   -   **Atalhos de Teclado**: F5 (Verde), F6 (Amarela), F7 (Vermelha), F8 (Quadriculada), F10 (Inserção Manual).
+- **Passings Panel (Detalhes)**:
+  - **Filtragem por janela de tempo**: Exibe apenas passagens dentro do período `actualStartTime` a `actualEndTime` da sessão
+  - **Resolução dinâmica de nomes**: Busca nomes dos competidores em tempo real do evento (não armazena nomes hardcoded)
+  - **Cálculo automático de voltas**: Número da volta calculado dinamicamente baseado na contagem de passagens por competidor
+  - **Cache de competidores**: Pré-carrega nomes de todos os competidores do evento para performance
+  - **Atualização em tempo real**: Nomes e voltas atualizam automaticamente quando admin modifica dados dos competidores
 ---
 
 ## Serviços (Camada de Dados)
@@ -235,6 +247,9 @@ Construído com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestore,
   - **Participação**: `joinRace()`
   - **Telemetria**: `updatePilotLocation()`, `sendTelemetryBatch()`, `getRaceLocations()` (Stream)
   - **Sessões/Voltas**: `getLaps()`, `getSessionLaps()`, `getHistorySessions()`, `getHistorySessionLaps()`
+  - **Eventos**: `getActiveEventForTrack()`, `getEventActiveSessionStream()` (Stream)
+  - **Competidores**: `getCompetitors()`, `getCompetitorByUid()`, `getCompetitorsStream()` (Stream)
+  - **Passagens**: `getPassingsStream()` (Stream com filtragem por janela de tempo)
   - **Limpeza**: `clearRaceParticipants()`, `clearRaceParticipantsLaps()`, `archiveCurrentLaps()`
 
 ### TelemetryService
@@ -286,14 +301,26 @@ FirestoreService.sendTelemetryBatch()
     v
 Firebase Cloud Function (ingestTelemetry)
     |
+    +---> Detecção de checkpoints e cálculo de voltas
+    |
+    +---> Criação de registros em races/{raceId}/participants/{uid}/laps
+    |
+    +---> Criação de registros em races/{raceId}/passings (apenas participant_uid)
+    |
+    +---> Pub/Sub para processamento assíncrono
+    |
     v
-Firestore Database (races/participants/sessions/laps)
+Firestore Database (races/participants/sessions/laps/passings)
     |
     v
 Firestore Streams (snapshots em tempo real)
     |
     v
 UI StreamBuilders (atualização automática)
+    |
+    +---> PassingsPanel: Resolução dinâmica de nomes via getCompetitorByUid()
+    |
+    +---> PassingsPanel: Cálculo automático de número de voltas
 ```
 
 ### Processamento em Background
@@ -319,6 +346,16 @@ UI StreamBuilders (atualização automática)
   ├── status: "open" | "closed"
   ├── checkpoints: [{lat, lng}, ...]
   ├── route_path: [{lat, lng}, ...]
+  │
+  ├── /passings/{passingId}
+  │   ├── participant_uid: string (uid do competidor)
+  │   ├── lap_number: number (calculado pela Cloud Function)
+  │   ├── lap_time: number (milissegundos)
+  │   ├── timestamp: timestamp (Firestore Timestamp)
+  │   ├── session_id: string
+  │   ├── checkpoint_index: number (0 = linha de chegada)
+  │   ├── flags: array (best_lap, personal_best, invalid, etc.)
+  │   └── sector_time: number | null
   │
   └── /participants/{uid}
       ├── uid: string

@@ -1,8 +1,11 @@
 
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/event_model.dart';
+import 'package:speed_data/features/models/passing_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/features/models/race_group_model.dart';
+import 'package:speed_data/features/models/competitor_model.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/screens/admin/admin_map_view.dart'; 
 import 'package:speed_data/features/screens/admin/widgets/passings_panel.dart';
@@ -10,6 +13,7 @@ import 'package:speed_data/features/screens/admin/widgets/leaderboard_panel.dart
 import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
 import 'package:speed_data/features/screens/admin/create_event_screen.dart';
 import 'package:speed_data/features/screens/admin/event_registration_screen.dart';
+import 'package:speed_data/features/screens/admin/session_settings_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/theme/speed_data_theme.dart';
 import 'package:flutter/services.dart';
@@ -26,7 +30,6 @@ class RaceControlScreen extends StatefulWidget {
 class _RaceControlScreenState extends State<RaceControlScreen> with SingleTickerProviderStateMixin {
   final FirestoreService _firestoreService = FirestoreService();
   late TabController _tabController;
-  RaceSession? _activeSession;
   String? _selectedSessionId;
 
   @override
@@ -41,14 +44,20 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
     super.dispose();
   }
 
-  void _startSession(RaceSession session, RaceEvent currentEvent) async {
-    final updatedSession = session.copyWith(status: SessionStatus.active);
-     _updateSessionStatus(updatedSession, currentEvent);
+  Future<void> _startSession(RaceSession session, RaceEvent currentEvent) async {
+    final updatedSession = session.copyWith(
+      status: SessionStatus.active,
+      actualStartTime: DateTime.now(),
+    );
+    await _updateSessionStatus(updatedSession, currentEvent);
   }
 
-  void _finishSession(RaceSession session, RaceEvent currentEvent) async {
-     final updatedSession = session.copyWith(status: SessionStatus.finished);
-    _updateSessionStatus(updatedSession, currentEvent);
+  Future<void> _finishSession(RaceSession session, RaceEvent currentEvent) async {
+     final updatedSession = session.copyWith(
+       status: SessionStatus.finished,
+       actualEndTime: DateTime.now(),
+      );
+    await _updateSessionStatus(updatedSession, currentEvent);
   }
 
    Future<void> _updateSessionStatus(RaceSession updatedSession, RaceEvent currentEvent) async {
@@ -64,9 +73,91 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
     }
   }
 
-  void _updateFlag(RaceFlag flag) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Flag ${flag.name} selected')));
-    // TODO: Implement actual flag update in Firestore/Session
+  Future<void> _updateFlag(RaceFlag flag, {RaceSession? session, RaceEvent? currentEvent}) async {
+    try {
+      // 1. Update global track flag
+      await _firestoreService.updateRaceFlag(widget.event.trackId, flag);
+
+      // 2. Update session-specific flag if possible
+      if (session != null && currentEvent != null) {
+        final updatedSession = session.copyWith(currentFlag: flag);
+        await _updateSessionStatus(updatedSession, currentEvent);
+      }
+
+      // Log flag change to Passings
+      final now = DateTime.now();
+      String flagName = 'UNKNOWN FLAG';
+      List<String> passingFlags = [];
+
+      switch (flag) {
+        case RaceFlag.green:
+          flagName = 'GREEN FLAG';
+          passingFlags.add('flag_green');
+          
+          // Start session if scheduled or active-without-start-time
+          if (session != null && currentEvent != null && 
+             (session.status == SessionStatus.scheduled || 
+              (session.status == SessionStatus.active && session.actualStartTime == null))) {
+            await _startSession(session, currentEvent);
+          }
+          break;
+        case RaceFlag.yellow:
+          flagName = 'YELLOW FLAG';
+          passingFlags.add('flag_yellow');
+          break;
+        case RaceFlag.red:
+          flagName = 'RED FLAG';
+          passingFlags.add('flag_red');
+          break;
+        case RaceFlag.checkered:
+          flagName = 'CHECKERED FLAG';
+          passingFlags.add('flag_checkered');
+          
+          // Finish session if active
+          if (session != null && currentEvent != null && session.status == SessionStatus.active) {
+            await _finishSession(session, currentEvent);
+          }
+          break;
+        default:
+          break;
+      }
+
+      if (passingFlags.isNotEmpty) {
+        final flagPassing = PassingModel(
+          id: '', // Generated by Firestore
+          raceId: widget.event.trackId,
+          sessionId: session?.id,
+          participantUid: 'SYSTEM',
+          driverName: flagName,
+          carNumber: '',
+          timestamp: now,
+          checkpointIndex: -1, // System event
+          lapNumber: 0,
+          flags: passingFlags,
+        );
+        await _firestoreService.addPassing(flagPassing);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Flag updated to ${flag.name.toUpperCase()}')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error updating flag: $e')));
+      }
+    }
+  }
+
+  Color _getFlagColor(RaceFlag flag) {
+    switch (flag) {
+      case RaceFlag.green: return SpeedDataTheme.flagGreen;
+      case RaceFlag.yellow: return SpeedDataTheme.flagYellow;
+      case RaceFlag.red: return SpeedDataTheme.flagRed;
+      case RaceFlag.checkered: return Colors.white;
+      default: return SpeedDataTheme.textSecondary;
+    }
   }
 
 
@@ -79,16 +170,16 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
             return const Scaffold(body: Center(child: CircularProgressIndicator()));
          }
          
-         final event = snapshot.data!;
+         final eventData = snapshot.data!;
          
          // 1. Determine "Active" session (running or next scheduled)
          RaceSession? defaultActiveSession;
-         if (event.sessions.isNotEmpty) {
-           defaultActiveSession = event.sessions.firstWhere(
+         if (eventData.sessions.isNotEmpty) {
+           defaultActiveSession = eventData.sessions.firstWhere(
              (s) => s.status == SessionStatus.active, 
-             orElse: () => event.sessions.firstWhere(
+             orElse: () => eventData.sessions.firstWhere(
                (s) => s.status == SessionStatus.scheduled, 
-               orElse: () => event.sessions.last
+               orElse: () => eventData.sessions.last
              )
            );
          }
@@ -98,7 +189,7 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
          RaceSession? displaySession = defaultActiveSession;
          if (_selectedSessionId != null) {
             try {
-              displaySession = event.sessions.firstWhere((s) => s.id == _selectedSessionId);
+              displaySession = eventData.sessions.firstWhere((s) => s.id == _selectedSessionId);
             } catch (e) {
               // Selected session might have been deleted
               _selectedSessionId = null;
@@ -106,35 +197,39 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
          }
 
 
-        return KeyboardListener(
+         return KeyboardListener(
           focusNode: FocusNode(), 
           autofocus: true,
           onKeyEvent: (event) {
              if (event is KeyDownEvent) {
                if (event.logicalKey == LogicalKeyboardKey.f5) {
-                  _updateFlag(RaceFlag.green);
+                  _updateFlag(RaceFlag.green, session: displaySession, currentEvent: eventData);
                } else if (event.logicalKey == LogicalKeyboardKey.f6) {
-                  _updateFlag(RaceFlag.yellow);
+                  _updateFlag(RaceFlag.yellow, session: displaySession, currentEvent: eventData);
                } else if (event.logicalKey == LogicalKeyboardKey.f7) {
-                  _updateFlag(RaceFlag.red);
+                  _updateFlag(RaceFlag.red, session: displaySession, currentEvent: eventData);
                 } else if (event.logicalKey == LogicalKeyboardKey.f8) {
-                   _updateFlag(RaceFlag.checkered);
+                   _updateFlag(RaceFlag.checkered, session: displaySession, currentEvent: eventData);
                 } else if (event.logicalKey == LogicalKeyboardKey.f10) {
-                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Manual Passing Entry (F10)')));
+                   if (displaySession != null) _showManualEntryDialog(widget.event.trackId, sessionId: displaySession.id);
                }
              }
           },
-          child: Scaffold(
+          child: Builder(
+            builder: (context) {
+              final currentFlag = displaySession?.currentFlag ?? RaceFlag.green;
+
+              return Scaffold(
           appBar: AppBar(
             title: Row(
               children: [
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(event.name, style: const TextStyle(fontSize: 14, color: SpeedDataTheme.textSecondary)),
+                    Text(eventData.name, style: const TextStyle(fontSize: 14, color: SpeedDataTheme.textSecondary)),
                     if (displaySession != null)
                       Text(
-                        event.groups.firstWhere((g) => g.id == displaySession!.groupId, orElse: () => RaceGroup(id: '', name: 'Unknown')).name,
+                        eventData.groups.firstWhere((g) => g.id == displaySession!.groupId, orElse: () => RaceGroup(id: '', name: 'Unknown')).name,
                         style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                       ),
                   ],
@@ -144,15 +239,22 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: _getStatusColor(displaySession.status).withOpacity(0.2),
+                      color: (displaySession.status == SessionStatus.active ? _getFlagColor(currentFlag) : _getStatusColor(displaySession.status)).withOpacity(0.2),
                       borderRadius: BorderRadius.circular(4),
-                      border: Border.all(color: _getStatusColor(displaySession.status)),
+                      border: Border.all(color: displaySession.status == SessionStatus.active ? _getFlagColor(currentFlag) : _getStatusColor(displaySession.status)),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          '${displaySession.name.isNotEmpty ? displaySession.name : displaySession.type.name.toUpperCase()} (${displaySession.status.name.toUpperCase()})',
+                          '${displaySession.name.isNotEmpty ? displaySession.name : displaySession.type.name.toUpperCase()} :',
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: SpeedDataTheme.textSecondary, fontSize: 12),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          displaySession.status == SessionStatus.active 
+                            ? currentFlag.name.toUpperCase() 
+                            : displaySession.status.name.toUpperCase(),
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                         if (_selectedSessionId != null) ...[
@@ -176,13 +278,13 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                          builder: (context) => CreateEventScreen(event: event)),
+                          builder: (context) => CreateEventScreen(event: eventData)),
                     );
                   } else if (value == 'edit_groups') {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                          builder: (context) => EventRegistrationScreen(event: event)),
+                          builder: (context) => EventRegistrationScreen(event: eventData)),
                     );
                   }
                 },
@@ -221,16 +323,47 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
                 color: SpeedDataTheme.bgSurface,
                 child: Row(
                   children: [
-                    // Action Buttons
-                    Wrap(
-                      spacing: 8,
+                    // Flag Control with Reactive Status
+                    Row(
                       children: [
-                        _buildActionButton('START', Icons.play_arrow, SpeedDataTheme.flagGreen, () => _updateFlag(RaceFlag.green)),
-                        _buildActionButton('SC', Icons.warning_amber, SpeedDataTheme.flagYellow, () => _updateFlag(RaceFlag.yellow)),
-                        _buildActionButton('RED', Icons.block, SpeedDataTheme.flagRed, () => _updateFlag(RaceFlag.red)),
-                        _buildActionButton('FINISH', Icons.flag, Colors.white, () => _updateFlag(RaceFlag.checkered), textColor: Colors.black),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: (displaySession?.status == SessionStatus.active 
+                                ? _getFlagColor(currentFlag) 
+                                : _getStatusColor(displaySession?.status ?? SessionStatus.scheduled)).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                                color: (displaySession?.status == SessionStatus.active 
+                                    ? _getFlagColor(currentFlag) 
+                                    : _getStatusColor(displaySession?.status ?? SessionStatus.scheduled)).withOpacity(0.5), 
+                                width: 2),
+                          ),
+                          child: Text(
+                            displaySession?.status == SessionStatus.active 
+                              ? 'RACE STATUS: ${currentFlag.name.toUpperCase()} FLAG'
+                              : 'SESSION: ${displaySession?.status.name.toUpperCase() ?? "UNKNOWN"}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                              color: displaySession?.status == SessionStatus.active 
+                                ? (currentFlag == RaceFlag.checkered ? Colors.white : _getFlagColor(currentFlag))
+                                : _getStatusColor(displaySession?.status ?? SessionStatus.scheduled),
+                            ),
+                          ),
+                        ),
                         const SizedBox(width: 16),
-                        _buildActionButton('STOP', Icons.stop, Colors.grey.shade800, () {}, isOutlined: true),
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            _buildActionButton('GREEN', Icons.flag, SpeedDataTheme.flagGreen, () => _updateFlag(RaceFlag.green, session: displaySession, currentEvent: eventData), isActive: displaySession?.status == SessionStatus.active && currentFlag == RaceFlag.green),
+                            _buildActionButton('SC', Icons.flag, SpeedDataTheme.flagYellow, () => _updateFlag(RaceFlag.yellow, session: displaySession, currentEvent: eventData), isActive: displaySession?.status == SessionStatus.active && currentFlag == RaceFlag.yellow),
+                            _buildActionButton('RED', Icons.flag, SpeedDataTheme.flagRed, () => _updateFlag(RaceFlag.red, session: displaySession, currentEvent: eventData), isActive: displaySession?.status == SessionStatus.active && currentFlag == RaceFlag.red),
+                            _buildActionButton('FINISH', Icons.flag, Colors.white, () => _updateFlag(RaceFlag.checkered, session: displaySession, currentEvent: eventData), textColor: Colors.black, isActive: displaySession?.status == SessionStatus.active && currentFlag == RaceFlag.checkered),
+                            const SizedBox(width: 8),
+                            _buildActionButton('STOP', Icons.stop, Colors.grey.shade800, () {}, isOutlined: true),
+                          ],
+                        ),
                       ],
                     ),
                     const SizedBox(width: 24),
@@ -242,24 +375,52 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
                           _buildInfoItem('Laps', '${displaySession.totalLaps ?? "-"}'),
                           const SizedBox(width: 16),
                           _buildInfoItem('Start', displaySession.startMethod),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(Icons.edit, size: 16, color: SpeedDataTheme.textSecondary),
+                            onPressed: () async {
+                               await Navigator.push(
+                                 context,
+                                 MaterialPageRoute(
+                                   builder: (context) => SessionSettingsScreen(
+                                     session: displaySession!,
+                                     onSave: (updatedSession) {
+                                        _updateSessionStatus(updatedSession, eventData);
+                                     },
+                                   ),
+                                 ),
+                               );
+                            },
+                            tooltip: 'Edit Session Settings',
+                          ),
                         ],
                       ),
                     const Spacer(),
-                    // Session Timer Placeholder
+                    // Session Timer
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      decoration: BoxDecoration(
-                         color: Colors.black,
-                         borderRadius: BorderRadius.circular(4),
-                         border: Border.all(color: SpeedDataTheme.textSecondary)
-                      ),
-                      child: const Text('00:00:00', style: TextStyle(fontFamily: 'monospace', fontSize: 24, color: SpeedDataTheme.flagGreen)),
+                      child: displaySession != null 
+                        ? StreamBuilder<List<PassingModel>>(
+                            stream: _firestoreService.getPassingsStream(eventData.trackId),
+                            builder: (context, psnaps) {
+                               int maxLap = 0;
+                               if (psnaps.hasData) {
+                                 for (var p in psnaps.data!) {
+                                   if (p.participantUid != 'SYSTEM' && p.lapNumber > maxLap) {
+                                      maxLap = p.lapNumber;
+                                   }
+                                 }
+                               }
+                               return SessionClock(session: displaySession!, currentLeaderLap: maxLap);
+                            }
+                        )
+                        : const Text('00:00:00', style: TextStyle(fontFamily: 'monospace', fontSize: 24, color: SpeedDataTheme.flagGreen)),
                     ),
                   ],
                 ),
               ),
               const Divider(height: 1, color: SpeedDataTheme.borderColor),
-              // Main Content Area (3 Panes)
+              // Main Content Area...
               Expanded(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -277,8 +438,10 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
                           ),
                           Expanded(
                             child: PassingsPanel(
-                              raceId: event.trackId,
+                              raceId: eventData.trackId,
+                              sessionId: displaySession?.id,
                               sessionType: displaySession?.type ?? SessionType.practice,
+                              session: displaySession, // Pass full session for time-based filtering
                             ),
                           ),
                         ],
@@ -297,10 +460,26 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
                             child: const Text('Results', style: TextStyle(fontWeight: FontWeight.bold)),
                           ),
                           Expanded(
-                            child: LeaderboardPanel(
-                               raceId: event.trackId,
-                               checkpoints: [], // TODO: Pass actual checkpoints
-                               sessionType: displaySession?.type ?? SessionType.race,
+                            child: FutureBuilder<Map<String, dynamic>?>(
+                               future: _firestoreService.getRace(eventData.trackId),
+                               builder: (context, trackSnapshot) {
+                                 final checkpoints = trackSnapshot.data?['checkpoints'] as List<dynamic>? ?? [];
+                                 return StreamBuilder<List<Competitor>>(
+                                   stream: _firestoreService.getCompetitorsStream(eventData.id),
+                                   builder: (context, compSnapshot) {
+                                     final competitors = compSnapshot.data ?? [];
+                                     final compMap = { for (var item in competitors) item.uid : item };
+                                     
+                                     return LeaderboardPanel(
+                                        raceId: eventData.trackId,
+                                        sessionId: displaySession?.id,
+                                        checkpoints: checkpoints,
+                                        sessionType: displaySession?.type ?? SessionType.race,
+                                        competitorsByUid: compMap,
+                                     );
+                                   }
+                                 );
+                               }
                             ),
                           ),
                         ],
@@ -318,8 +497,8 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
                              child: Stack(
                                children: [
                                  AdminMapView(
-                                   raceId: event.trackId, 
-                                   raceName: event.name,
+                                   raceId: eventData.trackId, 
+                                   raceName: eventData.name,
                                    sessionType: displaySession?.type ?? SessionType.practice,
                                  ),
                                   const Positioned(
@@ -341,7 +520,7 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
                                   color: SpeedDataTheme.bgSurface,
                                   child: const Text('Sessions (Click to Select)', style: TextStyle(fontWeight: FontWeight.bold)),
                                 ),
-                                Expanded(child: _buildSessionsList(event, displaySession?.id)),
+                                Expanded(child: _buildSessionsList(eventData, displaySession?.id)),
                               ],
                             ),
                           ),
@@ -353,8 +532,11 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
               ),
             ],
           ),
-        ));
-      }
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -442,18 +624,196 @@ class _RaceControlScreenState extends State<RaceControlScreen> with SingleTicker
     );
   }
 
-  Widget _buildActionButton(String label, IconData icon, Color color, VoidCallback onPressed, {Color textColor = Colors.white, bool isOutlined = false}) {
+  Widget _buildActionButton(String label, IconData icon, Color color, VoidCallback onPressed, {Color textColor = Colors.white, bool isOutlined = false, bool isActive = false}) {
     return ElevatedButton.icon(
       onPressed: onPressed,
-      icon: Icon(icon, color: textColor, size: 18),
-      label: Text(label, style: TextStyle(color: textColor, fontWeight: FontWeight.bold)),
+      icon: Icon(icon, color: isActive && !isOutlined ? (color == Colors.white ? Colors.black : Colors.white) : textColor, size: 18),
+      label: Text(label, style: TextStyle(color: isActive && !isOutlined ? (color == Colors.white ? Colors.black : Colors.white) : textColor, fontWeight: FontWeight.bold)),
       style: ElevatedButton.styleFrom(
-        backgroundColor: isOutlined ? Colors.transparent : color,
+        backgroundColor: isActive ? color : (isOutlined ? Colors.transparent : color.withOpacity(0.3)),
         foregroundColor: textColor,
-        side: isOutlined ? BorderSide(color: color) : null,
+        side: BorderSide(color: isActive ? Colors.white : (isOutlined ? color : Colors.transparent), width: isActive ? 2 : 1),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+        elevation: isActive ? 8 : 0,
       ),
+    );
+  }
+
+  void _showManualEntryDialog(String raceId, {String? sessionId}) {
+    final carController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: SpeedDataTheme.bgElevated,
+        title: const Text('Manual Passing Entry', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: carController,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            labelText: 'Car Number',
+            labelStyle: TextStyle(color: SpeedDataTheme.textSecondary),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: SpeedDataTheme.borderColor)),
+          ),
+          keyboardType: TextInputType.number,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+          ElevatedButton(
+            onPressed: () async {
+              if (carController.text.isNotEmpty) {
+                 final passing = PassingModel(
+                   id: '',
+                   raceId: raceId,
+                   sessionId: sessionId,
+                   participantUid: 'MANUAL',
+                   driverName: 'MANUAL ENTRY',
+                   carNumber: carController.text,
+                   timestamp: DateTime.now(),
+                   checkpointIndex: 0, 
+                   lapNumber: 0,
+                   flags: ['manual'],
+                 );
+                 await _firestoreService.addPassing(passing);
+                 if (mounted) Navigator.pop(context);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: SpeedDataTheme.flagGreen),
+            child: const Text('ADD PASSING', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class SessionClock extends StatefulWidget {
+  final RaceSession session;
+  final int? currentLeaderLap; // Optional, for lap-based finish
+  const SessionClock({Key? key, required this.session, this.currentLeaderLap}) : super(key: key);
+
+  @override
+  State<SessionClock> createState() => _SessionClockState();
+}
+
+class _SessionClockState extends State<SessionClock> {
+  Timer? _timer;
+  String _displayTime = '00:00:00';
+
+  @override
+  void initState() {
+    super.initState();
+    _startTimer();
+  }
+
+  @override
+  void didUpdateWidget(SessionClock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session.status != widget.session.status || 
+        oldWidget.session.actualStartTime != widget.session.actualStartTime) {
+      _startTimer();
+    }
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) _updateTime();
+    });
+    _updateTime();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _updateTime() {
+    if (widget.session.status == SessionStatus.scheduled || widget.session.actualStartTime == null) {
+      setState(() => _displayTime = '00:00:00');
+      return;
+    }
+
+    final now = DateTime.now();
+    final elapsed = now.difference(widget.session.actualStartTime!);
+    
+    String elapsedStr = _formatShortDuration(elapsed);
+    String remainingStr = '--:--:--';
+
+    if (widget.session.finishMode == 'Laps' && widget.session.totalLaps != null) {
+      final lapsLeft = widget.session.totalLaps! - (widget.currentLeaderLap ?? 0);
+      remainingStr = lapsLeft > 0 ? '$lapsLeft LAPS LEFT' : 'FINAL LAP';
+    } else {
+      // Countdown logic
+      final totalDuration = Duration(minutes: widget.session.durationMinutes);
+      final remaining = totalDuration - elapsed;
+      if (remaining.isNegative) {
+        remainingStr = '+${_formatShortDuration(elapsed - totalDuration)} OVER';
+      } else {
+        remainingStr = _formatShortDuration(remaining);
+      }
+    }
+
+    setState(() => _displayTime = '$elapsedStr / $remainingStr');
+  }
+
+  String _formatShortDuration(Duration d) {
+    final h = d.inHours.toString().padLeft(2, '0');
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h == '00' ? '$m:$s' : '$h:$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = _displayTime.split(' / ');
+    final elapsed = parts.first;
+    final remaining = parts.length > 1 ? parts.last : '';
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            const Text('ELAPSED: ', style: TextStyle(fontSize: 10, color: SpeedDataTheme.textSecondary, fontWeight: FontWeight.bold)),
+            Text(
+              elapsed,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: SpeedDataTheme.flagGreen,
+              ),
+            ),
+          ],
+        ),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(
+              remaining.contains('LAPS') ? 'LAPS: ' : 'REMAINING: ', 
+              style: const TextStyle(fontSize: 10, color: SpeedDataTheme.textSecondary, fontWeight: FontWeight.bold)
+            ),
+            Text(
+              remaining,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: _displayTime.contains('OVER') ? SpeedDataTheme.flagRed : SpeedDataTheme.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

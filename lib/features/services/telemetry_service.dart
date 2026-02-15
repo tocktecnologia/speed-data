@@ -11,10 +11,20 @@ class TelemetryService extends ChangeNotifier {
   StreamSubscription<Position>? _positionStreamSubscription;
   Timer? _syncTimer;
 
-  bool _enableSendDataToCloud = true;
+  bool _enableSendDataToCloud = false; // Default to false, wait for active session
   bool get enableSendDataToCloud => _enableSendDataToCloud;
   set enableSendDataToCloud(bool value) {
-    _enableSendDataToCloud = value;
+    if (_enableSendDataToCloud != value) {
+      _enableSendDataToCloud = value;
+      notifyListeners();
+    }
+  }
+
+  void setSessionId(String? id) {
+    if (_currentSessionId != id) {
+      _currentSessionId = id;
+      notifyListeners();
+    }
   }
 
   bool _isRecording = false;
@@ -49,9 +59,11 @@ class TelemetryService extends ChangeNotifier {
     // Enable Wakelock to keep screen on and CPU active
     await WakelockPlus.enable();
 
-    // Generate Session ID (dd-MM-yyyy HH:mm:ss)
-    final now = DateTime.now();
-    _currentSessionId = DateFormat('dd-MM-yyyy HH:mm:ss').format(now);
+    // Generate Session ID (dd-MM-yyyy HH:mm:ss) if not already set
+    if (_currentSessionId == null) {
+      final now = DateTime.now();
+      _currentSessionId = DateFormat('dd-MM-yyyy HH:mm:ss').format(now);
+    }
 
     // Check permissions
     LocationPermission permission = await Geolocator.checkPermission();

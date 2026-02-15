@@ -93,6 +93,8 @@ class _SessionSettingsScreenState extends State<SessionSettingsScreen> with Sing
       finishMode: _finishMode,
       qualificationCriteria: _qualCriteria,
       qualificationValue: _qualValue,
+      actualStartTime: widget.session?.actualStartTime,
+      actualEndTime: widget.session?.actualEndTime,
     );
 
     widget.onSave(newSession);

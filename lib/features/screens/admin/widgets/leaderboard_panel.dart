@@ -3,18 +3,23 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/theme/speed_data_theme.dart';
+import 'package:speed_data/features/models/competitor_model.dart';
 import 'dart:async';
 
 class LeaderboardPanel extends StatefulWidget {
   final String raceId;
+  final String? sessionId;
   final List<dynamic> checkpoints;
   final SessionType sessionType;
+  final Map<String, Competitor> competitorsByUid;
 
   const LeaderboardPanel({
     Key? key,
     required this.raceId,
+    this.sessionId,
     required this.checkpoints,
     this.sessionType = SessionType.race,
+    this.competitorsByUid = const {},
   }) : super(key: key);
 
   @override
@@ -24,6 +29,7 @@ class LeaderboardPanel extends StatefulWidget {
 class PilotStats {
   final String uid;
   final String displayName;
+  final String carNumber;
   final double averageLapTime; // in ms
   final double bestLapTime; // in ms
   final int completedLaps;
@@ -36,6 +42,7 @@ class PilotStats {
   PilotStats({
     required this.uid,
     required this.displayName,
+    required this.carNumber,
     required this.averageLapTime,
     required this.bestLapTime,
     required this.completedLaps,
@@ -61,6 +68,21 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
   }
 
   @override
+  void didUpdateWidget(LeaderboardPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sessionId != widget.sessionId) {
+      // Clear old state and re-subscribe
+      _participantsSubscription?.cancel();
+      for (var sub in _sessionSubscriptions.values) sub.cancel();
+      for (var sub in _lapSubscriptions.values) sub.cancel();
+      _sessionSubscriptions.clear();
+      _lapSubscriptions.clear();
+      _stats.clear();
+      _subscribeParticipants();
+    }
+  }
+
+  @override
   void dispose() {
     _participantsSubscription?.cancel();
     for (var sub in _sessionSubscriptions.values) sub.cancel();
@@ -78,23 +100,25 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
             data['display_name'] ?? 'Pilot ${uid.substring(0, 4)}';
 
         if (!_sessionSubscriptions.containsKey(uid)) {
-          _subscribeToPilotSession(uid, displayName);
+          final competitor = widget.competitorsByUid[uid];
+          final name = competitor?.name ?? displayName;
+          _subscribeToPilotSession(uid, name, competitor?.number ?? '??');
         }
       }
     });
   }
 
-  void _subscribeToPilotSession(String uid, String displayName) {
+  void _subscribeToPilotSession(String uid, String displayName, String carNumber) {
     _sessionSubscriptions[uid] =
-        _firestoreService.getLaps(widget.raceId, uid).listen((snapshot) {
+        _firestoreService.getLaps(widget.raceId, uid, sessionId: widget.sessionId).listen((snapshot) {
       if (snapshot.docs.isNotEmpty) {
-        _processLaps(uid, displayName, snapshot.docs);
+        _processLaps(uid, displayName, carNumber, snapshot.docs);
       }
     });
   }
 
   void _processLaps(
-      String uid, String displayName, List<QueryDocumentSnapshot> docs) {
+      String uid, String displayName, String carNumber, List<QueryDocumentSnapshot> docs) {
     if (docs.isEmpty) return;
 
     double totalTime = 0;
@@ -146,6 +170,7 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
         _stats[uid] = PilotStats(
           uid: uid,
           displayName: displayName,
+          carNumber: carNumber, // New field needed in PilotStats
           averageLapTime: average,
           bestLapTime: best,
           completedLaps: count,
@@ -220,9 +245,47 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
             itemBuilder: (context, index) {
               final stat = pilots[index];
               final pos = index + 1;
-              final diff = index == 0 ? '-' : '+12.345'; // TODO: Calculate actual Diff
-              final gap = index == 0 ? '-' : '+0.567'; // TODO: Calculate actual Gap
-              final totalTime = '15:23.456'; // TODO: Calculate total time
+              
+              // Diff & Gap Calculations
+              String diffStr = '-';
+              String gapStr = '-';
+              
+              if (index > 0) {
+                final leader = pilots[0];
+                final prev = pilots[index - 1];
+                
+                if (widget.sessionType == SessionType.race) {
+                  // Race: Diff in laps or time
+                  if (leader.completedLaps > stat.completedLaps) {
+                    final lapDiff = leader.completedLaps - stat.completedLaps;
+                    diffStr = '-$lapDiff Laps';
+                  } else {
+                     // Same lap, diff in total time (if available) - for now using best lap diff as proxy or placeholder
+                     diffStr = (stat.bestLapTime > 0 && leader.bestLapTime > 0) 
+                        ? '+${((stat.bestLapTime - leader.bestLapTime) / 1000).toStringAsFixed(3)}' 
+                        : '-';
+                  }
+
+                  if (prev.completedLaps > stat.completedLaps) {
+                    final lapGap = prev.completedLaps - stat.completedLaps;
+                    gapStr = '-$lapGap Laps';
+                  } else {
+                    gapStr = (stat.bestLapTime > 0 && prev.bestLapTime > 0)
+                        ? '+${((stat.bestLapTime - prev.bestLapTime) / 1000).toStringAsFixed(3)}'
+                        : '-';
+                  }
+                } else {
+                  // Practice/Qualifying: Diff in Best Lap Time
+                  if (stat.bestLapTime > 0 && leader.bestLapTime > 0) {
+                    diffStr = '+${((stat.bestLapTime - leader.bestLapTime) / 1000).toStringAsFixed(3)}';
+                  }
+                  if (stat.bestLapTime > 0 && prev.bestLapTime > 0) {
+                    gapStr = '+${((stat.bestLapTime - prev.bestLapTime) / 1000).toStringAsFixed(3)}';
+                  }
+                }
+              }
+
+              final totalTime = '---'; // Total session time needs tracking start of session
               final bestLap = stat.bestLapTime > 0 ? (stat.bestLapTime / 1000).toStringAsFixed(3) : '-';
               final lastLap = stat.intervalStrings.isNotEmpty ? stat.intervalStrings.last : '-';
 
@@ -255,12 +318,12 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
                   child: Row(
                     children: [
                       SizedBox(width: 40, child: Text('$pos', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-                      SizedBox(width: 40, child: Text('?', style: const TextStyle(fontSize: 12, color: SpeedDataTheme.textSecondary))), // Car Number
+                      SizedBox(width: 40, child: Text(stat.carNumber, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: SpeedDataTheme.textSecondary))),
                       Expanded(flex: 3, child: Text(stat.displayName, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
                       SizedBox(width: 40, child: Text('${stat.completedLaps}', style: const TextStyle(fontSize: 12))),
                       Expanded(flex: 2, child: Text(totalTime, style: const TextStyle(fontSize: 12, fontFamily: 'monospace'))),
-                      Expanded(flex: 2, child: Text(diff, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: SpeedDataTheme.textSecondary))),
-                      Expanded(flex: 2, child: Text(gap, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: SpeedDataTheme.textSecondary))),
+                      Expanded(flex: 2, child: Text(diffStr, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: SpeedDataTheme.textSecondary))),
+                      Expanded(flex: 2, child: Text(gapStr, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: SpeedDataTheme.textSecondary))),
                       Expanded(flex: 2, child: Text(bestLap, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: SpeedDataTheme.dataSpeed))),
                       Expanded(flex: 2, child: Text(lastLap, style: const TextStyle(fontSize: 12, fontFamily: 'monospace'))),
                     ],

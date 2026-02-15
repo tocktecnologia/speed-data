@@ -387,7 +387,7 @@ class _SignUpWidgetState extends State<SignUpWidget> {
                                                 final roleEnum = UserRole.fromString(roleStr);
                                                 final uid = user!.uid!;
 
-                                                await FirestoreService().setUserRole(uid, roleEnum);
+                                                await FirestoreService().setUserRole(uid, roleEnum, email: user.email);
 
                                                 if (roleEnum == UserRole.pilot) {
                                                   // Ensure we are mounted before navigating

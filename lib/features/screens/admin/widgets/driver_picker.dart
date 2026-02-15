@@ -51,7 +51,7 @@ class _DriverPickerState extends State<DriverPicker> {
           const SizedBox(height: 10),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: _db.collection('users').orderBy('email').snapshots(),
+              stream: _db.collection('users').snapshots(),
               builder: (context, snapshot) {
                 if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
                 
@@ -62,8 +62,8 @@ class _DriverPickerState extends State<DriverPicker> {
                   itemBuilder: (context, index) {
                     final data = users[index].data() as Map<String, dynamic>;
                     final uid = users[index].id;
-                    final email = data['email'] ?? 'No Email';
-                    final name = data['display_name'] ?? 'No Name';
+                    final email = data['email'] ?? 'No Email (Not Synced)';
+                    final name = data['display_name'] ?? data['name'] ?? 'Unnamed User';
                     final isSelected = _selectedIds.contains(uid);
 
                     return CheckboxListTile(

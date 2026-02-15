@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:speed_data/features/services/telemetry_service.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
+import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/utils/map_utils.dart';
 
 class ActiveRaceScreen extends StatefulWidget {
@@ -32,6 +34,12 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   Set<Polyline> _polylines = {};
   Color _userColor = Colors.blue; // Default
 
+  // Auto-sync & Flag state
+  String? _currentEventId;
+  RaceSession? _activeSession;
+  StreamSubscription? _statusSubscription;
+  Color _sessionBackgroundColor = Colors.black;
+
   @override
   void initState() {
     super.initState();
@@ -53,11 +61,57 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     // Ensure we stop recording and dispose the service
     _telemetryService.stopRecording();
     _telemetryService.dispose();
+    _statusSubscription?.cancel(); // Cancel subscription on dispose
     super.dispose();
   }
 
   Future<void> _loadRaceDetails() async {
     final stream = _firestoreService.getRaceStream(widget.raceId);
+    
+    // Auto-discover event for this track
+    print('DEBUG [ActiveRace]: Looking for active event on track: ${widget.raceId}');
+    _firestoreService.getActiveEventForTrack(widget.raceId).then((event) {
+      if (event == null) {
+        print('DEBUG [ActiveRace]: No active event found for track ${widget.raceId}');
+        return;
+      }
+      
+      if (mounted) {
+        print('DEBUG [ActiveRace]: Found event "${event.name}" (${event.id})');
+        setState(() => _currentEventId = event.id);
+        
+        // Listen to active session
+        _statusSubscription?.cancel();
+        _statusSubscription = _firestoreService.getEventActiveSessionStream(event.id).listen((session) {
+          if (mounted) {
+            if (session != null) {
+              print('DEBUG [ActiveRace]: Active session detected: ${session.name} | Status: ${session.status.name} | Flag: ${session.currentFlag.name}');
+            } else {
+              print('DEBUG [ActiveRace]: No active session in event');
+            }
+            
+            setState(() {
+              _activeSession = session;
+              if (session != null) {
+                // Sync telemetry with active session
+                _telemetryService.setSessionId(session.id);
+                _telemetryService.enableSendDataToCloud = true;
+                
+                // Update UI Color
+                _sessionBackgroundColor = _getFlagColor(session.currentFlag);
+                print('DEBUG [ActiveRace]: Background color updated to ${session.currentFlag.name}');
+              } else {
+                _telemetryService.enableSendDataToCloud = false;
+                _sessionBackgroundColor = Colors.black;
+              }
+            });
+          }
+        });
+      }
+    }).catchError((e) {
+      print('DEBUG [ActiveRace]: Error finding event: $e');
+    });
+
     final snapshot = await stream.first;
 
     // Fetch user color
@@ -182,11 +236,27 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     }
   }
 
+  Color _getFlagColor(RaceFlag flag) {
+    switch (flag) {
+      case RaceFlag.green:
+        return Colors.green.withOpacity(0.8);
+      case RaceFlag.yellow:
+        return Colors.orange.withOpacity(0.8);
+      case RaceFlag.red:
+        return Colors.red.withOpacity(0.8);
+      case RaceFlag.checkered:
+        return Colors.white.withOpacity(0.9);
+      default:
+        return Colors.black;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider.value(
       value: _telemetryService,
       child: Scaffold(
+        backgroundColor: _sessionBackgroundColor,
         appBar: AppBar(
           title: Text('Race: ${widget.raceName}'),
           backgroundColor: Colors.black,
@@ -207,10 +277,10 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
             return Column(
               children: [
-                // Info Panel
+                // Info Panel - Now uses session flag color
                 Container(
                   padding: const EdgeInsets.all(16),
-                  color: Colors.grey[900],
+                  color: _sessionBackgroundColor,
                   width: double.infinity,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -263,10 +333,10 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                   ),
                 ),
 
-                // Controls
+                // Controls - Also uses session flag color
                 Container(
                   padding: const EdgeInsets.all(20),
-                  color: Colors.black,
+                  color: _sessionBackgroundColor.withOpacity(0.9),
                   child: Row(
                     children: [
                       Expanded(

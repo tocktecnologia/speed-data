@@ -5,6 +5,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
+import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/utils/map_utils.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -56,7 +57,12 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
   bool _enableSendDataToCloud = true;
   static const int _syncIntervalSeconds = 5;
 
-  @override
+  // Auto-sync & Flag state
+  String? _currentEventId;
+  StreamSubscription? _statusSubscription;
+  Color _sessionBackgroundColor = Colors.black;
+  String _driverName = 'Unknown Driver'; // Driver name for passing records
+
   void initState() {
     super.initState();
     _loadRaceDetails();
@@ -64,11 +70,74 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
 
   @override
   void dispose() {
-    _stopSimulation();
+    _statusSubscription?.cancel();
+    _simulationTimer?.cancel();
+    _syncTimer?.cancel();
+    WakelockPlus.disable();
     super.dispose();
   }
 
+  Color _getFlagColor(RaceFlag flag) {
+    switch (flag) {
+      case RaceFlag.green:
+        return Colors.green.withOpacity(0.8);
+      case RaceFlag.yellow:
+        return Colors.orange.withOpacity(0.8);
+      case RaceFlag.red:
+        return Colors.red.withOpacity(0.8);
+      case RaceFlag.checkered:
+        return Colors.white.withOpacity(0.9);
+      default:
+        return Colors.black;
+    }
+  }
+
   Future<void> _loadRaceDetails() async {
+    // Auto-discover event for this track
+    _firestoreService.getActiveEventForTrack(widget.raceId).then((event) async {
+      if (event != null && mounted) {
+        setState(() => _currentEventId = event.id);
+        
+        // Fetch driver name from competitor data (NOW that we have eventId)
+        print('DEBUG [GpsTest]: Fetching driver name for user ${widget.userId} in event ${event.id}');
+        try {
+          final competitor = await _firestoreService.getCompetitorByUid(event.id, widget.userId);
+          print('DEBUG [GpsTest]: Competitor data = $competitor');
+          if (competitor != null) {
+            final fullName = '${competitor.firstName} ${competitor.lastName}'.trim();
+            if (mounted) {
+              setState(() {
+                _driverName = fullName.isNotEmpty ? fullName : 'Unknown Driver';
+              });
+            }
+            print('DEBUG [GpsTest]: Driver name loaded: $_driverName');
+          } else {
+            print('DEBUG [GpsTest]: Competitor not found for this user in event ${event.id}');
+          }
+        } catch (e) {
+          print('DEBUG [GpsTest]: Error fetching competitor name: $e');
+        }
+        
+        // Listen to active session
+        _statusSubscription?.cancel();
+        _statusSubscription = _firestoreService.getEventActiveSessionStream(event.id).listen((session) {
+          if (mounted) {
+            setState(() {
+               if (session != null) {
+                  // Sync telemetry with active session
+                  _currentSessionId = session.id;
+                  
+                  // Update UI Color
+                  _sessionBackgroundColor = _getFlagColor(session.currentFlag);
+               } else {
+                  _sessionBackgroundColor = Colors.black;
+               }
+            });
+          }
+        });
+      }
+    });
+
     final stream = _firestoreService.getRaceStream(widget.raceId);
     final snapshot = await stream.first;
 
@@ -222,9 +291,10 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
 
     final int intervalMs = (1000 / _updatesPerSecond).round();
 
+    print('DEBUG [GpsTest]: Starting simulation with session ID: $_currentSessionId');
     _buffer.clear();
-    final now = DateTime.now();
-    _currentSessionId = DateFormat('dd-MM-yyyy HH:mm:ss').format(now);
+    // Session ID is now set automatically from Firestore event listener
+    // No need to generate a new one here
 
     _syncTimer =
         Timer.periodic(const Duration(seconds: _syncIntervalSeconds), (_) {
@@ -328,6 +398,7 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: _sessionBackgroundColor,
       appBar: AppBar(
         title: Text('GPS Test: ${widget.raceName}'),
         backgroundColor: Colors.black,
@@ -335,10 +406,10 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
       ),
       body: Column(
         children: [
-          // Info Panel (Replication of ActiveRaceScreen)
+          // Info Panel (Replication of ActiveRaceScreen) - Now uses session flag color
           Container(
             padding: const EdgeInsets.all(16),
-            color: Colors.grey[900],
+            color: _sessionBackgroundColor,
             width: double.infinity,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -385,10 +456,10 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
             ),
           ),
 
-          // Controls
+          // Controls - Also uses session flag color
           Container(
             padding: const EdgeInsets.all(20),
-            color: Colors.black,
+            color: _sessionBackgroundColor.withOpacity(0.9),
             child: Column(
               children: [
                 // Speed Parameter
@@ -563,8 +634,13 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
     try {
       // 1. Send Batch to Cloud Function
       if (_enableSendDataToCloud) {
-        await _firestoreService.sendTelemetryBatch(widget.raceId, widget.userId,
-            batch, _checkpoints, _currentSessionId);
+        await _firestoreService.sendTelemetryBatch(
+          widget.raceId, 
+          widget.userId,
+          batch, 
+          _checkpoints, 
+          _currentSessionId,
+        );
       }
 
       if (kDebugMode) {

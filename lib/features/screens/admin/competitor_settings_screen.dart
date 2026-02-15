@@ -1,6 +1,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/competitor_model.dart';
+import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/screens/admin/widgets/driver_picker.dart';
 import 'package:uuid/uuid.dart';
 
@@ -199,11 +200,96 @@ class _CompetitorSettingsScreenState extends State<CompetitorSettingsScreen> wit
            decoration: const InputDecoration(labelText: 'Driver Reg (License)', suffixIcon: Icon(Icons.autorenew)),
         ),
          const SizedBox(height: 24),
+         const SizedBox(height: 24),
          const Text('Linked User (Replaces Transponder)', style: TextStyle(fontWeight: FontWeight.bold)),
+         const SizedBox(height: 8),
+         Row(
+           children: [
+             Expanded(
+               child: TextFormField(
+                 controller: _emailController,
+                 decoration: const InputDecoration(
+                   labelText: 'User Email',
+                   hintText: 'Search user by email to link',
+                   prefixIcon: Icon(Icons.email),
+                 ),
+                 keyboardType: TextInputType.emailAddress,
+               ),
+             ),
+             const SizedBox(width: 8),
+             ElevatedButton(
+               onPressed: () async {
+                 if (_emailController.text.isEmpty) {
+                   ScaffoldMessenger.of(context).showSnackBar(
+                     const SnackBar(content: Text('Please enter an email address'))
+                   );
+                   return;
+                 }
+                 
+                 // Show loading
+                 ScaffoldMessenger.of(context).showSnackBar(
+                   const SnackBar(content: Row(
+                     children: [
+                       SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                       SizedBox(width: 12),
+                       Text('Searching...'),
+                     ],
+                   ))
+                 );
+
+                 final fs = FirestoreService();
+                 final userData = await fs.getUserByEmail(_emailController.text.trim());
+                 
+                 if (mounted) {
+                   ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                   if (userData != null) {
+                     setState(() {
+                       _uid = userData['uid'] ?? '';
+                       // If we have a name, we can also pre-fill if empty
+                       if (_firstNameController.text.isEmpty && userData.containsKey('name')) {
+                         final nameParts = (userData['name'] as String).split(' ');
+                         _firstNameController.text = nameParts.first;
+                         if (nameParts.length > 1) {
+                           _lastNameController.text = nameParts.sublist(1).join(' ');
+                         }
+                         _autoGenerateLabel();
+                       }
+                     });
+                     ScaffoldMessenger.of(context).showSnackBar(
+                       SnackBar(content: Text('User linked: ${userData['name'] ?? userData['email']}'))
+                     );
+                   } else {
+                     ScaffoldMessenger.of(context).showSnackBar(
+                       const SnackBar(content: Text('User not found with this email'))
+                     );
+                   }
+                 }
+               },
+               child: const Text('SEARCH'),
+             ),
+           ],
+         ),
+         if (_uid.isNotEmpty)
+           Padding(
+             padding: const EdgeInsets.only(top: 8.0),
+             child: ListTile(
+               leading: const Icon(Icons.link, color: Colors.green),
+               title: const Text('Linked Account Active'),
+               subtitle: Text('UID: $_uid'),
+               trailing: IconButton(
+                 icon: const Icon(Icons.link_off),
+                 onPressed: () => setState(() => _uid = ''),
+                 tooltip: 'Unlink User',
+               ),
+               tileColor: Colors.green.withOpacity(0.05),
+               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+             ),
+           ),
+         const SizedBox(height: 16),
          ListTile(
-           title: Text(_uid.isNotEmpty ? 'Linked User: $_uid' : 'No User Linked'), // Should use name if possible
-           subtitle: Text(_emailController.text),
-           trailing: const Icon(Icons.link),
+           title: const Text('Browse All Users'),
+           leading: const Icon(Icons.people),
+           trailing: const Icon(Icons.chevron_right),
            onTap: () {
              showModalBottomSheet(
                 context: context, 
@@ -213,8 +299,7 @@ class _CompetitorSettingsScreenState extends State<CompetitorSettingsScreen> wit
                     if (selected.isNotEmpty) {
                        setState(() {
                          _uid = selected.first;
-                         // In a real app we would fetch the user email/name here
-                         _emailController.text = 'User selected'; 
+                         // Ideally we'd fetch the email here too, but the picker only returns IDs
                        });
                     }
                   },

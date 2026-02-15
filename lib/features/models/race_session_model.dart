@@ -1,12 +1,14 @@
-
 enum SessionType { practice, qualifying, race }
 
 enum SessionStatus { scheduled, active, finished }
+
+enum RaceFlag { green, yellow, red, checkered }
 
 class RaceSession {
   final String id;
   final SessionType type;
   final SessionStatus status;
+  final RaceFlag currentFlag;
   final DateTime scheduledTime;
   final int durationMinutes; 
   final int? totalLaps; 
@@ -27,11 +29,16 @@ class RaceSession {
   // Qualification
   final String qualificationCriteria; // 'None', 'Max % Best Lap', etc.
   final double? qualificationValue; // e.g., 107%
+  
+  // Dynamic State (Orbits style)
+  final DateTime? actualStartTime;
+  final DateTime? actualEndTime;
 
   RaceSession({
     required this.id,
     required this.type,
     required this.status,
+    this.currentFlag = RaceFlag.green,
     required this.scheduledTime,
     this.durationMinutes = 60,
     this.totalLaps,
@@ -46,6 +53,8 @@ class RaceSession {
     this.finishMode = 'Time',
     this.qualificationCriteria = 'None',
     this.qualificationValue,
+    this.actualStartTime,
+    this.actualEndTime,
   });
 
   Map<String, dynamic> toMap() {
@@ -53,6 +62,7 @@ class RaceSession {
       'id': id,
       'type': type.name,
       'status': status.name,
+      'current_flag': currentFlag.name,
       'scheduled_time': scheduledTime.millisecondsSinceEpoch,
       'duration_minutes': durationMinutes,
       'total_laps': totalLaps,
@@ -67,6 +77,8 @@ class RaceSession {
       'finish_mode': finishMode,
       'qualification_criteria': qualificationCriteria,
       'qualification_value': qualificationValue,
+      'actual_start_time': actualStartTime?.millisecondsSinceEpoch,
+      'actual_end_time': actualEndTime?.millisecondsSinceEpoch,
     };
   }
 
@@ -77,6 +89,8 @@ class RaceSession {
           (e) => e.name == map['type'], orElse: () => SessionType.practice),
       status: SessionStatus.values.firstWhere(
           (e) => e.name == map['status'], orElse: () => SessionStatus.scheduled),
+      currentFlag: RaceFlag.values.firstWhere(
+          (e) => e.name == (map['current_flag'] ?? map['flag']), orElse: () => RaceFlag.green),
       scheduledTime: DateTime.fromMillisecondsSinceEpoch(
           map['scheduled_time'] is num ? (map['scheduled_time'] as num).toInt() : 0),
       durationMinutes: map['duration_minutes'] is num ? (map['duration_minutes'] as num).toInt() : 60,
@@ -92,6 +106,8 @@ class RaceSession {
       finishMode: map['finish_mode'] is String ? map['finish_mode'] : 'Time',
       qualificationCriteria: map['qualification_criteria'] as String? ?? 'None',
       qualificationValue: map['qualification_value'] is num ? (map['qualification_value'] as num).toDouble() : null,
+      actualStartTime: map['actual_start_time'] != null ? DateTime.fromMillisecondsSinceEpoch(map['actual_start_time']) : null,
+      actualEndTime: map['actual_end_time'] != null ? DateTime.fromMillisecondsSinceEpoch(map['actual_end_time']) : null,
     );
   }
 
@@ -99,6 +115,7 @@ class RaceSession {
     String? id,
     SessionType? type,
     SessionStatus? status,
+    RaceFlag? currentFlag,
     DateTime? scheduledTime,
     int? durationMinutes,
     int? totalLaps,
@@ -113,11 +130,14 @@ class RaceSession {
     String? finishMode,
     String? qualificationCriteria,
     double? qualificationValue,
+    DateTime? actualStartTime,
+    DateTime? actualEndTime,
   }) {
     return RaceSession(
       id: id ?? this.id,
       type: type ?? this.type,
       status: status ?? this.status,
+      currentFlag: currentFlag ?? this.currentFlag,
       scheduledTime: scheduledTime ?? this.scheduledTime,
       durationMinutes: durationMinutes ?? this.durationMinutes,
       totalLaps: totalLaps ?? this.totalLaps,
@@ -132,6 +152,8 @@ class RaceSession {
       finishMode: finishMode ?? this.finishMode,
       qualificationCriteria: qualificationCriteria ?? this.qualificationCriteria,
       qualificationValue: qualificationValue ?? this.qualificationValue,
+      actualStartTime: actualStartTime ?? this.actualStartTime,
+      actualEndTime: actualEndTime ?? this.actualEndTime,
     );
   }
 }

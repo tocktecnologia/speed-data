@@ -4,6 +4,8 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/features/models/competitor_model.dart';
+import 'package:speed_data/features/models/passing_model.dart';
+import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -24,17 +26,56 @@ class FirestoreService {
     }
   }
 
-  Future<void> setUserRole(String uid, UserRole role) async {
-    await _db.collection('users').doc(uid).set({
+  Future<void> setUserRole(String uid, UserRole role, {String? email}) async {
+    final data = {
       'role': role.toStringValue(),
-    }, SetOptions(merge: true));
+    };
+    if (email != null) data['email'] = email;
+    
+    await _db.collection('users').doc(uid).set(data, SetOptions(merge: true));
   }
 
-  Future<void> updatePilotProfile(String uid, String name, int color) async {
-    await _db.collection('users').doc(uid).set({
+  Future<void> updatePilotProfile(String uid, String name, int color, {String? email}) async {
+    final data = {
       'name': name,
       'color': color,
-    }, SetOptions(merge: true));
+    };
+    if (email != null) data['email'] = email;
+    
+    await _db.collection('users').doc(uid).set(data, SetOptions(merge: true));
+  }
+
+  Future<Map<String, dynamic>?> getUserByEmail(String email) async {
+    try {
+      final trimmedEmail = email.trim();
+      final variants = [trimmedEmail, trimmedEmail.toLowerCase()];
+      
+      for (var variant in variants.toSet()) {
+        final snapshot = await _db
+            .collection('users')
+            .where('email', isEqualTo: variant)
+            .limit(1)
+            .get();
+        
+        if (snapshot.docs.isNotEmpty) {
+          final doc = snapshot.docs.first;
+          final data = doc.data();
+          data['uid'] = doc.id;
+          
+          // Normalize name/display_name
+          if (data.containsKey('display_name') && !data.containsKey('name')) {
+            data['name'] = data['display_name'];
+          } else if (data.containsKey('name') && !data.containsKey('display_name')) {
+            data['display_name'] = data['name'];
+          }
+          
+          return data;
+        }
+      }
+    } catch (e) {
+      print('Error getting user by email: $e');
+    }
+    return null;
   }
 
   // --- Races ---
@@ -92,6 +133,28 @@ class FirestoreService {
     await _db.collection('events').doc(eventId).delete();
   }
 
+  // Find an active event (today/future) for a specific track
+  Future<RaceEvent?> getActiveEventForTrack(String trackId) async {
+    try {
+      final now = DateTime.now();
+      final startOfDay = DateTime(now.year, now.month, now.day);
+      
+      final snapshot = await _db
+          .collection('events')
+          .where('track_id', isEqualTo: trackId)
+          .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
+          .get();
+
+      if (snapshot.docs.isNotEmpty) {
+        // Return the first one or logic to find the 'most active'
+        return RaceEvent.fromMap(snapshot.docs.first.id, snapshot.docs.first.data());
+      }
+    } catch (e) {
+      print('Error getting active event for track: $e');
+    }
+    return null;
+  }
+
   // --- Competitors (Sub-collection of Events) ---
 
   Future<void> addCompetitor(String eventId, Competitor competitor) async {
@@ -112,6 +175,20 @@ class FirestoreService {
         .delete();
   }
 
+  Stream<RaceSession?> getEventActiveSessionStream(String eventId) {
+    return _db.collection('events').doc(eventId).snapshots().map((doc) {
+      if (doc.exists && doc.data() != null) {
+        final event = RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>);
+        try {
+          return event.sessions.firstWhere((s) => s.status == SessionStatus.active);
+        } catch (_) {
+          return null;
+        }
+      }
+      return null;
+    });
+  }
+
   Stream<List<Competitor>> getCompetitorsStream(String eventId) {
     return _db
         .collection('events')
@@ -121,6 +198,27 @@ class FirestoreService {
         .map((snapshot) => snapshot.docs
             .map((doc) => Competitor.fromMap(doc.data()))
             .toList());
+  }
+
+  /// Get competitor by user UID from event
+  Future<Competitor?> getCompetitorByUid(String eventId, String uid) async {
+    try {
+      final snapshot = await _db
+          .collection('events')
+          .doc(eventId)
+          .collection('competitors')
+          .where('user_id', isEqualTo: uid)
+          .limit(1)
+          .get();
+
+      if (snapshot.docs.isNotEmpty) {
+        return Competitor.fromMap(snapshot.docs.first.data());
+      }
+      return null;
+    } catch (e) {
+      print('Error getting competitor by UID: $e');
+      return null;
+    }
   }
 
   Future<List<Competitor>> getCompetitors(String eventId) async {
@@ -146,6 +244,18 @@ class FirestoreService {
       'route_path': routePath ?? [],
     });
     return ref.id;
+  }
+
+  Future<void> updateRaceFlag(String raceId, RaceFlag flag) async {
+    await _db.collection('races').doc(raceId).update({
+      'flag': flag.name, // Storing strict enum name
+      'flag_updated_at': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<Map<String, dynamic>?> getRace(String raceId) async {
+    final doc = await _db.collection('races').doc(raceId).get();
+    return doc.data() as Map<String, dynamic>?;
   }
 
   Future<void> updateRace(String raceId,
@@ -229,6 +339,10 @@ class FirestoreService {
 
   Stream<DocumentSnapshot> getRaceStream(String raceId) {
     return _db.collection('races').doc(raceId).snapshots();
+  }
+
+  Stream<QuerySnapshot> getUsersStream() {
+    return _db.collection('users').snapshots();
   }
 
   // --- Telemetry ---
@@ -319,7 +433,19 @@ class FirestoreService {
         .snapshots();
   }
 
-  Stream<QuerySnapshot> getLaps(String raceId, String uid) {
+  Stream<QuerySnapshot> getLaps(String raceId, String uid, {String? sessionId}) {
+    if (sessionId != null) {
+      return _db
+          .collection('races')
+          .doc(raceId)
+          .collection('participants')
+          .doc(uid)
+          .collection('sessions')
+          .doc(sessionId)
+          .collection('laps')
+          .orderBy('number', descending: true)
+          .snapshots();
+    }
     return _db
         .collection('races')
         .doc(raceId)
@@ -389,6 +515,82 @@ class FirestoreService {
       }
     }
     if (count > 0) await batch.commit();
+  }
+
+  // --- Passings ---
+
+  Future<void> addPassing(PassingModel passing) async {
+    await _db
+        .collection('races')
+        .doc(passing.raceId)
+        .collection('passings')
+        .add(passing.toMap());
+  }
+
+  Stream<List<PassingModel>> getPassingsStream(String raceId, {String? sessionId, RaceSession? session}) {
+    return _db
+        .collection('races')
+        .doc(raceId)
+        .collection('passings')
+        .orderBy('timestamp', descending: false)
+        .limit(1000) // Increase limit since we filter in memory
+        .snapshots()
+        .map((snapshot) {
+          final allPassings = snapshot.docs
+            .map((doc) => PassingModel.fromMap(doc.id, doc.data() as Map<String, dynamic>))
+            .toList();
+          
+          // Filter by time window if session is provided
+          if (session != null && session.actualStartTime != null) {
+            print('DEBUG [Passings]: Filtering by time window - Start: ${session.actualStartTime}, End: ${session.actualEndTime}');
+            print('DEBUG [Passings]: Total passings before filter: ${allPassings.length}');
+            
+            final filtered = allPassings.where((p) {
+              // Include passings within the session time window
+              final passingTime = p.timestamp;
+              final startTime = session.actualStartTime!;
+              final endTime = session.actualEndTime ?? DateTime.now().add(const Duration(days: 1)); // If not ended, use future date
+              
+              final isInRange = passingTime.isAfter(startTime.subtract(const Duration(seconds: 1))) && 
+                     passingTime.isBefore(endTime.add(const Duration(seconds: 1)));
+              
+              if (isInRange) {
+                print('DEBUG [Passings]: Including passing at ${p.timestamp} for ${p.driverName}');
+              }
+              
+              return isInRange;
+            }).toList();
+            
+            print('DEBUG [Passings]: Total passings after filter: ${filtered.length}');
+            return filtered;
+          }
+          
+          // Fallback to session ID filtering (for backward compatibility)
+          if (sessionId != null) {
+            return allPassings.where((p) => p.sessionId == sessionId).toList();
+          }
+          
+          return allPassings;
+        });
+  }
+
+  Future<void> updatePassingFlag(
+      String raceId, String passingId, String flag, bool add) async {
+    final docRef = _db
+        .collection('races')
+        .doc(raceId)
+        .collection('passings')
+        .doc(passingId);
+
+    if (add) {
+      await docRef.update({
+        'flags': FieldValue.arrayUnion([flag])
+      });
+    } else {
+      await docRef.update({
+        'flags': FieldValue.arrayRemove([flag])
+      });
+    }
   }
 
   Future<void> archiveCurrentLaps(

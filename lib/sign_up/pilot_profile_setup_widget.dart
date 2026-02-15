@@ -223,9 +223,10 @@ class _PilotProfileSetupWidgetState extends State<PilotProfileSetupWidget> {
                         final user = currentUser;
                         if (user != null) {
                           await FirestoreService().updatePilotProfile(
-                            user!.uid!,
+                            user.uid!,
                             _nameController!.text,
                             _selectedColor,
+                            email: user.email,
                           );
 
                           if (context.mounted) {

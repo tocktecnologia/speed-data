@@ -91,63 +91,63 @@ Campos:
 
 ## Backlog Tecnico (pronto para execucao no Codex)
 
-1. [ ] `BT-001` Consolidar source das Cloud Functions  
+1. [x] `BT-001` Consolidar source das Cloud Functions  
 Arquivos: `firebase/functions/index.js`, `docs/ingestTelemetry.js`, `docs/processTelemetry.js`  
 Aceite: uma unica implementacao oficial alinhada com o deploy.
 
-2. [ ] `BT-002` Formalizar contrato de dados de analise  
+2. [x] `BT-002` Formalizar contrato de dados de analise  
 Arquivo: `docs/APP_SPECIFICATIONS.md`  
 Aceite: schema de `crossings`, `laps`, `summary` e `state` documentado.
 
-3. [ ] `BT-003` Escrever dados por sessao  
+3. [x] `BT-003` Escrever dados por sessao  
 Arquivo: `firebase/functions/index.js`  
 Aceite: escrita em `sessions/{sessionId}/...` quando `sessionId` existir.
 
-4. [ ] `BT-004` Implementar `state/current` por piloto/sessao  
+4. [x] `BT-004` Implementar `state/current` por piloto/sessao  
 Arquivo: `firebase/functions/index.js`  
 Aceite: deduplicacao basica de checkpoint e controle de ordem.
 
-5. [ ] `BT-005` Gravar `crossings` para todo checkpoint  
+5. [x] `BT-005` Gravar `crossings` para todo checkpoint  
 Arquivo: `firebase/functions/index.js`  
 Aceite: cada trap detectado gera documento de crossing.
 
-6. [ ] `BT-006` Fechamento robusto de volta em `cp_0`  
+6. [x] `BT-006` Fechamento robusto de volta em `cp_0`  
 Arquivo: `firebase/functions/index.js`  
 Aceite: fecha lap atual, calcula tempo e abre proxima lap.
 
-7. [ ] `BT-007` Persistir `laps` analiticos por sessao  
+7. [x] `BT-007` Persistir `laps` analiticos por sessao  
 Arquivo: `firebase/functions/index.js`  
 Aceite: lap com `splits`, `sectors`, `trap_speeds`, `speed_stats`, `valid`.
 
-8. [ ] `BT-008` Enriquecer `passings` em checkpoints intermediarios  
+8. [x] `BT-008` Enriquecer `passings` em checkpoints intermediarios  
 Arquivo: `firebase/functions/index.js`  
 Aceite: salvar `sector_time`, `split_time` e `trap_speed` por checkpoint.
 
-9. [ ] `BT-009` Validar lap no backend com regra de sessao  
+9. [x] `BT-009` Validar lap no backend com regra de sessao  
 Arquivo: `firebase/functions/index.js`  
 Aceite: aplicar `min_lap_time_seconds` e registrar invalidade.
 
-10. [ ] `BT-010` Calcular `summary` e `optimal lap` incremental  
+10. [x] `BT-010` Calcular `summary` e `optimal lap` incremental  
 Arquivo: `firebase/functions/index.js`  
 Aceite: `analysis/summary` atualizado a cada lap valida.
 
-11. [ ] `BT-011` Preservar compatibilidade legada temporaria  
+11. [x] `BT-011` Preservar compatibilidade legada temporaria  
 Arquivo: `firebase/functions/index.js`  
 Aceite: telas antigas continuam funcionando sem quebra.
 
-12. [ ] `BT-012` Incluir `sessionId` e metadados no fluxo BigQuery  
+12. [x] `BT-012` Incluir `sessionId` e metadados no fluxo BigQuery  
 Arquivo: `firebase/functions/index.js`  
 Aceite: dados exportados segmentaveis por sessao.
 
-13. [ ] `BT-013` Criar modelos Dart de analise  
+13. [x] `BT-013` Criar modelos Dart de analise  
 Arquivos: `lib/features/models/lap_analysis_model.dart`, `lib/features/models/crossing_model.dart`, `lib/features/models/session_analysis_summary_model.dart`  
 Aceite: parse/serialize cobrindo o contrato novo.
 
-14. [ ] `BT-014` Expandir `FirestoreService` para analise  
+14. [x] `BT-014` Expandir `FirestoreService` para analise  
 Arquivo: `lib/features/services/firestore_service.dart`  
 Aceite: metodos para laps/crossings/summary por sessao.
 
-15. [ ] `BT-015` Criar tela base `Lap Times`  
+15. [x] `BT-015` Criar tela base `Lap Times`  
 Arquivo: `lib/features/screens/pilot/lap_times_screen.dart`  
 Aceite: tela com seletor de modo e estrutura principal.
 
@@ -159,7 +159,7 @@ Aceite: comparacao por cores (verde/vermelho) vs volta referencia.
 Arquivos: `lib/features/screens/pilot/widgets/*`  
 Aceite: todos os modos consumindo dados persistidos, sem heuristica pesada.
 
-18. [ ] `BT-018` Integrar navegacao no app do piloto  
+18. [x] `BT-018` Integrar navegacao no app do piloto  
 Arquivo: `lib/features/screens/pilot/pilot_dashboard.dart`  
 Aceite: acesso a Lap Times para sessao atual e historica.
 
@@ -167,7 +167,7 @@ Aceite: acesso a Lap Times para sessao atual e historica.
 Arquivos: `firebase/functions/*` (job administrativo)  
 Aceite: sessoes recentes com dados minimos para nova tela.
 
-20. [ ] `BT-020` Atualizar regras e indices do Firestore  
+20. [x] `BT-020` Atualizar regras e indices do Firestore  
 Arquivos: `firebase/firestore.rules`, `firebase/firestore.indexes.json`  
 Aceite: consultas por sessao sem erro de permissao/index.
 
@@ -183,7 +183,7 @@ Aceite: renderizacao e consistencia dos modos com dados mockados.
 Arquivo: `docs/APP_SPECIFICATIONS.md`  
 Aceite: arquitetura final e fluxo de dados refletidos no documento.
 
-24. [ ] `BT-024` Integrar `Race Control` com estrutura por sessao  
+24. [x] `BT-024` Integrar `Race Control` com estrutura por sessao  
 Arquivos: `lib/features/screens/admin/race_control_screen.dart`, `lib/features/services/firestore_service.dart`  
 Aceite: tela usa `sessionId` de forma consistente para controle, exibicao e operacoes de sessao.
 

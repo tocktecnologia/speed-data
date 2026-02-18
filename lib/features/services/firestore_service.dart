@@ -5,6 +5,9 @@ import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/features/models/competitor_model.dart';
 import 'package:speed_data/features/models/passing_model.dart';
+import 'package:speed_data/features/models/lap_analysis_model.dart';
+import 'package:speed_data/features/models/crossing_model.dart';
+import 'package:speed_data/features/models/session_analysis_summary_model.dart';
 import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
 
 class FirestoreService {
@@ -24,6 +27,35 @@ class FirestoreService {
   double _asDouble(dynamic value, double fallback) {
     if (value is num) return value.toDouble();
     return fallback;
+  }
+
+  DocumentReference<Map<String, dynamic>> _raceParticipantRef(
+      String raceId, String uid) {
+    return _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .doc(uid);
+  }
+
+  DocumentReference<Map<String, dynamic>>? _eventSessionParticipantRef(
+    String? eventId,
+    String? sessionId,
+    String uid,
+  ) {
+    if (eventId == null ||
+        eventId.isEmpty ||
+        sessionId == null ||
+        sessionId.isEmpty) {
+      return null;
+    }
+    return _db
+        .collection('events')
+        .doc(eventId)
+        .collection('sessions')
+        .doc(sessionId)
+        .collection('participants')
+        .doc(uid);
   }
 
   // --- Users ---
@@ -111,7 +143,8 @@ class FirestoreService {
   /// - auto_start (bool)
   /// - valid_from (Timestamp/int, optional)
   /// - valid_until (Timestamp/int, optional)
-  Future<Map<String, dynamic>> getSimulationRuntimeConfig({String? email}) async {
+  Future<Map<String, dynamic>> getSimulationRuntimeConfig(
+      {String? email}) async {
     bool enabled = false;
     bool autoStart = true;
     double speedMps = 40.0;
@@ -139,8 +172,10 @@ class FirestoreService {
         (email == null || email.trim().isEmpty) ? null : _normalizeEmail(email);
     if (normalizedEmail != null) {
       try {
-        final userDoc =
-            await _db.collection('simulation_testers').doc(normalizedEmail).get();
+        final userDoc = await _db
+            .collection('simulation_testers')
+            .doc(normalizedEmail)
+            .get();
         final userData = userDoc.data();
         if (userData != null) {
           final now = DateTime.now();
@@ -150,9 +185,11 @@ class FirestoreService {
               (validUntil == null || !now.isAfter(validUntil));
 
           if (inWindow) {
-            enabled = userData['enabled'] is bool ? userData['enabled'] : enabled;
-            autoStart =
-                userData['auto_start'] is bool ? userData['auto_start'] : autoStart;
+            enabled =
+                userData['enabled'] is bool ? userData['enabled'] : enabled;
+            autoStart = userData['auto_start'] is bool
+                ? userData['auto_start']
+                : autoStart;
             speedMps = _asDouble(userData['speed_mps'], speedMps);
             source = 'user';
           } else {
@@ -250,9 +287,15 @@ class FirestoreService {
     });
   }
 
-  Future<RaceEvent?> getEvent(String eventId) async {
+  Future<RaceEvent?> getEvent(String eventId,
+      {bool forceServer = false}) async {
     try {
-      final doc = await _db.collection('events').doc(eventId).get();
+      final doc = forceServer
+          ? await _db
+              .collection('events')
+              .doc(eventId)
+              .get(const GetOptions(source: Source.server))
+          : await _db.collection('events').doc(eventId).get();
       if (doc.exists && doc.data() != null) {
         return RaceEvent.fromMap(doc.id, doc.data() as Map<String, dynamic>);
       }
@@ -267,22 +310,52 @@ class FirestoreService {
     await _db.collection('events').doc(eventId).delete();
   }
 
-  // Find an active event (today/future) for a specific track
-  Future<RaceEvent?> getActiveEventForTrack(String trackId) async {
+  // Find the current event for a track. By default, returns a fallback event
+  // when there is no event in the current date window.
+  Future<RaceEvent?> getActiveEventForTrack(
+    String trackId, {
+    bool allowFallback = true,
+    bool requireActiveSession = false,
+    bool forceServer = false,
+  }) async {
     try {
-      final now = DateTime.now();
-      final startOfDay = DateTime(now.year, now.month, now.day);
-
-      final snapshot = await _db
+      final query = _db
           .collection('events')
           .where('track_id', isEqualTo: trackId)
-          .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
-          .get();
+          .limit(50);
+      final snapshot = forceServer
+          ? await query.get(const GetOptions(source: Source.server))
+          : await query.get();
 
       if (snapshot.docs.isNotEmpty) {
-        // Return the first one or logic to find the 'most active'
-        return RaceEvent.fromMap(
-            snapshot.docs.first.id, snapshot.docs.first.data());
+        final events = snapshot.docs
+            .map((doc) => RaceEvent.fromMap(doc.id, doc.data()))
+            .toList()
+          ..sort((a, b) => b.date.compareTo(a.date));
+        final now = DateTime.now();
+        RaceEvent? fallback;
+        for (final event in events) {
+          if (!requireActiveSession) {
+            fallback ??= event;
+          }
+
+          final eventStart = DateTime(event.date.toLocal().year,
+              event.date.toLocal().month, event.date.toLocal().day);
+          final end = event.endDate?.toLocal() ??
+              DateTime(event.date.toLocal().year, event.date.toLocal().month,
+                  event.date.toLocal().day, 23, 59, 59, 999);
+          final hasActiveSession =
+              event.sessions.any((s) => s.status == SessionStatus.active);
+          if ((now.isAfter(eventStart) || now.isAtSameMomentAs(eventStart)) &&
+              (now.isBefore(end) || now.isAtSameMomentAs(end)) &&
+              (!requireActiveSession || hasActiveSession)) {
+            return event;
+          }
+        }
+        if (allowFallback) {
+          return fallback;
+        }
+        return null;
       }
     } catch (e) {
       print('Error getting active event for track: $e');
@@ -545,12 +618,14 @@ class FirestoreService {
       String uid,
       List<Map<String, dynamic>> points,
       List<Map<String, dynamic>>? checkpoints,
-      String? sessionId) async {
+      String? sessionId,
+      {String? eventId}) async {
     try {
       final callable =
           FirebaseFunctions.instance.httpsCallable('ingestTelemetry');
       await callable.call({
         'raceId': raceId,
+        'eventId': eventId,
         'uid': uid,
         'points': points,
         'checkpoints': checkpoints,
@@ -562,8 +637,25 @@ class FirestoreService {
     }
   }
 
-  Stream<QuerySnapshot> getRaceLocations(String raceId) {
-    // Return stream of participants. Consuming widgets must parse the 'current' map field.
+  Stream<QuerySnapshot> getRaceLocations(
+    String raceId, {
+    String? eventId,
+    String? sessionId,
+  }) {
+    if (eventId != null &&
+        eventId.isNotEmpty &&
+        sessionId != null &&
+        sessionId.isNotEmpty) {
+      return _db
+          .collection('events')
+          .doc(eventId)
+          .collection('sessions')
+          .doc(sessionId)
+          .collection('participants')
+          .snapshots();
+    }
+
+    // Legacy fallback
     return _db
         .collection('races')
         .doc(raceId)
@@ -571,7 +663,16 @@ class FirestoreService {
         .snapshots();
   }
 
-  Stream<QuerySnapshot> getPilotSessions(String raceId, String uid) {
+  Stream<QuerySnapshot> getPilotSessions(String raceId, String uid,
+      {String? eventId}) {
+    if (eventId != null && eventId.isNotEmpty) {
+      return _db
+          .collection('events')
+          .doc(eventId)
+          .collection('sessions')
+          .snapshots();
+    }
+
     return _db
         .collection('races')
         .doc(raceId)
@@ -582,12 +683,21 @@ class FirestoreService {
   }
 
   Stream<QuerySnapshot> getSessionLaps(
-      String raceId, String uid, String sessionId) {
-    return _db
-        .collection('races')
-        .doc(raceId)
-        .collection('participants')
-        .doc(uid)
+    String raceId,
+    String uid,
+    String sessionId, {
+    String? eventId,
+  }) {
+    final eventParticipant =
+        _eventSessionParticipantRef(eventId, sessionId, uid);
+    if (eventParticipant != null) {
+      return eventParticipant
+          .collection('laps')
+          .orderBy('number', descending: true)
+          .snapshots();
+    }
+
+    return _raceParticipantRef(raceId, uid)
         .collection('sessions')
         .doc(sessionId)
         .collection('laps')
@@ -595,28 +705,135 @@ class FirestoreService {
         .snapshots();
   }
 
-  Stream<QuerySnapshot> getLaps(String raceId, String uid,
-      {String? sessionId}) {
+  Stream<List<LapAnalysisModel>> getSessionLapsModels(
+    String raceId,
+    String uid,
+    String sessionId, {
+    String? eventId,
+  }) {
+    final eventParticipant =
+        _eventSessionParticipantRef(eventId, sessionId, uid);
+    final stream = eventParticipant != null
+        ? eventParticipant
+            .collection('laps')
+            .orderBy('number', descending: true)
+            .snapshots()
+        : _raceParticipantRef(raceId, uid)
+            .collection('sessions')
+            .doc(sessionId)
+            .collection('laps')
+            .orderBy('number', descending: true)
+            .snapshots();
+
+    return stream.map((snapshot) => snapshot.docs
+        .map((doc) => LapAnalysisModel.fromMap(
+            doc.id, doc.data() as Map<String, dynamic>))
+        .toList());
+  }
+
+  Stream<QuerySnapshot> getLaps(
+    String raceId,
+    String uid, {
+    String? sessionId,
+    String? eventId,
+  }) {
     if (sessionId != null) {
-      return _db
-          .collection('races')
-          .doc(raceId)
-          .collection('participants')
-          .doc(uid)
+      final eventParticipant =
+          _eventSessionParticipantRef(eventId, sessionId, uid);
+      if (eventParticipant != null) {
+        return eventParticipant
+            .collection('laps')
+            .orderBy('number', descending: true)
+            .snapshots();
+      }
+      return _raceParticipantRef(raceId, uid)
           .collection('sessions')
           .doc(sessionId)
           .collection('laps')
           .orderBy('number', descending: true)
           .snapshots();
     }
-    return _db
-        .collection('races')
-        .doc(raceId)
-        .collection('participants')
-        .doc(uid)
+    return _raceParticipantRef(raceId, uid)
         .collection('laps')
         .orderBy('number', descending: true)
         .snapshots();
+  }
+
+  Stream<List<LapAnalysisModel>> getLapsModels(
+    String raceId,
+    String uid, {
+    String? sessionId,
+    String? eventId,
+  }) {
+    if (sessionId != null) {
+      return getSessionLapsModels(raceId, uid, sessionId, eventId: eventId);
+    }
+
+    return _raceParticipantRef(raceId, uid)
+        .collection('laps')
+        .orderBy('number', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => LapAnalysisModel.fromMap(
+                doc.id, doc.data() as Map<String, dynamic>))
+            .toList());
+  }
+
+  Stream<List<CrossingModel>> getSessionCrossings(
+    String raceId,
+    String uid,
+    String sessionId, {
+    String? eventId,
+  }) {
+    final eventParticipant =
+        _eventSessionParticipantRef(eventId, sessionId, uid);
+    final stream = eventParticipant != null
+        ? eventParticipant
+            .collection('crossings')
+            .orderBy('crossed_at_ms', descending: false)
+            .snapshots()
+        : _raceParticipantRef(raceId, uid)
+            .collection('sessions')
+            .doc(sessionId)
+            .collection('crossings')
+            .orderBy('crossed_at_ms', descending: false)
+            .snapshots();
+
+    return stream.map((snapshot) => snapshot.docs
+        .map((doc) =>
+            CrossingModel.fromMap(doc.id, doc.data() as Map<String, dynamic>))
+        .toList());
+  }
+
+  Stream<SessionAnalysisSummaryModel?> getSessionAnalysisSummary(
+    String raceId,
+    String uid,
+    String sessionId, {
+    String? eventId,
+  }) {
+    final eventParticipant =
+        _eventSessionParticipantRef(eventId, sessionId, uid);
+    final stream = eventParticipant != null
+        ? _db
+            .collection('events')
+            .doc(eventId)
+            .collection('sessions')
+            .doc(sessionId)
+            .collection('analysis')
+            .doc('summary')
+            .snapshots()
+        : _raceParticipantRef(raceId, uid)
+            .collection('sessions')
+            .doc(sessionId)
+            .collection('analysis')
+            .doc('summary')
+            .snapshots();
+
+    return stream.map((doc) {
+      if (!doc.exists || doc.data() == null) return null;
+      return SessionAnalysisSummaryModel.fromMap(
+          doc.data() as Map<String, dynamic>);
+    });
   }
 
   Stream<QuerySnapshot> getHistorySessions(String raceId, String uid) {
@@ -682,24 +899,67 @@ class FirestoreService {
 
   // --- Passings ---
 
-  Future<void> addPassing(PassingModel passing) async {
+  Future<void> addPassing(
+    PassingModel passing, {
+    String? eventId,
+    String? sessionId,
+  }) async {
+    final payload = passing.toMap();
+    final effectiveSessionId = sessionId ?? passing.sessionId;
+
     await _db
         .collection('races')
         .doc(passing.raceId)
         .collection('passings')
-        .add(passing.toMap());
+        .add(payload);
+
+    if (eventId != null &&
+        eventId.isNotEmpty &&
+        effectiveSessionId != null &&
+        effectiveSessionId.isNotEmpty) {
+      await _db
+          .collection('events')
+          .doc(eventId)
+          .collection('sessions')
+          .doc(effectiveSessionId)
+          .collection('passings')
+          .add({
+        ...payload,
+        'session_id': effectiveSessionId,
+        'event_id': eventId,
+      });
+    }
   }
 
-  Stream<List<PassingModel>> getPassingsStream(String raceId,
-      {String? sessionId, RaceSession? session}) {
-    return _db
-        .collection('races')
-        .doc(raceId)
-        .collection('passings')
-        .orderBy('timestamp', descending: false)
-        .limit(1000) // Increase limit since we filter in memory
-        .snapshots()
-        .map((snapshot) {
+  Stream<List<PassingModel>> getPassingsStream(
+    String raceId, {
+    String? sessionId,
+    String? eventId,
+    RaceSession? session,
+  }) {
+    final bool useEventPath = eventId != null &&
+        eventId.isNotEmpty &&
+        sessionId != null &&
+        sessionId.isNotEmpty;
+    final baseStream = useEventPath
+        ? _db
+            .collection('events')
+            .doc(eventId)
+            .collection('sessions')
+            .doc(sessionId)
+            .collection('passings')
+            .orderBy('timestamp', descending: false)
+            .limit(1000)
+            .snapshots()
+        : _db
+            .collection('races')
+            .doc(raceId)
+            .collection('passings')
+            .orderBy('timestamp', descending: false)
+            .limit(1000)
+            .snapshots();
+
+    return baseStream.map((snapshot) {
       final allPassings = snapshot.docs
           .map((doc) =>
               PassingModel.fromMap(doc.id, doc.data() as Map<String, dynamic>))
@@ -733,7 +993,7 @@ class FirestoreService {
       }
 
       // Fallback to session ID filtering (for backward compatibility)
-      if (sessionId != null) {
+      if (!useEventPath && sessionId != null) {
         final filtered =
             allPassings.where((p) => p.sessionId == sessionId).toList();
         sortByTime(filtered);
@@ -746,12 +1006,25 @@ class FirestoreService {
   }
 
   Future<void> updatePassingFlag(
-      String raceId, String passingId, String flag, bool add) async {
-    final docRef = _db
-        .collection('races')
-        .doc(raceId)
-        .collection('passings')
-        .doc(passingId);
+      String raceId, String passingId, String flag, bool add,
+      {String? eventId, String? sessionId}) async {
+    final useEventPath = eventId != null &&
+        eventId.isNotEmpty &&
+        sessionId != null &&
+        sessionId.isNotEmpty;
+    final docRef = useEventPath
+        ? _db
+            .collection('events')
+            .doc(eventId)
+            .collection('sessions')
+            .doc(sessionId)
+            .collection('passings')
+            .doc(passingId)
+        : _db
+            .collection('races')
+            .doc(raceId)
+            .collection('passings')
+            .doc(passingId);
 
     if (add) {
       await docRef.update({
@@ -765,31 +1038,58 @@ class FirestoreService {
   }
 
   Future<void> archiveCurrentLaps(
-      String raceId, String uid, String sessionId) async {
-    final lapsRef = _db
-        .collection('races')
-        .doc(raceId)
-        .collection('participants')
-        .doc(uid)
-        .collection('laps');
+    String raceId,
+    String uid,
+    String sessionId, {
+    String? eventId,
+  }) async {
+    final bool useEventPath =
+        eventId != null && eventId.isNotEmpty && sessionId.isNotEmpty;
+
+    final lapsRef = useEventPath
+        ? _db
+            .collection('events')
+            .doc(eventId)
+            .collection('sessions')
+            .doc(sessionId)
+            .collection('participants')
+            .doc(uid)
+            .collection('laps')
+        : _db
+            .collection('races')
+            .doc(raceId)
+            .collection('participants')
+            .doc(uid)
+            .collection('laps');
     final snapshot = await lapsRef.get();
 
     if (snapshot.docs.isEmpty) return;
 
     // Target: .../participants/{uid}/history_sessions/{sessionId}
-    final historySessionDocRef = _db
-        .collection('races')
-        .doc(raceId)
-        .collection('participants')
-        .doc(uid)
-        .collection('history_sessions')
-        .doc(sessionId);
+    final historySessionDocRef = useEventPath
+        ? _db
+            .collection('events')
+            .doc(eventId)
+            .collection('sessions')
+            .doc(sessionId)
+            .collection('participants')
+            .doc(uid)
+            .collection('history_sessions')
+            .doc(sessionId)
+        : _db
+            .collection('races')
+            .doc(raceId)
+            .collection('participants')
+            .doc(uid)
+            .collection('history_sessions')
+            .doc(sessionId);
 
     // Save session metadata
     await historySessionDocRef.set({
       'archived_at': FieldValue.serverTimestamp(),
       'session_id': sessionId,
       'race_id': raceId,
+      'event_id': eventId,
     }, SetOptions(merge: true));
 
     final historyLapsRef = historySessionDocRef.collection('laps');

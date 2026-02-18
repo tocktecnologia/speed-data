@@ -13,7 +13,9 @@ service cloud.firestore {
 
     // Users Collection
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      // Admin screens need to search/list users by email to link competitors.
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId);
     }
 
     // Races Collection
@@ -28,6 +30,36 @@ service cloud.firestore {
       match /participants/{participantId} {
         allow read: if isAuthenticated();
         allow write: if isOwner(participantId);
+
+        // Legacy laps (no session) for backward compatibility
+        match /laps/{lapId} {
+          allow read: if isAuthenticated();
+          allow write: if isOwner(participantId);
+        }
+
+        // Session-scoped data
+        match /sessions/{sessionId} {
+          allow read: if isAuthenticated();
+
+          match /laps/{lapId} {
+            allow read: if isAuthenticated();
+            allow write: if isOwner(participantId);
+          }
+
+          match /crossings/{crossingId} {
+            allow read: if isAuthenticated();
+            allow write: if isOwner(participantId);
+          }
+
+          match /analysis/{docId} {
+            allow read: if isAuthenticated();
+            allow write: if isOwner(participantId);
+          }
+
+          match /state/{docId} {
+            allow read, write: if isOwner(participantId);
+          }
+        }
       }
 
       // Locations Subcollection (Live Telemetry)
@@ -40,6 +72,80 @@ service cloud.firestore {
       match /telemetry_logs/{logId} {
         allow read: if isAuthenticated(); // Or admin only
         allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      }
+
+      // Passings per race (checkpoints/lap closures)
+      match /passings/{passingId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated();
+      }
+    }
+
+    // Simulation config
+    match /app_config/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated(); // tighten to admins if needed
+    }
+
+    match /simulation_testers/{emailId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated(); // tighten to admins if needed
+    }
+
+    // Events Collection (admin/organizer access - currently any authenticated user)
+    match /events/{eventId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated(); // tighten to admins when claims available
+
+      match /competitors/{competitorId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated();
+      }
+
+      // Session-owned telemetry data (Option 2)
+      match /sessions/{sessionId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated();
+
+        match /participants/{participantId} {
+          allow read: if isAuthenticated();
+          allow write: if isOwner(participantId);
+
+          match /laps/{lapId} {
+            allow read: if isAuthenticated();
+            allow write: if isOwner(participantId);
+          }
+
+          match /crossings/{crossingId} {
+            allow read: if isAuthenticated();
+            allow write: if isOwner(participantId);
+          }
+
+          match /state/{docId} {
+            allow read: if isAuthenticated();
+            allow write: if isOwner(participantId);
+          }
+
+          match /history_sessions/{historySessionId} {
+            allow read: if isAuthenticated();
+            allow write: if isOwner(participantId);
+
+            match /laps/{lapId} {
+              allow read: if isAuthenticated();
+              allow write: if isOwner(participantId);
+            }
+          }
+        }
+
+        match /passings/{passingId} {
+          allow read: if isAuthenticated();
+          allow create, update: if isAuthenticated();
+        }
+
+        match /analysis/{docId} {
+          allow read: if isAuthenticated();
+          allow write: if isAuthenticated();
+        }
       }
     }
   }

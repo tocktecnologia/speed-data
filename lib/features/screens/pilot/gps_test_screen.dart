@@ -98,7 +98,13 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
 
   Future<void> _loadRaceDetails() async {
     // Auto-discover event for this track
-    _firestoreService.getActiveEventForTrack(widget.raceId).then((event) async {
+    _firestoreService
+        .getActiveEventForTrack(
+          widget.raceId,
+          allowFallback: false,
+          requireActiveSession: true,
+        )
+        .then((event) async {
       if (event != null && mounted) {
         setState(() => _currentEventId = event.id);
         
@@ -133,6 +139,11 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
                }
             });
           }
+        });
+      } else if (mounted) {
+        setState(() {
+          _currentSessionId = null;
+          _sessionBackgroundColor = Colors.black;
         });
       }
     });

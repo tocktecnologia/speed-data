@@ -72,7 +72,6 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     return widget.userId;
   }
 
-
   @override
   void initState() {
     super.initState();
@@ -102,6 +101,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
   Future<void> _loadRaceDetails() async {
     final stream = _firestoreService.getRaceStream(widget.raceId);
+    late Future<void> Function() recoverActiveSessionBinding;
 
     Future<void> attachEventListeners(String eventId) async {
       if (!mounted) return;
@@ -111,7 +111,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       // Preload current event state to avoid long "waiting active session" gaps
       // when entering/re-entering this screen on slower mobile links.
       try {
-        final RaceEvent? event = await _firestoreService.getEvent(eventId);
+        final RaceEvent? event =
+            await _firestoreService.getEvent(eventId, forceServer: true);
         if (event != null) {
           RaceSession? preloadedSession;
           try {
@@ -130,15 +131,55 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
           .getEventActiveSessionStream(eventId)
           .listen((session) async {
         await _applySessionState(session);
+        if (session == null) {
+          unawaited(recoverActiveSessionBinding());
+        }
       });
     }
 
+    recoverActiveSessionBinding = () async {
+      await Future.delayed(const Duration(seconds: 2));
+      if (!mounted || _activeSession != null) return;
+
+      try {
+        final event = await _firestoreService.getActiveEventForTrack(
+          widget.raceId,
+          allowFallback: true,
+          requireActiveSession: true,
+          forceServer: true,
+        );
+        if (!mounted || event == null) return;
+
+        if (_currentEventId != event.id) {
+          await attachEventListeners(event.id);
+          return;
+        }
+
+        try {
+          final session = event.sessions
+              .firstWhere((s) => s.status == SessionStatus.active);
+          await _applySessionState(session);
+        } catch (_) {}
+      } catch (_) {}
+    };
+
     if (widget.eventId != null && widget.eventId!.isNotEmpty) {
       await attachEventListeners(widget.eventId!);
+      unawaited(recoverActiveSessionBinding());
     } else {
-      _firestoreService.getActiveEventForTrack(widget.raceId).then((event) {
-        if (event == null) return;
+      _firestoreService
+          .getActiveEventForTrack(
+        widget.raceId,
+        allowFallback: true,
+        requireActiveSession: false,
+      )
+          .then((event) {
+        if (event == null) {
+          _applySessionState(null);
+          return;
+        }
         attachEventListeners(event.id);
+        unawaited(recoverActiveSessionBinding());
       }).catchError((_) {});
     }
 
@@ -146,7 +187,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
     // Fetch user color
     try {
-      final userProfile = await _firestoreService.getUserProfile(_effectiveUserId);
+      final userProfile =
+          await _firestoreService.getUserProfile(_effectiveUserId);
       if (userProfile != null && userProfile.containsKey('color')) {
         final colorData = userProfile['color'];
         if (colorData is int) {
@@ -262,6 +304,14 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
   Future<void> _applySessionState(RaceSession? session) async {
     if (!mounted) return;
+    final shouldRestartSimulation = session != null &&
+        _telemetryService.isSimulating &&
+        _telemetryService.currentSessionId != session.id;
+    if (shouldRestartSimulation) {
+      await _telemetryService.stopSimulation();
+      _autoStartedSimulationSessionId = null;
+    }
+
     final previousSessionId = _activeSession?.id;
     setState(() {
       _activeSession = session;
@@ -275,13 +325,19 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         } else if (!_telemetryService.isSimulating) {
           _telemetryService.enableSendDataToCloud = true;
           if (!_telemetryService.isRecording) {
-            _telemetryService.startRecording(widget.raceId, _effectiveUserId);
+            _telemetryService.startRecording(
+              widget.raceId,
+              _effectiveUserId,
+              eventId: _currentEventId,
+              sessionId: session.id,
+            );
           }
         }
         _sessionBackgroundColor = _getFlagColor(session.currentFlag);
       } else {
         _autoStartedSimulationSessionId = null;
         _localLapStartMs = null;
+        _telemetryService.setSessionId(null);
         _telemetryService.enableSendDataToCloud = false;
         _sessionBackgroundColor = Colors.black;
       }
@@ -291,7 +347,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
   Future<void> _loadSimulationModeConfig() async {
     final email = FirebaseAuth.instance.currentUser?.email;
-    final config = await _firestoreService.getSimulationRuntimeConfig(email: email);
+    final config =
+        await _firestoreService.getSimulationRuntimeConfig(email: email);
     if (!mounted) return;
 
     final enabled = config['enabled'] == true;
@@ -316,6 +373,11 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     if (!_simulationConfigLoaded || !_autoSimulationMode) return;
     if (_activeSession == null || _activeSession!.id.isEmpty) return;
     if (_routePath.isEmpty) return;
+    if (_telemetryService.isSimulating &&
+        _telemetryService.currentSessionId != _activeSession!.id) {
+      await _telemetryService.stopSimulation();
+      _autoStartedSimulationSessionId = null;
+    }
     try {
       await _startSimulation(auto: true);
     } catch (_) {}
@@ -344,7 +406,6 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         return Colors.white.withOpacity(0.9);
     }
   }
-
 
   String _formatLapTime(int ms) {
     final minutes = (ms ~/ 60000).toString().padLeft(2, '0');
@@ -442,6 +503,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     latest ??= readTs(lapData['end_timestamp']);
     latest ??= readTs(lapData['timestamp']);
     latest ??= readTs(lapData['completed_at']);
+    latest ??= readTs(lapData['lap_end_ms']);
     return latest;
   }
 
@@ -451,12 +513,10 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     if (startMs == null) return nowMs;
 
     final elapsedMs = nowMs - startMs;
-    final maxExpectedMs = ((session.durationMinutes > 0
-                ? session.durationMinutes
-                : 30) +
-            30) *
-        60 *
-        1000;
+    final maxExpectedMs =
+        ((session.durationMinutes > 0 ? session.durationMinutes : 30) + 30) *
+            60 *
+            1000;
 
     // Ignore stale timestamps that would create an unrealistic running lap.
     if (elapsedMs < 0 || elapsedMs > maxExpectedMs) {
@@ -480,7 +540,13 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       }
       return;
     }
-    if (_telemetryService.isSimulating) return;
+    if (_telemetryService.isSimulating) {
+      if (_telemetryService.currentSessionId == _activeSession!.id) {
+        return;
+      }
+      await _telemetryService.stopSimulation();
+      _autoStartedSimulationSessionId = null;
+    }
     if (auto && _autoStartedSimulationSessionId == _activeSession!.id) return;
     _autoStartedSimulationSessionId = _activeSession!.id;
     try {
@@ -490,6 +556,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         raceId: widget.raceId,
         userId: _effectiveUserId,
         sessionId: _activeSession!.id,
+        eventId: _currentEventId,
       );
     } catch (_) {
       _autoStartedSimulationSessionId = null;
@@ -760,21 +827,19 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
               _isInitLocationSet = true;
             }
 
-            final sessionId = _activeSession?.id;
-            final lapsStream = sessionId == null
-                ? null
-                : _firestoreService.getLaps(
-                    widget.raceId,
-                    _effectiveUserId,
-                    sessionId: sessionId,
-                  );
-            final passingsStream = sessionId == null
-                ? null
-                : _firestoreService.getPassingsStream(
-                    widget.raceId,
-                    sessionId: sessionId,
-                    session: _activeSession,
-                  );
+            final sessionId = _activeSession?.id ?? telemetry.currentSessionId;
+            final lapsStream = _firestoreService.getLaps(
+              widget.raceId,
+              _effectiveUserId,
+              sessionId: sessionId,
+              eventId: _currentEventId,
+            );
+            final passingsStream = _firestoreService.getPassingsStream(
+              widget.raceId,
+              sessionId: sessionId,
+              eventId: _currentEventId,
+              session: _activeSession,
+            );
 
             final borderColor = _activeSession != null
                 ? _getFlagColor(_activeSession!.currentFlag)
@@ -793,11 +858,11 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                          _buildStatusIndicator(
-                            telemetry.enableSendDataToCloud,
-                            isSimulating: _telemetryService.isSimulating,
-                            flag: _activeSession?.currentFlag,
-                          ),
+                        _buildStatusIndicator(
+                          telemetry.enableSendDataToCloud,
+                          isSimulating: _telemetryService.isSimulating,
+                          flag: _activeSession?.currentFlag,
+                        ),
                         _buildModeToggle(),
                         _buildInfoMetric(
                           'Speed',
@@ -809,174 +874,152 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                       ],
                     ),
                   ),
+                  if (_activeSession == null &&
+                      (sessionId == null || sessionId.isEmpty))
+                    Container(
+                      width: double.infinity,
+                      color: Colors.black87,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      child: const Text(
+                        'Sem sessao ativa detectada. Exibindo dados em fallback.',
+                        style: TextStyle(color: Colors.amber, fontSize: 12),
+                      ),
+                    ),
                   Expanded(
-                    child: sessionId == null
-                        ? const Center(
+                    child: StreamBuilder<QuerySnapshot>(
+                      stream: lapsStream,
+                      builder: (context, lapSnapshot) {
+                        if (lapSnapshot.hasError) {
+                          return Center(
                             child: Text(
-                              'Aguardando sessao ativa...',
-                              style: TextStyle(color: Colors.white70),
+                              'Error loading laps: ${lapSnapshot.error}',
+                              style: const TextStyle(color: Colors.white70),
+                              textAlign: TextAlign.center,
                             ),
-                          )
-                        : StreamBuilder<QuerySnapshot>(
-                            stream: lapsStream,
-                            builder: (context, lapSnapshot) {
-                              if (lapSnapshot.hasError) {
-                                return Center(
-                                  child: Text(
-                                    'Error loading laps: ${lapSnapshot.error}',
-                                    style: const TextStyle(color: Colors.white70),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                );
-                              }
+                          );
+                        }
 
-                              final lapDocs = lapSnapshot.data?.docs ?? const [];
-                              final completedLapTimesFromLaps = <int>[];
-                              final minLapMs =
-                                  (_activeSession?.minLapTimeSeconds ?? 0) *
-                                      1000;
-                              int? latestLapCloseTsFromLaps;
+                        final minLapMs =
+                            (_activeSession?.minLapTimeSeconds ?? 0) * 1000;
+                        final safeSessionStartMs = _activeSession != null
+                            ? _resolveSafeSessionStartMs(_activeSession!)
+                            : null;
 
-                              for (final doc in lapDocs) {
-                                final data = doc.data();
-                                if (data is! Map<String, dynamic>) continue;
-
-                                final t = data['totalLapTime'];
-                                int? lapMs;
-                                if (t is int) {
-                                  lapMs = t;
-                                } else if (t is num) {
-                                  lapMs = t.toInt();
-                                }
-
-                                if (lapMs != null &&
-                                    lapMs > 0 &&
-                                    (minLapMs == 0 || lapMs >= minLapMs)) {
-                                  completedLapTimesFromLaps.add(lapMs);
-                                }
-
-                                final lapCloseTs = _extractLapCloseTimestamp(data);
-                                if (lapCloseTs != null &&
-                                    (latestLapCloseTsFromLaps == null ||
-                                        lapCloseTs > latestLapCloseTsFromLaps)) {
-                                  latestLapCloseTsFromLaps = lapCloseTs;
-                                }
-                              }
-
-                              return StreamBuilder<List<PassingModel>>(
-                                stream: passingsStream,
-                                builder: (context, passingSnapshot) {
-                                  if (passingSnapshot.hasError) {
-                                    return Center(
-                                      child: Text(
-                                        'Error loading passings: ${passingSnapshot.error}',
-                                        style: const TextStyle(color: Colors.white70),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    );
-                                  }
-
-                                  final passings =
-                                      passingSnapshot.data ?? const <PassingModel>[];
-                                  final completedLapTimes =
-                                      List<int>.from(completedLapTimesFromLaps);
-                                  int? latestLapCloseTs = latestLapCloseTsFromLaps;
-                                  int? latestStartFinishTs;
-
-                                  for (final passing in passings) {
-                                    if (!_isCurrentPilotPassing(passing)) {
-                                      continue;
-                                    }
-
-                                    if (passing.checkpointIndex == 0) {
-                                      final ts = passing
-                                          .timestamp.millisecondsSinceEpoch;
-                                      if (latestStartFinishTs == null ||
-                                          ts > latestStartFinishTs) {
-                                        latestStartFinishTs = ts;
-                                      }
-                                    }
-
-                                    final lapMs = passing.lapTime?.round();
-                                    if (lapMs != null && lapMs > 0) {
-                                      final ts = passing
-                                          .timestamp.millisecondsSinceEpoch;
-                                      if (latestLapCloseTs == null ||
-                                          ts > latestLapCloseTs) {
-                                        latestLapCloseTs = ts;
-                                      }
-                                      if (completedLapTimesFromLaps.isEmpty &&
-                                          (minLapMs == 0 || lapMs >= minLapMs)) {
-                                        completedLapTimes.add(lapMs);
-                                      }
-                                    }
-                                  }
-
-                                  int? currentLapStartTs = latestLapCloseTs ??
-                                      latestStartFinishTs ??
-                                      _localLapStartMs ??
-                                      (_activeSession != null
-                                          ? _resolveSafeSessionStartMs(
-                                              _activeSession!)
-                                          : null);
-
-                                  if (currentLapStartTs != null &&
-                                      _localLapStartMs != currentLapStartTs) {
-                                    _localLapStartMs = currentLapStartTs;
-                                  }
-
-                                  int? bestLapMs;
-                                  int? previousLapMs;
-                                  if (completedLapTimes.isNotEmpty) {
-                                    final hasLapDocs =
-                                        completedLapTimesFromLaps.isNotEmpty;
-                                    previousLapMs = hasLapDocs
-                                        ? completedLapTimes.first
-                                        : completedLapTimes.last;
-                                    bestLapMs = completedLapTimes
-                                        .reduce((a, b) => a < b ? a : b);
-                                  }
-
-                                  int? currentLapMs;
-                                  if (currentLapStartTs != null) {
-                                    final nowMs = _uiNow.millisecondsSinceEpoch;
-                                    final diff = nowMs - currentLapStartTs;
-                                    currentLapMs = diff > 0 ? diff : 0;
-                                  }
-
-                                  final best = bestLapMs != null
-                                      ? _formatLapTime(bestLapMs)
-                                      : '--:--.---';
-                                  final previous = previousLapMs != null
-                                      ? _formatLapTime(previousLapMs)
-                                      : '--:--.---';
-                                  final current = currentLapMs != null
-                                      ? _formatLapTime(currentLapMs)
-                                      : '--:--.---';
-
-                                  if (_mode == LiveTimerMode.simple) {
-                                    return _buildSimpleMode(
-                                      best: best,
-                                      previous: previous,
-                                      current: current,
-                                    );
-                                  }
-
-                                  if (_mode == LiveTimerMode.classic) {
-                                    return _buildClassicMode(
-                                      currentLap: current,
-                                      telemetry: telemetry,
-                                    );
-                                  }
-
-                                  return _buildGaugeMode(
-                                    currentLap: current,
-                                    telemetry: telemetry,
-                                  );
-                                },
+                        return StreamBuilder<List<PassingModel>>(
+                          stream: passingsStream,
+                          builder: (context, passingSnapshot) {
+                            if (passingSnapshot.hasError) {
+                              return Center(
+                                child: Text(
+                                  'Error loading passings: ${passingSnapshot.error}',
+                                  style: const TextStyle(color: Colors.white70),
+                                  textAlign: TextAlign.center,
+                                ),
                               );
-                            },
-                          ),
+                            }
+
+                            final passings =
+                                passingSnapshot.data ?? const <PassingModel>[];
+                            final completedLapTimes = <int>[];
+                            int? latestLapCloseTs;
+
+                            for (final passing in passings) {
+                              if (!_isCurrentPilotPassing(passing)) {
+                                continue;
+                              }
+                              final flags = passing.flags
+                                  .map((f) => f.toLowerCase())
+                                  .toSet();
+                              if (flags.contains('invalid') ||
+                                  flags.contains('deleted')) {
+                                continue;
+                              }
+
+                              final lapMs = passing.lapTime?.round();
+                              if (lapMs == null || lapMs <= 0) {
+                                continue;
+                              }
+                              if (minLapMs > 0 && lapMs < minLapMs) {
+                                continue;
+                              }
+
+                              final ts =
+                                  passing.timestamp.millisecondsSinceEpoch;
+                              if (safeSessionStartMs != null &&
+                                  ts < safeSessionStartMs - 1000) {
+                                continue;
+                              }
+
+                              if (latestLapCloseTs == null ||
+                                  ts > latestLapCloseTs) {
+                                latestLapCloseTs = ts;
+                              }
+                              completedLapTimes.add(lapMs);
+                            }
+
+                            int? currentLapStartTs;
+                            if (_activeSession != null) {
+                              currentLapStartTs =
+                                  latestLapCloseTs ?? safeSessionStartMs;
+                            } else {
+                              currentLapStartTs =
+                                  latestLapCloseTs ?? _localLapStartMs;
+                            }
+
+                            if (currentLapStartTs != null &&
+                                _localLapStartMs != currentLapStartTs) {
+                              _localLapStartMs = currentLapStartTs;
+                            }
+
+                            int? bestLapMs;
+                            int? previousLapMs;
+                            if (completedLapTimes.isNotEmpty) {
+                              previousLapMs = completedLapTimes.last;
+                              bestLapMs = completedLapTimes
+                                  .reduce((a, b) => a < b ? a : b);
+                            }
+
+                            int? currentLapMs;
+                            if (currentLapStartTs != null) {
+                              final nowMs = _uiNow.millisecondsSinceEpoch;
+                              final diff = nowMs - currentLapStartTs;
+                              currentLapMs = diff > 0 ? diff : 0;
+                            }
+
+                            final best = bestLapMs != null
+                                ? _formatLapTime(bestLapMs)
+                                : '--:--.---';
+                            final previous = previousLapMs != null
+                                ? _formatLapTime(previousLapMs)
+                                : '--:--.---';
+                            final current = currentLapMs != null
+                                ? _formatLapTime(currentLapMs)
+                                : '--:--.---';
+
+                            if (_mode == LiveTimerMode.simple) {
+                              return _buildSimpleMode(
+                                best: best,
+                                previous: previous,
+                                current: current,
+                              );
+                            }
+
+                            if (_mode == LiveTimerMode.classic) {
+                              return _buildClassicMode(
+                                currentLap: current,
+                                telemetry: telemetry,
+                              );
+                            }
+
+                            return _buildGaugeMode(
+                              currentLap: current,
+                              telemetry: telemetry,
+                            );
+                          },
+                        );
+                      },
+                    ),
                   ),
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -1023,7 +1066,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                               ),
                               Text(
                                   '${_telemetryService.simulationSpeed.toStringAsFixed(1)} m/s',
-                                  style: const TextStyle(color: Colors.white70)),
+                                  style:
+                                      const TextStyle(color: Colors.white70)),
                             ],
                           ),
                         ],
@@ -1070,7 +1114,11 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     if (confirmed == true) {
       try {
         await _firestoreService.archiveCurrentLaps(
-            widget.raceId, _effectiveUserId, sessionId);
+          widget.raceId,
+          _effectiveUserId,
+          sessionId,
+          eventId: _currentEventId,
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Laps archived and cleared.')),

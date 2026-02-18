@@ -16,7 +16,8 @@ class TelemetryService extends ChangeNotifier {
   StreamSubscription<Position>? _positionStreamSubscription;
   Timer? _syncTimer;
 
-  bool _enableSendDataToCloud = false; // Default to false, wait for active session
+  bool _enableSendDataToCloud =
+      false; // Default to false, wait for active session
   bool get enableSendDataToCloud => _enableSendDataToCloud;
   set enableSendDataToCloud(bool value) {
     if (_enableSendDataToCloud != value) {
@@ -47,7 +48,7 @@ class TelemetryService extends ChangeNotifier {
   double _currentRouteDistance = 0.0;
   List<LatLng> _simulationRoutePath = [];
   List<Map<String, dynamic>> _simulationCheckpoints = [];
-  static const int _simUpdatesPerSecond = 1;
+  static const int _simUpdatesPerSecond = 5;
   static const int _simSyncIntervalSeconds = 5;
 
   void setSessionId(String? id) {
@@ -65,6 +66,8 @@ class TelemetryService extends ChangeNotifier {
 
   String? _currentRaceId;
   String? get currentRaceId => _currentRaceId;
+  String? _currentEventId;
+  String? get currentEventId => _currentEventId;
   String? _currentUserId;
   String? get currentUserId => _currentUserId;
   String? _currentSessionId;
@@ -97,6 +100,7 @@ class TelemetryService extends ChangeNotifier {
     required String raceId,
     required String userId,
     required String sessionId,
+    String? eventId,
     double? initialSpeed,
   }) async {
     if (routePath.isEmpty) return;
@@ -112,6 +116,7 @@ class TelemetryService extends ChangeNotifier {
     await stopRecording();
 
     _currentRaceId = raceId;
+    _currentEventId = eventId;
     _currentUserId = userId;
     setSessionId(sessionId);
 
@@ -160,11 +165,21 @@ class TelemetryService extends ChangeNotifier {
         _currentUserId != null &&
         _currentSessionId != null) {
       enableSendDataToCloud = true;
-      await startRecording(_currentRaceId!, _currentUserId!);
+      await startRecording(
+        _currentRaceId!,
+        _currentUserId!,
+        eventId: _currentEventId,
+        sessionId: _currentSessionId,
+      );
     }
   }
 
-  Future<void> startRecording(String raceId, String userId) async {
+  Future<void> startRecording(
+    String raceId,
+    String userId, {
+    String? eventId,
+    String? sessionId,
+  }) async {
     if (_isRecording) {
       if (_currentRaceId == raceId && _currentUserId == userId) return;
       await stopRecording();
@@ -173,8 +188,12 @@ class TelemetryService extends ChangeNotifier {
     // Enable Wakelock to keep screen on and CPU active
     await WakelockPlus.enable();
 
+    if (sessionId != null && sessionId.isNotEmpty) {
+      _currentSessionId = sessionId;
+    }
+
     // Generate Session ID (dd-MM-yyyy HH:mm:ss) if not already set
-    if (_currentSessionId == null) {
+    if (_currentSessionId == null || _currentSessionId!.isEmpty) {
       final now = DateTime.now();
       _currentSessionId = DateFormat('dd-MM-yyyy HH:mm:ss').format(now);
     }
@@ -193,6 +212,7 @@ class TelemetryService extends ChangeNotifier {
     }
 
     _currentRaceId = raceId;
+    _currentEventId = eventId;
     _currentUserId = userId;
     _isRecording = true;
     _buffer.clear(); // Start fresh
@@ -268,6 +288,7 @@ class TelemetryService extends ChangeNotifier {
     }
 
     _currentRaceId = null;
+    _currentEventId = null;
     _currentUserId = null;
     _currentSessionId = null;
     _buffer.clear();
@@ -281,6 +302,7 @@ class TelemetryService extends ChangeNotifier {
 
     final point = {
       'raceId': _currentRaceId,
+      'eventId': _currentEventId,
       'uid': _currentUserId,
       'session': _currentSessionId,
       'lat': position.latitude,
@@ -303,12 +325,14 @@ class TelemetryService extends ChangeNotifier {
       _currentRouteDistance = 0;
     }
 
-    final newPos = _getPointAtDistance(_currentRouteDistance, _simulationRoutePath);
+    final newPos =
+        _getPointAtDistance(_currentRouteDistance, _simulationRoutePath);
     _simulatedPosition = newPos;
     notifyListeners();
 
     final point = {
       'raceId': _currentRaceId,
+      'eventId': _currentEventId,
       'uid': _currentUserId,
       'session': _currentSessionId,
       'lat': newPos.latitude,
@@ -336,6 +360,7 @@ class TelemetryService extends ChangeNotifier {
         batch,
         _simulationCheckpoints,
         _currentSessionId!,
+        eventId: _currentEventId,
       );
     } catch (e) {
       _simulationBuffer.insertAll(0, batch);
@@ -386,8 +411,14 @@ class TelemetryService extends ChangeNotifier {
     try {
       // 1. Send Batch to Cloud Function
       if (_enableSendDataToCloud) {
-        await _firestoreService.sendTelemetryBatch(_currentRaceId!,
-            _currentUserId!, batch, _checkpoints, _currentSessionId!);
+        await _firestoreService.sendTelemetryBatch(
+          _currentRaceId!,
+          _currentUserId!,
+          batch,
+          _checkpoints,
+          _currentSessionId!,
+          eventId: _currentEventId,
+        );
       }
 
       _currentFrequency = batch.length.toDouble() / _syncIntervalSeconds;

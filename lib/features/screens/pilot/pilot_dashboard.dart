@@ -6,6 +6,7 @@ import 'package:speed_data/flutter_flow/nav/nav.dart';
 import 'package:speed_data/features/screens/pilot/active_race_screen.dart';
 import 'package:speed_data/features/screens/pilot/gps_test_screen.dart';
 import 'package:speed_data/features/screens/pilot/pilot_race_stats_screen.dart';
+import 'package:speed_data/features/screens/pilot/lap_times_screen.dart';
 import 'package:speed_data/features/screens/pilot/pilot_events_screen.dart';
 import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
@@ -199,8 +200,7 @@ class _PilotDashboardState extends State<PilotDashboard> {
                     Text(
                       'Be ready. Waiting for the organizer to start a session.',
                       style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          color: textColor),
+                          fontWeight: FontWeight.w600, color: textColor),
                     ),
                 ],
               ),
@@ -250,20 +250,27 @@ class _PilotDashboardState extends State<PilotDashboard> {
                 ),
           builder: (context, activeEventsSnapshot) {
             final activeEvents = activeEventsSnapshot.data ?? [];
-            final activeEvent = activeEvents.isNotEmpty
+            final sortedActiveEvents = activeEvents.isNotEmpty
                 ? (activeEvents..sort((a, b) => a.date.compareTo(b.date)))
-                : null;
+                : <RaceEvent>[];
+            final RaceEvent? highlightedEvent = sortedActiveEvents.isEmpty
+                ? null
+                : sortedActiveEvents.firstWhere(
+                    (event) => event.sessions
+                        .any((s) => s.status == SessionStatus.active),
+                    orElse: () => sortedActiveEvents.first,
+                  );
 
-            final anyActive = activeEvent != null
-                ? activeEvent.any((event) =>
+            final anyActive = sortedActiveEvents.isNotEmpty
+                ? sortedActiveEvents.any((event) =>
                     event.sessions.any((s) => s.status == SessionStatus.active))
                 : false;
 
-            if (!_autoNavigated && activeEvent != null) {
-              final eventWithActiveSession = activeEvent.firstWhere(
+            if (!_autoNavigated && sortedActiveEvents.isNotEmpty) {
+              final eventWithActiveSession = sortedActiveEvents.firstWhere(
                 (event) =>
                     event.sessions.any((s) => s.status == SessionStatus.active),
-                orElse: () => activeEvent.first,
+                orElse: () => sortedActiveEvents.first,
               );
               final hasActiveSession = eventWithActiveSession.sessions
                   .any((s) => s.status == SessionStatus.active);
@@ -284,7 +291,7 @@ class _PilotDashboardState extends State<PilotDashboard> {
                   );
                 });
               }
-            } else if (activeEvent != null) {
+            } else if (sortedActiveEvents.isNotEmpty) {
               if (!anyActive) {
                 _autoNavigated = false;
               }
@@ -308,11 +315,11 @@ class _PilotDashboardState extends State<PilotDashboard> {
 
                 return ListView(
                   children: [
-                    if (activeEvent != null && activeEvent.isNotEmpty)
+                    if (highlightedEvent != null)
                       _buildEventHighlightCard(
                         context,
                         firestoreService: firestoreService,
-                        event: activeEvent.first,
+                        event: highlightedEvent,
                       ),
                     const Padding(
                       padding:
@@ -477,6 +484,29 @@ class _PilotDashboardState extends State<PilotDashboard> {
                                     userId: user.uid,
                                     raceName: raceName,
                                     historySessionId: null,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                          ListTile(
+                            leading: const Icon(Icons.timer,
+                                color: Colors.lightBlue),
+                            title: const Text("Lap Times (dados por sessão)",
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold)),
+                            trailing: const Icon(Icons.arrow_forward_ios,
+                                color: Colors.white, size: 14),
+                            onTap: () {
+                              Navigator.pop(context);
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => LapTimesScreen(
+                                    raceId: raceId,
+                                    userId: user.uid,
+                                    raceName: raceName,
                                   ),
                                 ),
                               );

@@ -12,6 +12,7 @@ import 'package:speed_data/features/widgets/track_shape_widget.dart';
 class AdminMapView extends StatefulWidget {
   final String raceId;
   final String? eventId;
+  final String? sessionId;
   final String raceName;
   final SessionType sessionType;
 
@@ -19,6 +20,7 @@ class AdminMapView extends StatefulWidget {
     Key? key,
     required this.raceId,
     this.eventId,
+    this.sessionId,
     required this.raceName,
     this.sessionType = SessionType.race,
   }) : super(key: key);
@@ -55,6 +57,16 @@ class _AdminMapViewState extends State<AdminMapView> {
     _loadRaceData();
     _subscribeCompetitors();
     _subscribeParticipants();
+  }
+
+  @override
+  void didUpdateWidget(covariant AdminMapView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.eventId != widget.eventId ||
+        oldWidget.sessionId != widget.sessionId ||
+        oldWidget.raceId != widget.raceId) {
+      _subscribeParticipants();
+    }
   }
 
   Color _pilotColor(String uid) {
@@ -131,8 +143,13 @@ class _AdminMapViewState extends State<AdminMapView> {
 
   void _subscribeParticipants() {
     _participantsSubscription?.cancel();
-    _participantsSubscription =
-        _firestoreService.getRaceLocations(widget.raceId).listen((snapshot) {
+    _participantsSubscription = _firestoreService
+        .getRaceLocations(
+      widget.raceId,
+      eventId: widget.eventId,
+      sessionId: widget.sessionId,
+    )
+        .listen((snapshot) {
       final positions = <String, LatLng>{};
       final metadataByUid = <String, Map<String, dynamic>>{};
       for (var doc in snapshot.docs) {

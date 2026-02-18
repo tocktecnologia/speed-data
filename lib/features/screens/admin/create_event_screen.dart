@@ -205,20 +205,37 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
             ),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot>(
-              stream: _firestoreService.getOpenRaces(), // Using 'races' as tracks
+              // Track picker must include current track when editing, even if
+              // the track is not marked as "open".
+              stream: FirebaseFirestore.instance.collection('races').snapshots(),
               builder: (context, snapshot) {
                 if (!snapshot.hasData) return const CircularProgressIndicator();
                 final tracks = snapshot.data!.docs;
+                final seenTrackIds = <String>{};
+                final items = tracks
+                    .where((doc) => seenTrackIds.add(doc.id))
+                    .map((doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final trackName = (data['name'] as String?)?.trim();
+                  return DropdownMenuItem<String>(
+                    value: doc.id,
+                    child: Text(
+                      (trackName == null || trackName.isEmpty)
+                          ? doc.id
+                          : trackName,
+                    ),
+                  );
+                }).toList();
+
+                final dropdownValue = (_selectedTrackId != null &&
+                        seenTrackIds.contains(_selectedTrackId))
+                    ? _selectedTrackId
+                    : null;
+
                 return DropdownButtonFormField<String>(
-                  value: _selectedTrackId,
+                  value: dropdownValue,
                   decoration: const InputDecoration(labelText: 'Track'),
-                  items: tracks.map((doc) {
-                    final data = doc.data() as Map<String, dynamic>;
-                    return DropdownMenuItem(
-                      value: doc.id,
-                      child: Text(data['name']),
-                    );
-                  }).toList(),
+                  items: items,
                   onChanged: (val) => setState(() => _selectedTrackId = val),
                   validator: (value) => value == null ? 'Please select a track' : null,
                 );

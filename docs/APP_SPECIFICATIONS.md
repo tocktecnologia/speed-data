@@ -437,17 +437,20 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
 
 ### crossings (por sessao)
 - Caminho: `races/{raceId}/participants/{uid}/sessions/{sessionId}/crossings/{crossingId}`
+- Espelho opcional por evento/sessao: `events/{eventId}/sessions/{sessionId}/participants/{uid}/crossings/{crossingId}`
 - Obrigatorios: `lap_number`, `checkpoint_index`, `crossed_at_ms`, `speed_mps`, `lat`, `lng`, `method`, `distance_to_checkpoint_m`, `confidence`, `created_at`
-- Opcionais/derivados: `sector_time_ms` (delta desde checkpoint anterior), `split_time_ms` (delta desde cp_0)
+- Opcionais/derivados: `sector_time_ms` (delta desde checkpoint anterior), `split_time_ms` (delta desde cp_0), `backfilled_from_passings` (quando reconstruido)
 
 ### laps (por sessao)
 - Caminho: `races/{raceId}/participants/{uid}/sessions/{sessionId}/laps/{lapId}`
+- Espelho opcional por evento/sessao: `events/{eventId}/sessions/{sessionId}/participants/{uid}/laps/{lapId}`
 - Obrigatorios: `number`, `lap_start_ms`, `lap_end_ms`, `total_lap_time_ms`, `valid`, `created_at`
 - Recomendados: `invalid_reasons` (array), `splits_ms` (lista de deltas para cada checkpoint), `sectors_ms` (intervalos entre checkpoints), `trap_speeds_mps` (velocidade no crossing), `speed_stats` (`min_mps`, `max_mps`, `avg_mps`), `distance_m`
 - Compatibilidade: o mesmo `lapId` tambem e salvo em `participants/{uid}/laps/{lapId}` para telas legadas.
 
 ### analysis/summary (por sessao)
 - Caminho: `races/{raceId}/participants/{uid}/sessions/{sessionId}/analysis/summary`
+- Espelho opcional por evento/sessao: `events/{eventId}/sessions/{sessionId}/analysis/summary`
 - Campos: `best_lap_ms`, `optimal_lap_ms`, `best_sectors_ms` (array), `valid_laps_count`, `total_laps_count`, `updated_at`
 - Logica: `best_lap_ms` considera apenas voltas validas; `optimal_lap_ms` e a soma dos melhores setores acumulados em `best_sectors_ms`.
 
@@ -460,6 +463,23 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
 ### BigQuery
 - Dataset `telemetry.raw_points` recebe cada ponto com `raceId`, `uid`, `sessionId` e campos brutos de GPS (lat, lng, speed, heading, altitude, timestamp).
 - Futuras tabelas podem consumir `laps` e `crossings` para analises agregadas sem impactar o fluxo online.
+
+### Lap Times (UI do piloto)
+- Tela: `lib/features/screens/pilot/lap_times_screen.dart`
+- Modos implementados:
+  - `Sectors`: tabela por volta com linha `OPT`, comparacao por cor contra volta de referencia (melhor valida)
+  - `Splits`: tabela por checkpoint acumulado (`splits_ms`) com comparacao por cor
+  - `Trap Speeds`: tabela de velocidades por trap (`trap_speeds_mps`) com comparacao por referencia
+  - `High/Low`: tabela com `low/high/avg/range` por volta usando `speed_stats` (ou fallback para `trap_speeds_mps`)
+  - `Information`: painel consolidado com `best_lap`, `optimal_lap`, contagens de voltas validas/total e snapshot de crossings
+- Regra de validade na UI: referencia e resumo derivado usam somente voltas validas (`valid=true` e `total_lap_time_ms > 0`).
+
+### Backfill legada -> sessao (job administrativo)
+- Function callable: `backfillSessionAnalytics`
+- Objetivo: reconstruir `sessions/{sessionId}/crossings`, `sessions/{sessionId}/laps` e `analysis/summary` a partir de passings legados.
+- Entrada minima: `raceId`, `sessionId` (opcional `eventId`, `participantLimit`, `minLapTimeSeconds`).
+- Seguranca: execucao restrita a usuarios admin/root.
+- Resultado: retorna contadores (`participantsUpdated`, `lapsRebuilt`, `crossingsRebuilt`) para auditoria.
 
 ---
 

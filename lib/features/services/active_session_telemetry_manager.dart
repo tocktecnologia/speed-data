@@ -49,8 +49,7 @@ class ActiveSessionTelemetryManager {
       return;
     }
 
-    _eventsSubscription =
-        _firestoreService.getEventsStream().listen((events) {
+    _eventsSubscription = _firestoreService.getEventsStream().listen((events) {
       _handleEvents(events);
     });
   }
@@ -112,12 +111,13 @@ class ActiveSessionTelemetryManager {
       return {'event': event, 'session': session};
     }));
 
-    final registeredWithActive = checks.whereType<Map<String, dynamic>>().toList()
-      ..sort((a, b) {
-        final aEvent = a['event'] as RaceEvent;
-        final bEvent = b['event'] as RaceEvent;
-        return aEvent.date.compareTo(bEvent.date);
-      });
+    final registeredWithActive =
+        checks.whereType<Map<String, dynamic>>().toList()
+          ..sort((a, b) {
+            final aEvent = a['event'] as RaceEvent;
+            final bEvent = b['event'] as RaceEvent;
+            return aEvent.date.compareTo(bEvent.date);
+          });
 
     if (registeredWithActive.isEmpty) {
       _stopTelemetry();
@@ -153,6 +153,11 @@ class ActiveSessionTelemetryManager {
       _telemetryService.setCheckpoints(
           checkpointsRaw.map((e) => Map<String, dynamic>.from(e)).toList());
     }
+    _telemetryService.setTimelines(
+      session.timelines
+          .map((timeline) => timeline.toMap())
+          .toList(growable: false),
+    );
 
     if (!_telemetryService.isRecording ||
         _telemetryService.currentRaceId != event.trackId ||
@@ -168,6 +173,7 @@ class ActiveSessionTelemetryManager {
     _currentSessionId = null;
     _currentRaceId = null;
     _telemetryService.setSessionId(null);
+    _telemetryService.setTimelines(const []);
     _telemetryService.enableSendDataToCloud = false;
 
     if (_telemetryService.isSimulating) {

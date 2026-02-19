@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/features/models/user_role.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -619,7 +621,8 @@ class FirestoreService {
       List<Map<String, dynamic>> points,
       List<Map<String, dynamic>>? checkpoints,
       String? sessionId,
-      {String? eventId}) async {
+      {String? eventId,
+      List<Map<String, dynamic>>? timelines}) async {
     try {
       final callable =
           FirebaseFunctions.instance.httpsCallable('ingestTelemetry');
@@ -629,6 +632,7 @@ class FirestoreService {
         'uid': uid,
         'points': points,
         'checkpoints': checkpoints,
+        'timelines': timelines,
         'session': sessionId,
       });
     } catch (e) {
@@ -731,6 +735,103 @@ class FirestoreService {
         .toList());
   }
 
+  Stream<Map<String, List<LapAnalysisModel>>> getSessionParticipantsLapsModels(
+    String raceId, {
+    String? sessionId,
+    String? eventId,
+  }) {
+    if (sessionId == null || sessionId.isEmpty) {
+      return Stream<Map<String, List<LapAnalysisModel>>>.value(const {});
+    }
+
+    final Stream<QuerySnapshot> participantsStream =
+        (eventId != null && eventId.isNotEmpty)
+            ? _db
+                .collection('events')
+                .doc(eventId)
+                .collection('sessions')
+                .doc(sessionId)
+                .collection('participants')
+                .snapshots()
+            : _db
+                .collection('races')
+                .doc(raceId)
+                .collection('participants')
+                .snapshots();
+
+    late StreamController<Map<String, List<LapAnalysisModel>>> controller;
+    StreamSubscription<QuerySnapshot>? participantsSubscription;
+    final Map<String, StreamSubscription<List<LapAnalysisModel>>>
+        lapSubscriptions = {};
+    final Map<String, List<LapAnalysisModel>> lapsByParticipant = {};
+
+    void syncParticipantSubscriptions(Set<String> activeUids) {
+      final staleUids = lapSubscriptions.keys
+          .where((uid) => !activeUids.contains(uid))
+          .toList(growable: false);
+      for (final uid in staleUids) {
+        lapSubscriptions.remove(uid)?.cancel();
+        lapsByParticipant.remove(uid);
+      }
+
+      for (final uid in activeUids) {
+        if (lapSubscriptions.containsKey(uid)) continue;
+        lapSubscriptions[uid] = getSessionLapsModels(
+          raceId,
+          uid,
+          sessionId,
+          eventId: eventId,
+        ).listen(
+          (laps) {
+            lapsByParticipant[uid] = laps;
+            if (!controller.isClosed) {
+              controller.add(
+                  Map<String, List<LapAnalysisModel>>.from(lapsByParticipant));
+            }
+          },
+          onError: (error, stackTrace) {
+            if (!controller.isClosed) {
+              controller.addError(error, stackTrace);
+            }
+          },
+        );
+      }
+
+      if (!controller.isClosed) {
+        controller
+            .add(Map<String, List<LapAnalysisModel>>.from(lapsByParticipant));
+      }
+    }
+
+    controller = StreamController<Map<String, List<LapAnalysisModel>>>(
+      onListen: () {
+        participantsSubscription = participantsStream.listen(
+          (snapshot) {
+            final activeUids = snapshot.docs
+                .map((doc) => doc.id.trim())
+                .where((uid) => uid.isNotEmpty)
+                .toSet();
+            syncParticipantSubscriptions(activeUids);
+          },
+          onError: (error, stackTrace) {
+            if (!controller.isClosed) {
+              controller.addError(error, stackTrace);
+            }
+          },
+        );
+      },
+      onCancel: () async {
+        await participantsSubscription?.cancel();
+        for (final subscription in lapSubscriptions.values) {
+          await subscription.cancel();
+        }
+        lapSubscriptions.clear();
+      },
+    );
+
+    return controller.stream;
+  }
+
   Stream<QuerySnapshot> getLaps(
     String raceId,
     String uid, {
@@ -830,6 +931,44 @@ class FirestoreService {
             .snapshots();
 
     return stream.map((doc) {
+      if (!doc.exists || doc.data() == null) return null;
+      return SessionAnalysisSummaryModel.fromMap(
+          doc.data() as Map<String, dynamic>);
+    });
+  }
+
+  Stream<SessionAnalysisSummaryModel?> getSessionLeaderboardSummary(
+    String raceId, {
+    String? sessionId,
+    String? eventId,
+  }) {
+    if (sessionId == null || sessionId.isEmpty) {
+      return Stream<SessionAnalysisSummaryModel?>.value(null);
+    }
+
+    if (eventId != null && eventId.isNotEmpty) {
+      return _db
+          .collection('events')
+          .doc(eventId)
+          .collection('sessions')
+          .doc(sessionId)
+          .collection('analysis')
+          .doc('summary')
+          .snapshots()
+          .map((doc) {
+        if (!doc.exists || doc.data() == null) return null;
+        return SessionAnalysisSummaryModel.fromMap(
+            doc.data() as Map<String, dynamic>);
+      });
+    }
+
+    return _db
+        .collection('races')
+        .doc(raceId)
+        .collection('analysis')
+        .doc('summary')
+        .snapshots()
+        .map((doc) {
       if (!doc.exists || doc.data() == null) return null;
       return SessionAnalysisSummaryModel.fromMap(
           doc.data() as Map<String, dynamic>);

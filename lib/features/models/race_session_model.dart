@@ -4,6 +4,111 @@ enum SessionStatus { scheduled, active, finished }
 
 enum RaceFlag { green, warmup, yellow, red, checkered }
 
+enum SessionTimelineType { startFinish, split, trap }
+
+class SessionTimeline {
+  final String id;
+  final SessionTimelineType type;
+  final String name;
+  final int order;
+  final int checkpointIndex;
+  final bool enabled;
+
+  const SessionTimeline({
+    required this.id,
+    required this.type,
+    required this.name,
+    required this.order,
+    required this.checkpointIndex,
+    this.enabled = true,
+  });
+
+  static SessionTimelineType parseType(dynamic value) {
+    final normalized =
+        value == null ? '' : value.toString().trim().toLowerCase();
+    if (normalized == 'start_finish' ||
+        normalized == 'startfinish' ||
+        normalized == 'start-finish' ||
+        normalized == 'sf') {
+      return SessionTimelineType.startFinish;
+    }
+    if (normalized == 'trap') {
+      return SessionTimelineType.trap;
+    }
+    return SessionTimelineType.split;
+  }
+
+  static String typeToStorage(SessionTimelineType type) {
+    switch (type) {
+      case SessionTimelineType.startFinish:
+        return 'start_finish';
+      case SessionTimelineType.split:
+        return 'split';
+      case SessionTimelineType.trap:
+        return 'trap';
+    }
+  }
+
+  factory SessionTimeline.fromMap(
+    Map<String, dynamic> map, {
+    int fallbackOrder = 0,
+  }) {
+    final timelineIdRaw = map['id'];
+    final timelineId =
+        timelineIdRaw is String && timelineIdRaw.trim().isNotEmpty
+            ? timelineIdRaw.trim()
+            : 'timeline_$fallbackOrder';
+
+    final orderRaw = map['order'];
+    final parsedOrder = orderRaw is num
+        ? orderRaw.toInt()
+        : int.tryParse('$orderRaw') ?? fallbackOrder;
+
+    final checkpointRaw = map['checkpoint_index'] ?? map['checkpoint'];
+    final parsedCheckpoint = checkpointRaw is num
+        ? checkpointRaw.toInt()
+        : int.tryParse('$checkpointRaw') ?? 0;
+
+    return SessionTimeline(
+      id: timelineId,
+      type: parseType(map['type']),
+      name: map['name'] is String ? map['name'].trim() : '',
+      order: parsedOrder,
+      checkpointIndex: parsedCheckpoint,
+      enabled: map['enabled'] is bool ? map['enabled'] : true,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'type': typeToStorage(type),
+      'name': name,
+      'order': order,
+      'checkpoint_index': checkpointIndex,
+      'enabled': enabled,
+    };
+  }
+
+  SessionTimeline copyWith({
+    String? id,
+    SessionTimelineType? type,
+    String? name,
+    int? order,
+    int? checkpointIndex,
+    bool? enabled,
+  }) {
+    return SessionTimeline(
+      id: id ?? this.id,
+      type: type ?? this.type,
+      name: name ?? this.name,
+      order: order ?? this.order,
+      checkpointIndex: checkpointIndex ?? this.checkpointIndex,
+      enabled: enabled ?? this.enabled,
+    );
+  }
+}
+
 class RaceSession {
   final String id;
   final SessionType type;
@@ -34,6 +139,7 @@ class RaceSession {
   // Dynamic State (Orbits style)
   final DateTime? actualStartTime;
   final DateTime? actualEndTime;
+  final List<SessionTimeline> timelines;
 
   RaceSession({
     required this.id,
@@ -56,6 +162,7 @@ class RaceSession {
     this.qualificationValue,
     this.actualStartTime,
     this.actualEndTime,
+    this.timelines = const [],
   });
 
   Map<String, dynamic> toMap() {
@@ -80,6 +187,7 @@ class RaceSession {
       'qualification_value': qualificationValue,
       'actual_start_time': actualStartTime?.millisecondsSinceEpoch,
       'actual_end_time': actualEndTime?.millisecondsSinceEpoch,
+      'timelines': timelines.map((timeline) => timeline.toMap()).toList(),
     };
   }
 
@@ -150,6 +258,24 @@ class RaceSession {
       return null;
     }
 
+    List<SessionTimeline> _parseTimelines(dynamic value) {
+      if (value is! List) return const [];
+      final parsed = <SessionTimeline>[];
+      for (int i = 0; i < value.length; i++) {
+        final item = value[i];
+        if (item is Map<String, dynamic>) {
+          parsed.add(SessionTimeline.fromMap(item, fallbackOrder: i));
+        } else if (item is Map) {
+          parsed.add(SessionTimeline.fromMap(
+            Map<String, dynamic>.from(item),
+            fallbackOrder: i,
+          ));
+        }
+      }
+      parsed.sort((a, b) => a.order.compareTo(b.order));
+      return parsed;
+    }
+
     return RaceSession(
       id: map['id'] is String ? map['id'] : '',
       type: _parseType(map['type']),
@@ -188,6 +314,7 @@ class RaceSession {
           : null,
       actualStartTime: _parseDate(map['actual_start_time']),
       actualEndTime: _parseDate(map['actual_end_time']),
+      timelines: _parseTimelines(map['timelines'] ?? map['loops']),
     );
   }
 
@@ -212,6 +339,7 @@ class RaceSession {
     double? qualificationValue,
     DateTime? actualStartTime,
     DateTime? actualEndTime,
+    List<SessionTimeline>? timelines,
   }) {
     return RaceSession(
       id: id ?? this.id,
@@ -236,6 +364,7 @@ class RaceSession {
       qualificationValue: qualificationValue ?? this.qualificationValue,
       actualStartTime: actualStartTime ?? this.actualStartTime,
       actualEndTime: actualEndTime ?? this.actualEndTime,
+      timelines: timelines ?? this.timelines,
     );
   }
 }

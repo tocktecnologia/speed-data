@@ -17,15 +17,37 @@ class PilotPosition {
   });
 }
 
+class TimelineOverlayPoint {
+  final String id;
+  final LatLng location;
+  final String type; // start_finish | split | trap
+  final String label; // SF, S1, T1...
+  final int order;
+  final bool enabled;
+  final Color color;
+
+  const TimelineOverlayPoint({
+    required this.id,
+    required this.location,
+    required this.type,
+    required this.label,
+    required this.order,
+    required this.enabled,
+    required this.color,
+  });
+}
+
 class TrackPainter extends CustomPainter {
   final List<LatLng> checkpoints;
   final List<LatLng> routePath;
   final List<PilotPosition> pilotPositions;
+  final List<TimelineOverlayPoint> timelinePoints;
 
   TrackPainter({
     required this.checkpoints,
     required this.routePath,
     this.pilotPositions = const [],
+    this.timelinePoints = const [],
   });
 
   @override
@@ -125,6 +147,68 @@ class TrackPainter extends CustomPainter {
         ..color = Colors.green.withOpacity(0.6)
         ..strokeWidth = 4.0;
       canvas.drawCircle(start, 3.0, sfPaint);
+    }
+
+    if (timelinePoints.isNotEmpty) {
+      final ordered = List<TimelineOverlayPoint>.from(timelinePoints)
+        ..sort((a, b) => a.order.compareTo(b.order));
+
+      if (ordered.length > 1) {
+        final orderPaint = Paint()
+          ..color = Colors.white.withValues(alpha: 0.2)
+          ..strokeWidth = 1.4
+          ..style = PaintingStyle.stroke;
+        final orderPath = Path();
+        final start = toScreen(ordered.first.location);
+        orderPath.moveTo(start.dx, start.dy);
+        for (var i = 1; i < ordered.length; i++) {
+          final p = toScreen(ordered[i].location);
+          orderPath.lineTo(p.dx, p.dy);
+        }
+        canvas.drawPath(orderPath, orderPaint);
+      }
+
+      for (final timeline in ordered) {
+        final point = toScreen(timeline.location);
+        final color = timeline.enabled
+            ? timeline.color.withValues(alpha: 0.95)
+            : timeline.color.withValues(alpha: 0.45);
+        final halo = Paint()
+          ..color = color.withValues(alpha: timeline.enabled ? 0.25 : 0.12)
+          ..style = PaintingStyle.fill;
+        canvas.drawCircle(point, 10, halo);
+
+        final markerPaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.2;
+        if (timeline.type == 'start_finish') {
+          final rect = Rect.fromCenter(center: point, width: 12, height: 12);
+          canvas.drawRect(rect, markerPaint);
+        } else if (timeline.type == 'trap') {
+          final triangle = Path()
+            ..moveTo(point.dx, point.dy - 7)
+            ..lineTo(point.dx - 6.5, point.dy + 5)
+            ..lineTo(point.dx + 6.5, point.dy + 5)
+            ..close();
+          canvas.drawPath(triangle, markerPaint);
+        } else {
+          canvas.drawCircle(point, 6, markerPaint);
+        }
+
+        final labelPainter = TextPainter(
+          text: TextSpan(
+            text: timeline.label,
+            style: TextStyle(
+              color: color,
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        labelPainter.paint(canvas, point + const Offset(8, -12));
+      }
     }
 
     if (pilotPositions.isNotEmpty) {

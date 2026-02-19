@@ -25,6 +25,7 @@
   },
   "scripts": {
     "lint": "eslint --max-warnings=0 .",
+    "test": "node --test test/**/*.test.js",
     "serve": "firebase -P speed-data-tock emulators:start --only functions",
     "shell": "firebase -P speed-data-tock functions:shell",
     "start": "npm run shell",

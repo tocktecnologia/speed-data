@@ -5,8 +5,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/competitor_model.dart';
+import 'package:speed_data/features/models/lap_analysis_model.dart';
 import 'package:speed_data/features/models/passing_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
+import 'package:speed_data/features/models/session_analysis_summary_model.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/theme/speed_data_theme.dart';
 
@@ -18,6 +20,11 @@ class LeaderboardPanel extends StatefulWidget {
   final SessionType sessionType;
   final Map<String, Competitor> competitorsByUid;
   final RaceSession? session;
+  final FirestoreService? firestoreService;
+  final Stream<List<PassingModel>>? passingsStream;
+  final Stream<Map<String, List<LapAnalysisModel>>>? sessionLapsStream;
+  final Stream<SessionAnalysisSummaryModel?>? sessionSummaryStream;
+  final bool disableParticipantsSubscription;
 
   const LeaderboardPanel({
     Key? key,
@@ -28,6 +35,11 @@ class LeaderboardPanel extends StatefulWidget {
     this.sessionType = SessionType.race,
     this.competitorsByUid = const {},
     this.session,
+    this.firestoreService,
+    this.passingsStream,
+    this.sessionLapsStream,
+    this.sessionSummaryStream,
+    this.disableParticipantsSubscription = false,
   }) : super(key: key);
 
   @override
@@ -67,14 +79,20 @@ class PilotStats {
 }
 
 class _LeaderboardPanelState extends State<LeaderboardPanel> {
-  final FirestoreService _firestoreService = FirestoreService();
+  FirestoreService? _localFirestoreService;
   StreamSubscription<QuerySnapshot>? _participantsSubscription;
   StreamSubscription<List<PassingModel>>? _passingsSubscription;
+  StreamSubscription<Map<String, List<LapAnalysisModel>>>?
+      _sessionLapsSubscription;
+  StreamSubscription<SessionAnalysisSummaryModel?>? _sessionSummarySubscription;
   final ScrollController _verticalScrollController = ScrollController();
   final ScrollController _horizontalScrollController = ScrollController();
   final Map<String, PilotStats> _stats = {};
   final Map<String, String> _pilotNames = {};
   final Map<String, String> _pilotNumbers = {};
+  List<PassingModel> _latestPassings = const [];
+  Map<String, List<LapAnalysisModel>> _sessionLapsByUid = const {};
+  SessionAnalysisSummaryModel? _sessionSummary;
   static const double _posColWidth = 48;
   static const double _numColWidth = 48;
   static const double _nameColWidth = 220;
@@ -87,20 +105,34 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
     super.initState();
     _updatePilotRosterFromWidget();
     _subscribeParticipants();
+    _subscribeSessionAnalytics();
     _subscribePassings();
   }
+
+  FirestoreService get _firestoreService =>
+      widget.firestoreService ??
+      (_localFirestoreService ??= FirestoreService());
 
   @override
   void didUpdateWidget(LeaderboardPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     final sessionChanged = oldWidget.sessionId != widget.sessionId;
     final eventChanged = oldWidget.eventId != widget.eventId;
+    final streamsChanged = oldWidget.passingsStream != widget.passingsStream ||
+        oldWidget.sessionLapsStream != widget.sessionLapsStream ||
+        oldWidget.sessionSummaryStream != widget.sessionSummaryStream ||
+        oldWidget.disableParticipantsSubscription !=
+            widget.disableParticipantsSubscription;
     final competitorsChanged =
         !mapEquals(oldWidget.competitorsByUid, widget.competitorsByUid);
-    if (sessionChanged || eventChanged || competitorsChanged) {
+    if (sessionChanged ||
+        eventChanged ||
+        competitorsChanged ||
+        streamsChanged) {
       _resetSubscriptions();
       _updatePilotRosterFromWidget();
       _subscribeParticipants();
+      _subscribeSessionAnalytics();
       _subscribePassings();
     }
   }
@@ -114,6 +146,11 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
   }
 
   void _subscribeParticipants() {
+    if (widget.disableParticipantsSubscription) {
+      _updatePilotRosterFromWidget();
+      return;
+    }
+
     _participantsSubscription?.cancel();
     _participantsSubscription = _firestoreService
         .getRaceLocations(
@@ -178,16 +215,77 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
 
   void _subscribePassings() {
     _passingsSubscription?.cancel();
-    _passingsSubscription = _firestoreService
-        .getPassingsStream(widget.raceId,
-            sessionId: widget.sessionId,
-            eventId: widget.eventId,
-            session: widget.session)
-        .listen((passings) => _recomputeStats(passings));
-    _recomputeStats([]);
+    final passingsStream = widget.passingsStream ??
+        _firestoreService.getPassingsStream(
+          widget.raceId,
+          sessionId: widget.sessionId,
+          eventId: widget.eventId,
+          session: widget.session,
+        );
+    _passingsSubscription = passingsStream.listen((passings) {
+      _latestPassings = passings;
+      _recomputeStats();
+    });
+    _recomputeStats();
   }
 
-  void _recomputeStats(List<PassingModel> passings) {
+  void _subscribeSessionAnalytics() {
+    _sessionLapsSubscription?.cancel();
+    _sessionSummarySubscription?.cancel();
+    _sessionLapsByUid = const {};
+    _sessionSummary = null;
+
+    final hasSession =
+        widget.sessionId != null && widget.sessionId!.trim().isNotEmpty;
+    final hasInjectedAnalytics =
+        widget.sessionLapsStream != null || widget.sessionSummaryStream != null;
+    if (!hasSession && !hasInjectedAnalytics) return;
+
+    final lapsStream = widget.sessionLapsStream ??
+        _firestoreService.getSessionParticipantsLapsModels(
+          widget.raceId,
+          eventId: widget.eventId,
+          sessionId: widget.sessionId,
+        );
+    _sessionLapsSubscription = lapsStream.listen((lapsByUid) {
+      _sessionLapsByUid = lapsByUid;
+      _recomputeStats();
+    });
+
+    final summaryStream = widget.sessionSummaryStream ??
+        _firestoreService.getSessionLeaderboardSummary(
+          widget.raceId,
+          eventId: widget.eventId,
+          sessionId: widget.sessionId,
+        );
+    _sessionSummarySubscription = summaryStream.listen((summary) {
+      _sessionSummary = summary;
+      _recomputeStats();
+    });
+  }
+
+  void _recomputeStats() {
+    final hasSessionAnalytics = _sessionLapsByUid.values
+        .any((laps) => laps.any((lap) => lap.totalLapTimeMs > 0));
+    final newStats = hasSessionAnalytics
+        ? _buildStatsFromSessionLaps(_sessionLapsByUid)
+        : _buildStatsFromPassings(_latestPassings);
+
+    void applyStats() {
+      _stats
+        ..clear()
+        ..addAll(newStats);
+    }
+
+    if (!mounted) {
+      applyStats();
+      return;
+    }
+
+    setState(applyStats);
+  }
+
+  Map<String, PilotStats> _buildStatsFromPassings(List<PassingModel> passings) {
     final aggregates = <String, _PassingAggregate>{};
 
     for (final passing in passings) {
@@ -221,7 +319,6 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
       }
     }
 
-    // Results must show only competitors with completed laps in the selected session.
     final allParticipantIds = aggregates.entries
         .where((entry) => entry.value.validLapCount > 0)
         .map((entry) => entry.key)
@@ -264,18 +361,80 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
       );
     }
 
-    void applyStats() {
-      _stats
-        ..clear()
-        ..addAll(newStats);
+    return newStats;
+  }
+
+  Map<String, PilotStats> _buildStatsFromSessionLaps(
+      Map<String, List<LapAnalysisModel>> lapsByUid) {
+    final newStats = <String, PilotStats>{};
+
+    for (final entry in lapsByUid.entries) {
+      final uid = entry.key;
+      final allLaps = List<LapAnalysisModel>.from(entry.value)
+        ..sort((a, b) => a.number.compareTo(b.number));
+      if (allLaps.isEmpty) continue;
+
+      final validLaps =
+          allLaps.where(_isValidLapTimeForSummary).toList(growable: false);
+      if (validLaps.isEmpty) continue;
+
+      LapAnalysisModel bestLapModel = validLaps.first;
+      for (final lap in validLaps) {
+        if (lap.totalLapTimeMs < bestLapModel.totalLapTimeMs) {
+          bestLapModel = lap;
+        }
+      }
+
+      final completedLaps = validLaps.length;
+      final totalLapTime =
+          validLaps.fold<int>(0, (acc, lap) => acc + lap.totalLapTimeMs);
+      final averageLapTime =
+          completedLaps > 0 ? totalLapTime / completedLaps : 0.0;
+      final lastLap = allLaps.last.totalLapTimeMs > 0
+          ? allLaps.last.totalLapTimeMs.toDouble()
+          : validLaps.last.totalLapTimeMs.toDouble();
+      final currentLap = allLaps.last.number;
+
+      int? firstStartMs;
+      int? lastEndMs;
+      for (final lap in allLaps) {
+        if (lap.lapStartMs > 0) {
+          if (firstStartMs == null || lap.lapStartMs < firstStartMs) {
+            firstStartMs = lap.lapStartMs;
+          }
+        }
+        if (lap.lapEndMs > 0) {
+          if (lastEndMs == null || lap.lapEndMs > lastEndMs) {
+            lastEndMs = lap.lapEndMs;
+          }
+        }
+      }
+      final sessionDurationMs = (firstStartMs != null &&
+              lastEndMs != null &&
+              lastEndMs > firstStartMs)
+          ? (lastEndMs - firstStartMs).toDouble()
+          : 0.0;
+
+      newStats[uid] = PilotStats(
+        uid: uid,
+        displayName: _pilotNames[uid] ??
+            widget.competitorsByUid[uid]?.name ??
+            _previewPilotName(uid),
+        carNumber:
+            _pilotNumbers[uid] ?? widget.competitorsByUid[uid]?.number ?? '??',
+        averageLapTime: averageLapTime,
+        bestLapTime: bestLapModel.totalLapTimeMs.toDouble(),
+        bestLapNumber: bestLapModel.number,
+        completedLaps: completedLaps,
+        currentLapNumber: currentLap,
+        currentPoints: const {},
+        sessionDurationMs: sessionDurationMs,
+        lastLapTime: lastLap,
+        intervalStrings: const [],
+      );
     }
 
-    if (!mounted) {
-      applyStats();
-      return;
-    }
-
-    setState(applyStats);
+    return newStats;
   }
 
   bool _isPassingInvalid(PassingModel passing) {
@@ -300,6 +459,13 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
     _participantsSubscription = null;
     _passingsSubscription?.cancel();
     _passingsSubscription = null;
+    _sessionLapsSubscription?.cancel();
+    _sessionLapsSubscription = null;
+    _sessionSummarySubscription?.cancel();
+    _sessionSummarySubscription = null;
+    _latestPassings = const [];
+    _sessionLapsByUid = const {};
+    _sessionSummary = null;
     _stats.clear();
   }
 
@@ -310,6 +476,59 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
     final milliseconds =
         (duration.inMilliseconds % 1000).toString().padLeft(3, '0');
     return "$minutes:$seconds.$milliseconds";
+  }
+
+  String _formatOptionalDuration(int? ms) {
+    if (ms == null || ms <= 0) return '-';
+    return _formatDuration(ms);
+  }
+
+  bool _isValidLapTimeForSummary(LapAnalysisModel lap) {
+    if (!lap.valid || lap.totalLapTimeMs <= 0) {
+      return false;
+    }
+    final minLapTimeSeconds = widget.session?.minLapTimeSeconds ?? 0;
+    if (minLapTimeSeconds <= 0) {
+      return true;
+    }
+    return lap.totalLapTimeMs >= (minLapTimeSeconds * 1000);
+  }
+
+  _DerivedSessionSummary _deriveSummaryFromSessionLaps() {
+    int? bestLapMs;
+    final Map<int, int> bestSectorByIndex = {};
+
+    for (final laps in _sessionLapsByUid.values) {
+      for (final lap in laps) {
+        if (!_isValidLapTimeForSummary(lap)) continue;
+
+        if (bestLapMs == null || lap.totalLapTimeMs < bestLapMs) {
+          bestLapMs = lap.totalLapTimeMs;
+        }
+
+        for (int i = 0; i < lap.sectorsMs.length; i++) {
+          final sectorMs = lap.sectorsMs[i];
+          if (sectorMs <= 0) continue;
+          final sectorIndex = i + 1;
+          final currentBest = bestSectorByIndex[sectorIndex];
+          if (currentBest == null || sectorMs < currentBest) {
+            bestSectorByIndex[sectorIndex] = sectorMs;
+          }
+        }
+      }
+    }
+
+    int? optimalLapMs;
+    if (bestSectorByIndex.isNotEmpty) {
+      final sortedIndexes = bestSectorByIndex.keys.toList()..sort();
+      optimalLapMs = sortedIndexes.fold<int>(
+          0, (acc, idx) => acc + bestSectorByIndex[idx]!);
+    }
+
+    return _DerivedSessionSummary(
+      bestLapMs: bestLapMs,
+      optimalLapMs: optimalLapMs,
+    );
   }
 
   String _previewPilotName(String uid) {
@@ -344,6 +563,26 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
       }
     });
 
+    final derivedSummary = _deriveSummaryFromSessionLaps();
+    final summaryBestLapMs =
+        (_sessionSummary?.bestLapMs != null && _sessionSummary!.bestLapMs! > 0)
+            ? _sessionSummary!.bestLapMs
+            : null;
+    final summaryOptimalLapMs = (_sessionSummary?.optimalLapMs != null &&
+            _sessionSummary!.optimalLapMs! > 0)
+        ? _sessionSummary!.optimalLapMs
+        : null;
+    // Prefer derived values from explicitly valid laps; use backend summary as fallback.
+    final effectiveBestLapMs = derivedSummary.bestLapMs ?? summaryBestLapMs;
+    final effectiveOptimalLapMs =
+        derivedSummary.optimalLapMs ?? summaryOptimalLapMs;
+
+    // Prefer analytical summary baseline when present (best_lap_ms / optimal_lap_ms).
+    final summaryReferenceBestLapMs =
+        (effectiveBestLapMs != null && effectiveBestLapMs > 0)
+            ? effectiveBestLapMs.toDouble()
+            : (pilots.isNotEmpty ? pilots.first.bestLapTime : 0.0);
+
     final tableWidth = (_rowPaddingHorizontal * 2) +
         _posColWidth +
         _numColWidth +
@@ -363,6 +602,43 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
           width: tableWidth,
           child: Column(
             children: [
+              if (effectiveBestLapMs != null || effectiveOptimalLapMs != null)
+                Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  color: SpeedDataTheme.bgBase,
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 4,
+                    children: [
+                      const Text(
+                        'SESSION SUMMARY',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: SpeedDataTheme.textSecondary,
+                        ),
+                      ),
+                      Text(
+                        'best_lap: ${_formatOptionalDuration(effectiveBestLapMs)}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                          color: SpeedDataTheme.dataSpeed,
+                        ),
+                      ),
+                      Text(
+                        'optimal_lap: ${_formatOptionalDuration(effectiveOptimalLapMs)}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                          color: SpeedDataTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               // Header
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
@@ -465,9 +741,10 @@ class _LeaderboardPanelState extends State<LeaderboardPanel> {
                           }
                         } else {
                           // Practice/Qualifying: Diff in Best Lap Time
-                          if (stat.bestLapTime > 0 && leader.bestLapTime > 0) {
+                          if (stat.bestLapTime > 0 &&
+                              summaryReferenceBestLapMs > 0) {
                             diffStr =
-                                '+${((stat.bestLapTime - leader.bestLapTime) / 1000).toStringAsFixed(3)}';
+                                '+${((stat.bestLapTime - summaryReferenceBestLapMs) / 1000).toStringAsFixed(3)}';
                           }
                           if (stat.bestLapTime > 0 && prev.bestLapTime > 0) {
                             gapStr =
@@ -612,4 +889,14 @@ class _PassingAggregate {
   int lastLapNumber = 0;
   DateTime? firstTimestamp;
   DateTime? lastTimestamp;
+}
+
+class _DerivedSessionSummary {
+  final int? bestLapMs;
+  final int? optimalLapMs;
+
+  const _DerivedSessionSummary({
+    required this.bestLapMs,
+    required this.optimalLapMs,
+  });
 }

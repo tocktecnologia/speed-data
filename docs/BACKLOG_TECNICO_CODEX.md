@@ -151,11 +151,11 @@ Aceite: metodos para laps/crossings/summary por sessao.
 Arquivo: `lib/features/screens/pilot/lap_times_screen.dart`  
 Aceite: tela com seletor de modo e estrutura principal.
 
-16. [ ] `BT-016` Implementar modo `Sectors` com linha `Opt`  
+16. [x] `BT-016` Implementar modo `Sectors` com linha `Opt`  
 Arquivo: `lib/features/screens/pilot/widgets/lap_times_table.dart`  
 Aceite: comparacao por cores (verde/vermelho) vs volta referencia.
 
-17. [ ] `BT-017` Implementar modos `Splits`, `Trap Speeds`, `High/Low`, `Information`  
+17. [x] `BT-017` Implementar modos `Splits`, `Trap Speeds`, `High/Low`, `Information`  
 Arquivos: `lib/features/screens/pilot/widgets/*`  
 Aceite: todos os modos consumindo dados persistidos, sem heuristica pesada.
 
@@ -163,7 +163,7 @@ Aceite: todos os modos consumindo dados persistidos, sem heuristica pesada.
 Arquivo: `lib/features/screens/pilot/pilot_dashboard.dart`  
 Aceite: acesso a Lap Times para sessao atual e historica.
 
-19. [ ] `BT-019` Backfill de dados legados  
+19. [x] `BT-019` Backfill de dados legados  
 Arquivos: `firebase/functions/*` (job administrativo)  
 Aceite: sessoes recentes com dados minimos para nova tela.
 
@@ -171,15 +171,15 @@ Aceite: sessoes recentes com dados minimos para nova tela.
 Arquivos: `firebase/firestore.rules`, `firebase/firestore.indexes.json`  
 Aceite: consultas por sessao sem erro de permissao/index.
 
-21. [ ] `BT-021` Testes backend de calculo de voltas e parciais  
+21. [x] `BT-021` Testes backend de calculo de voltas e parciais  
 Arquivos: `firebase/functions/*`  
 Aceite: cobertura dos casos criticos (deduplicacao, ordem, validade).
 
-22. [ ] `BT-022` Testes Flutter para tela Lap Times  
+22. [x] `BT-022` Testes Flutter para tela Lap Times  
 Arquivos: `test/*`  
 Aceite: renderizacao e consistencia dos modos com dados mockados.
 
-23. [ ] `BT-023` Atualizar documentacao final  
+23. [x] `BT-023` Atualizar documentacao final  
 Arquivo: `docs/APP_SPECIFICATIONS.md`  
 Aceite: arquitetura final e fluxo de dados refletidos no documento.
 
@@ -187,27 +187,27 @@ Aceite: arquitetura final e fluxo de dados refletidos no documento.
 Arquivos: `lib/features/screens/admin/race_control_screen.dart`, `lib/features/services/firestore_service.dart`  
 Aceite: tela usa `sessionId` de forma consistente para controle, exibicao e operacoes de sessao.
 
-25. [ ] `BT-025` Atualizar `Passings Panel` para novos campos de trap/split  
+25. [x] `BT-025` Atualizar `Passings Panel` para novos campos de trap/split  
 Arquivos: `lib/features/screens/admin/widgets/passings_panel.dart`, `lib/features/models/passing_model.dart`  
 Aceite: exibir `sector_time`, `split_time` e `trap_speed` quando disponiveis, mantendo compatibilidade com dados antigos.
 
-26. [ ] `BT-026` Atualizar `Results/Leaderboard` para fonte por sessao  
+26. [x] `BT-026` Atualizar `Results/Leaderboard` para fonte por sessao  
 Arquivos: `lib/features/screens/admin/widgets/leaderboard_panel.dart`, `lib/features/services/firestore_service.dart`  
 Aceite: calculos de resultados priorizam dados por sessao e usam resumo analitico quando existir.
 
-27. [ ] `BT-027` Implementar configuracao real de `Timelines` no admin  
+27. [x] `BT-027` Implementar configuracao real de `Timelines` no admin  
 Arquivos: `lib/features/screens/admin/session_settings_screen.dart`, `lib/features/models/race_session_model.dart`  
 Aceite: admin consegue criar/editar/ordenar linhas de controle (`start_finish`, `split`, `trap`) por sessao.
 
-28. [ ] `BT-028` Propagar `timelines` para backend de ingestao  
+28. [x] `BT-028` Propagar `timelines` para backend de ingestao  
 Arquivos: `lib/features/services/telemetry_service.dart`, `firebase/functions/index.js`  
 Aceite: ingestao usa as linhas configuradas na sessao (nao apenas checkpoints fixos da pista).
 
-29. [ ] `BT-029` Ajustar `AdminMapView` para visualizacao de traps/timelines  
+29. [x] `BT-029` Ajustar `AdminMapView` para visualizacao de traps/timelines  
 Arquivos: `lib/features/screens/admin/admin_map_view.dart`  
 Aceite: mapa admin mostra linhas/traps configurados e facilita validacao visual.
 
-30. [ ] `BT-030` Testes de regressao das telas admin  
+30. [x] `BT-030` Testes de regressao das telas admin  
 Arquivos: `test/*`  
 Aceite: fluxo de cronometragem/admin continua funcional com dados legados e novos.
 

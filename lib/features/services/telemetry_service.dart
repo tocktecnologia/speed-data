@@ -48,6 +48,7 @@ class TelemetryService extends ChangeNotifier {
   double _currentRouteDistance = 0.0;
   List<LatLng> _simulationRoutePath = [];
   List<Map<String, dynamic>> _simulationCheckpoints = [];
+  List<Map<String, dynamic>> _simulationTimelines = [];
   static const int _simUpdatesPerSecond = 5;
   static const int _simSyncIntervalSeconds = 5;
 
@@ -73,6 +74,7 @@ class TelemetryService extends ChangeNotifier {
   String? _currentSessionId;
   String? get currentSessionId => _currentSessionId;
   List<Map<String, dynamic>>? _checkpoints;
+  List<Map<String, dynamic>>? _timelines;
 
   // Buffer for telemetry points (volatile memory)
   final List<Map<String, dynamic>> _buffer = [];
@@ -86,6 +88,10 @@ class TelemetryService extends ChangeNotifier {
 
   void setCheckpoints(List<Map<String, dynamic>> checkpoints) {
     _checkpoints = checkpoints;
+  }
+
+  void setTimelines(List<Map<String, dynamic>> timelines) {
+    _timelines = timelines;
   }
 
   void setSimulationSpeed(double value) {
@@ -102,6 +108,7 @@ class TelemetryService extends ChangeNotifier {
     required String sessionId,
     String? eventId,
     double? initialSpeed,
+    List<Map<String, dynamic>>? timelines,
   }) async {
     if (routePath.isEmpty) return;
     if (_isSimulating) return;
@@ -112,6 +119,7 @@ class TelemetryService extends ChangeNotifier {
 
     _simulationRoutePath = routePath;
     _simulationCheckpoints = checkpoints;
+    _simulationTimelines = timelines ?? [];
 
     await stopRecording();
 
@@ -157,6 +165,7 @@ class TelemetryService extends ChangeNotifier {
 
     _isSimulating = false;
     _simulatedPosition = null;
+    _simulationTimelines = [];
     notifyListeners();
 
     simulationOverride = false;
@@ -292,6 +301,7 @@ class TelemetryService extends ChangeNotifier {
     _currentUserId = null;
     _currentSessionId = null;
     _buffer.clear();
+    _timelines = null;
   }
 
   Future<void> _handleLocationUpdate(Position position) async {
@@ -361,6 +371,7 @@ class TelemetryService extends ChangeNotifier {
         _simulationCheckpoints,
         _currentSessionId!,
         eventId: _currentEventId,
+        timelines: _simulationTimelines,
       );
     } catch (e) {
       _simulationBuffer.insertAll(0, batch);
@@ -418,6 +429,7 @@ class TelemetryService extends ChangeNotifier {
           _checkpoints,
           _currentSessionId!,
           eventId: _currentEventId,
+          timelines: _timelines,
         );
       }
 

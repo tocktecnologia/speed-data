@@ -15,6 +15,7 @@ class AdminMapView extends StatefulWidget {
   final String? sessionId;
   final String raceName;
   final SessionType sessionType;
+  final RaceSession? session;
 
   const AdminMapView({
     Key? key,
@@ -23,6 +24,7 @@ class AdminMapView extends StatefulWidget {
     this.sessionId,
     required this.raceName,
     this.sessionType = SessionType.race,
+    this.session,
   }) : super(key: key);
 
   @override
@@ -40,6 +42,10 @@ class _AdminMapViewState extends State<AdminMapView> {
   Map<String, String> _pilotLabels = {};
   Map<String, String> _competitorLabels = {};
   Map<String, Map<String, dynamic>> _participantMetadata = {};
+
+  static const Color _startFinishColor = Color(0xFF2ECC71);
+  static const Color _splitColor = Color(0xFFFFB020);
+  static const Color _trapColor = Color(0xFF33D2FF);
 
   static const List<Color> _pilotColors = [
     Colors.cyan,
@@ -239,17 +245,153 @@ class _AdminMapViewState extends State<AdminMapView> {
               style: TextStyle(color: Colors.white)));
     }
 
+    final timelinePoints = _buildTimelineOverlays();
+
     return Container(
       color: Colors.black, // Dark background
       width: double.infinity,
       height: double.infinity,
       padding: const EdgeInsets.all(16),
-      child: CustomPaint(
-        painter: TrackPainter(
-          checkpoints: _checkpoints,
-          routePath: _routePath,
-          pilotPositions: _buildPilotPositions(),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: CustomPaint(
+              painter: TrackPainter(
+                checkpoints: _checkpoints,
+                routePath: _routePath,
+                pilotPositions: _buildPilotPositions(),
+                timelinePoints: timelinePoints,
+              ),
+            ),
+          ),
+          if (timelinePoints.isNotEmpty)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: _buildTimelineLegend(timelinePoints),
+            ),
+        ],
+      ),
+    );
+  }
+
+  List<TimelineOverlayPoint> _buildTimelineOverlays() {
+    final session = widget.session;
+    if (session == null || session.timelines.isEmpty || _checkpoints.isEmpty) {
+      return const [];
+    }
+
+    final enabled = session.timelines
+        .where((timeline) => timeline.enabled)
+        .toList()
+      ..sort((a, b) => a.order.compareTo(b.order));
+    if (enabled.isEmpty) return const [];
+
+    int splitCounter = 0;
+    int trapCounter = 0;
+    final overlays = <TimelineOverlayPoint>[];
+
+    for (final timeline in enabled) {
+      final index = timeline.checkpointIndex;
+      if (index < 0 || index >= _checkpoints.length) continue;
+      late final String type;
+      late final String label;
+      late final Color color;
+      switch (timeline.type) {
+        case SessionTimelineType.startFinish:
+          type = 'start_finish';
+          label = 'SF';
+          color = _startFinishColor;
+          break;
+        case SessionTimelineType.split:
+          splitCounter += 1;
+          type = 'split';
+          label = 'S$splitCounter';
+          color = _splitColor;
+          break;
+        case SessionTimelineType.trap:
+          trapCounter += 1;
+          type = 'trap';
+          label = 'T$trapCounter';
+          color = _trapColor;
+          break;
+      }
+      overlays.add(
+        TimelineOverlayPoint(
+          id: timeline.id,
+          location: _checkpoints[index],
+          type: type,
+          label: label,
+          order: timeline.order,
+          enabled: timeline.enabled,
+          color: color,
         ),
+      );
+    }
+
+    return overlays;
+  }
+
+  Widget _buildTimelineLegend(List<TimelineOverlayPoint> timelinePoints) {
+    final startFinishCount =
+        timelinePoints.where((point) => point.type == 'start_finish').length;
+    final splitCount =
+        timelinePoints.where((point) => point.type == 'split').length;
+    final trapCount =
+        timelinePoints.where((point) => point.type == 'trap').length;
+
+    Widget legendItem(Color color, String text) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.65),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'TIMELINES',
+            style: TextStyle(
+              color: Colors.white70,
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.4,
+            ),
+          ),
+          const SizedBox(height: 6),
+          legendItem(_startFinishColor, 'Start/Finish: $startFinishCount'),
+          const SizedBox(height: 4),
+          legendItem(_splitColor, 'Splits: $splitCount'),
+          const SizedBox(height: 4),
+          legendItem(_trapColor, 'Traps: $trapCount'),
+        ],
       ),
     );
   }

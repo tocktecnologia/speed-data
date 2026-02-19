@@ -120,6 +120,17 @@ class _RaceControlScreenState extends State<RaceControlScreen>
     }
   }
 
+  Future<List<Map<String, dynamic>>> _loadTrackCheckpoints(
+      String raceId) async {
+    final race = await _firestoreService.getRace(raceId);
+    final checkpointsRaw = race?['checkpoints'];
+    if (checkpointsRaw is! List) return const [];
+    return checkpointsRaw
+        .whereType<Map>()
+        .map((checkpoint) => Map<String, dynamic>.from(checkpoint))
+        .toList(growable: false);
+  }
+
   Future<void> _updateFlag(RaceFlag flag,
       {RaceSession? session, RaceEvent? currentEvent}) async {
     try {
@@ -571,11 +582,16 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                                       size: 16,
                                       color: SpeedDataTheme.textSecondary),
                                   onPressed: () async {
+                                    final trackCheckpoints =
+                                        await _loadTrackCheckpoints(
+                                            eventData.trackId);
+                                    if (!mounted) return;
                                     await Navigator.push(
                                       context,
                                       MaterialPageRoute(
                                         builder: (context) =>
                                             SessionSettingsScreen(
+                                          trackCheckpoints: trackCheckpoints,
                                           session: displaySession!,
                                           onSave: (updatedSession) {
                                             _updateSessionStatus(
@@ -726,6 +742,7 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                                                 eventId: eventData.id,
                                                 sessionId: displaySession?.id,
                                                 raceName: eventData.name,
+                                                session: displaySession,
                                                 sessionType:
                                                     displaySession?.type ??
                                                         SessionType.practice,

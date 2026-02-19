@@ -2,6 +2,15 @@ const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const { PubSub } = require('@google-cloud/pubsub');
 const { BigQuery } = require('@google-cloud/bigquery');
+const {
+  DEFAULT_DEDUP_WINDOW_MS,
+  DEFAULT_MIN_LAP_TIME_SECONDS,
+  shouldSkipCheckpointCrossing,
+  buildLapPayloadFromState,
+  buildLapPayloadFromPassings,
+  buildSessionSummaryFromLaps,
+  toMillis,
+} = require('./lap_analysis_utils');
 
 admin.initializeApp();
 
@@ -9,8 +18,7 @@ const pubsub = new PubSub();
 const TOPIC_NAME = 'telemetry-topic';
 
 // Tunables for lap detection/validation
-const DEFAULT_MIN_LAP_TIME_SECONDS = 15;
-const DEDUP_WINDOW_MS = 400; // ignore checkpoint repeats inside this window
+const DEDUP_WINDOW_MS = DEFAULT_DEDUP_WINDOW_MS; // ignore checkpoint repeats inside this window
 const CHECKPOINT_DISTANCE_TOLERANCE_M = 40;
 const STATE_STALE_RESET_MS = 6 * 60 * 60 * 1000;
 
@@ -28,16 +36,118 @@ function getDistanceMeters(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-function computeSpeedStats(speeds = []) {
-  if (!speeds.length) return null;
-  const min = Math.min(...speeds);
-  const max = Math.max(...speeds);
-  const avg = speeds.reduce((sum, v) => sum + v, 0) / speeds.length;
-  return { min_mps: min, max_mps: max, avg_mps: avg };
+function normalizeCheckpoint(rawCheckpoint) {
+  if (!rawCheckpoint || typeof rawCheckpoint !== 'object') return null;
+  const lat = Number(rawCheckpoint.lat);
+  const lng = Number(rawCheckpoint.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+}
+
+function normalizeCheckpointIndex(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.trunc(parsed);
+  }
+  return null;
+}
+
+function normalizeTimelineType(value) {
+  const normalized = (value || '').toString().trim().toLowerCase();
+  if (
+    normalized === 'start_finish' ||
+    normalized === 'startfinish' ||
+    normalized === 'start-finish' ||
+    normalized === 'sf'
+  ) {
+    return 'start_finish';
+  }
+  if (normalized === 'trap') return 'trap';
+  return 'split';
+}
+
+function resolveEffectiveCheckpoints(rawCheckpoints, rawTimelines) {
+  if (!Array.isArray(rawCheckpoints)) return [];
+  const checkpoints = rawCheckpoints
+    .map((cp) => normalizeCheckpoint(cp))
+    .filter(Boolean);
+  if (checkpoints.length < 2) return checkpoints;
+
+  if (!Array.isArray(rawTimelines) || !rawTimelines.length) {
+    return checkpoints;
+  }
+
+  const timelines = rawTimelines
+    .map((timeline, idx) => {
+      if (!timeline || typeof timeline !== 'object') return null;
+      const checkpointIndex = normalizeCheckpointIndex(
+        timeline.checkpoint_index ?? timeline.checkpointIndex ?? timeline.checkpoint,
+      );
+      if (checkpointIndex === null) return null;
+      const order = normalizeCheckpointIndex(timeline.order) ?? idx;
+      const enabled = timeline.enabled !== false;
+      return {
+        type: normalizeTimelineType(timeline.type),
+        checkpointIndex,
+        order,
+        enabled,
+      };
+    })
+    .filter(Boolean)
+    .filter((timeline) => timeline.enabled)
+    .sort((a, b) => a.order - b.order);
+
+  if (!timelines.length) return checkpoints;
+
+  const startTimeline = timelines.find((timeline) => timeline.type === 'start_finish');
+  const startIdx =
+    startTimeline && startTimeline.checkpointIndex >= 0 && startTimeline.checkpointIndex < checkpoints.length
+      ? startTimeline.checkpointIndex
+      : 0;
+
+  const originalFinishIdx = checkpoints.length - 1;
+  const originalStart = checkpoints[0];
+  const originalFinish = checkpoints[originalFinishIdx];
+  const trackIsClosed =
+    getDistanceMeters(
+      originalStart.lat,
+      originalStart.lng,
+      originalFinish.lat,
+      originalFinish.lng,
+    ) <= CHECKPOINT_DISTANCE_TOLERANCE_M;
+
+  const finishIdx = trackIsClosed ? startIdx : originalFinishIdx;
+  const usedIndices = new Set([startIdx, finishIdx]);
+  const intermediatePoints = [];
+
+  for (const timeline of timelines) {
+    if (timeline.type === 'start_finish') continue;
+    const idx = timeline.checkpointIndex;
+    if (idx < 0 || idx >= checkpoints.length) continue;
+    if (usedIndices.has(idx)) continue;
+    usedIndices.add(idx);
+    intermediatePoints.push(checkpoints[idx]);
+  }
+
+  // Backward compatibility: if no timeline-selected intermediates are present,
+  // keep legacy checkpoint sequence from the track definition.
+  if (!intermediatePoints.length && startIdx === 0 && finishIdx === originalFinishIdx) {
+    for (let i = 1; i < originalFinishIdx; i++) {
+      intermediatePoints.push(checkpoints[i]);
+    }
+  }
+
+  const effective = [checkpoints[startIdx], ...intermediatePoints, checkpoints[finishIdx]].filter(Boolean);
+  if (effective.length < 2) return checkpoints;
+  return effective;
 }
 
 async function updateSummary(summaryRef, lapData) {
-  if (!summaryRef || !lapData.valid) return;
+  if (!summaryRef || !lapData || !lapData.valid) return;
+  const lapTimeMs =
+    typeof lapData.total_lap_time_ms === 'number' ? lapData.total_lap_time_ms : null;
+  if (lapTimeMs === null || lapTimeMs <= 0) return;
 
   const snap = await summaryRef.get();
   const current = snap.exists ? snap.data() : {};
@@ -46,18 +156,22 @@ async function updateSummary(summaryRef, lapData) {
   updated.total_laps_count = (current.total_laps_count || 0) + 1;
   updated.valid_laps_count = (current.valid_laps_count || 0) + 1;
 
-  if (!current.best_lap_ms || lapData.total_lap_time_ms < current.best_lap_ms) {
-    updated.best_lap_ms = lapData.total_lap_time_ms;
+  if (!current.best_lap_ms || lapTimeMs < current.best_lap_ms) {
+    updated.best_lap_ms = lapTimeMs;
   }
 
-  const bestSectors = current.best_sectors_ms || [];
-  const sectors = lapData.sectors_ms || [];
+  const bestSectors = Array.isArray(current.best_sectors_ms) ? current.best_sectors_ms : [];
+  const sectors = Array.isArray(lapData.sectors_ms) ? lapData.sectors_ms : [];
   const mergedSectors = [];
   const maxLen = Math.max(bestSectors.length, sectors.length);
   for (let i = 0; i < maxLen; i++) {
     const candidates = [];
-    if (typeof bestSectors[i] === 'number') candidates.push(bestSectors[i]);
-    if (typeof sectors[i] === 'number') candidates.push(sectors[i]);
+    if (typeof bestSectors[i] === 'number' && bestSectors[i] > 0) {
+      candidates.push(bestSectors[i]);
+    }
+    if (typeof sectors[i] === 'number' && sectors[i] > 0) {
+      candidates.push(sectors[i]);
+    }
     if (candidates.length) {
       mergedSectors[i] = Math.min(...candidates);
     }
@@ -71,6 +185,45 @@ async function updateSummary(summaryRef, lapData) {
   await summaryRef.set(updated, { merge: true });
 }
 
+function asFiniteNumber(value, fallback = null) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return parsed;
+}
+
+async function commitSetOperations(db, operations, chunkSize = 400) {
+  if (!Array.isArray(operations) || !operations.length) return;
+  for (let i = 0; i < operations.length; i += chunkSize) {
+    const batch = db.batch();
+    const chunk = operations.slice(i, i + chunkSize);
+    for (const op of chunk) {
+      if (!op || !op.ref) continue;
+      if (op.options) {
+        batch.set(op.ref, op.data, op.options);
+      } else {
+        batch.set(op.ref, op.data);
+      }
+    }
+    await batch.commit();
+  }
+}
+
+async function resolveMinLapTimeSeconds(db, eventId, sessionId, fallbackSeconds) {
+  if (!eventId || !sessionId) return fallbackSeconds;
+  try {
+    const eventDoc = await db.collection('events').doc(eventId).get();
+    if (!eventDoc.exists || !eventDoc.data()) return fallbackSeconds;
+    const sessions = Array.isArray(eventDoc.data().sessions) ? eventDoc.data().sessions : [];
+    const sessionEntry = sessions.find((entry) => entry && entry.id === sessionId);
+    if (!sessionEntry) return fallbackSeconds;
+    const parsed = asFiniteNumber(sessionEntry.min_lap_time_seconds, fallbackSeconds);
+    return parsed !== null ? Math.max(0, Math.trunc(parsed)) : fallbackSeconds;
+  } catch (error) {
+    console.warn('resolveMinLapTimeSeconds failed:', error);
+    return fallbackSeconds;
+  }
+}
+
 exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be logged in to send telemetry.');
@@ -82,6 +235,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
     uid,
     points,
     checkpoints,
+    timelines,
     sessionId: inputSessionId,
     session,
     minLapTimeSeconds,
@@ -102,6 +256,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   }
 
   const db = admin.firestore();
+  const effectiveCheckpoints = resolveEffectiveCheckpoints(checkpoints, timelines);
 
   // Best-effort event resolution for older clients that still send only raceId + session.
   if (!eventId && sessionId) {
@@ -122,7 +277,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
 
   console.log(
     `Received ${points.length} points for race ${raceId} from user ${uid} ` +
-      `(event=${eventId || 'n/a'}, session=${sessionId || 'legacy'})`,
+      `(event=${eventId || 'n/a'}, session=${sessionId || 'legacy'}, ` +
+      `checkpoints=${effectiveCheckpoints.length}, timelines=${Array.isArray(timelines) ? timelines.length : 0})`,
   );
 
   // Legacy race-scoped refs (kept during migration).
@@ -204,20 +360,20 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   }
 
   try {
-    if (Array.isArray(checkpoints) && checkpoints.length > 1) {
-      const checkpointCount = checkpoints.length;
+    if (Array.isArray(effectiveCheckpoints) && effectiveCheckpoints.length > 1) {
+      const checkpointCount = effectiveCheckpoints.length;
       const finishCheckpointIndex = checkpointCount - 1;
       const startFinishDistanceM = getDistanceMeters(
-        checkpoints[0].lat,
-        checkpoints[0].lng,
-        checkpoints[finishCheckpointIndex].lat,
-        checkpoints[finishCheckpointIndex].lng,
+        effectiveCheckpoints[0].lat,
+        effectiveCheckpoints[0].lng,
+        effectiveCheckpoints[finishCheckpointIndex].lat,
+        effectiveCheckpoints[finishCheckpointIndex].lng,
       );
       const startFinishSamePoint = startFinishDistanceM <= CHECKPOINT_DISTANCE_TOLERANCE_M;
 
       for (let i = 0; i < checkpointCount; i++) {
-        const pm = checkpoints[i];
-        const nextPm = i < finishCheckpointIndex ? checkpoints[i + 1] : null;
+        const pm = effectiveCheckpoints[i];
+        const nextPm = i < finishCheckpointIndex ? effectiveCheckpoints[i + 1] : null;
 
         let bestPP = null;
         let minDist = CHECKPOINT_DISTANCE_TOLERANCE_M;
@@ -259,19 +415,16 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
           !state.lap_start_ms;
         const checkpointIndex = openingOnSharedLine ? 0 : i;
 
-        // Dedup and order control
-        const sameCheckpoint = state.last_checkpoint_index === checkpointIndex;
-        const tooSoon =
-          state.last_crossed_at_ms &&
-          bestPP.timestamp - state.last_crossed_at_ms < DEDUP_WINDOW_MS &&
-          sameCheckpoint;
-        const wrappedStart =
-          state.last_checkpoint_index === finishCheckpointIndex && checkpointIndex === 0;
-        const outOfOrder =
-          !wrappedStart &&
-          checkpointIndex !== finishCheckpointIndex &&
-          state.last_checkpoint_index > checkpointIndex;
-        if (tooSoon || outOfOrder) {
+        // Dedup and checkpoint order control.
+        const shouldSkip = shouldSkipCheckpointCrossing({
+          lastCheckpointIndex: state.last_checkpoint_index,
+          checkpointIndex,
+          lastCrossedAtMs: state.last_crossed_at_ms,
+          crossedAtMs: bestPP.timestamp,
+          finishCheckpointIndex,
+          dedupWindowMs: DEDUP_WINDOW_MS,
+        });
+        if (shouldSkip) {
           continue;
         }
 
@@ -343,45 +496,26 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
         if (i === finishCheckpointIndex && state.lap_start_ms && !openingOnSharedLine) {
           const lapStart = state.lap_start_ms;
           const lapEnd = bestPP.timestamp;
-          const totalLapTimeMs = lapEnd - lapStart;
-          const valid = totalLapTimeMs >= minLapMs;
-          const invalidReasons = valid ? [] : [`min_lap_time_seconds_${minLapTimeSeconds || DEFAULT_MIN_LAP_TIME_SECONDS}`];
-
-          const checkpointIndices = Object.keys(state.checkpoint_times || {})
-            .map(Number)
-            .sort((a, b) => a - b);
-
-          const splits_ms = [];
-          const sectors_ms = [];
-          const trap_speeds_mps = [];
-          let previousTs = lapStart;
-
-          checkpointIndices.forEach((idx) => {
-            const cpTs = state.checkpoint_times[idx];
-            splits_ms.push(cpTs - lapStart);
-            if (idx !== 0) {
-              sectors_ms.push(cpTs - previousTs);
-            }
-            previousTs = cpTs;
-            if (typeof state.checkpoint_speeds[idx] === 'number') {
-              trap_speeds_mps.push(state.checkpoint_speeds[idx]);
-            }
+          const lapPayloadBase = buildLapPayloadFromState({
+            lapNumber,
+            lapStartMs: lapStart,
+            lapEndMs: lapEnd,
+            checkpointTimes: state.checkpoint_times,
+            checkpointSpeeds: state.checkpoint_speeds,
+            minLapMs,
+            minLapTimeSeconds: minLapTimeSeconds || DEFAULT_MIN_LAP_TIME_SECONDS,
           });
+          if (!lapPayloadBase) {
+            continue;
+          }
 
           const lapDocId = `lap_${lapNumber}`;
           const lapPayload = {
-            number: lapNumber,
-            lap_start_ms: lapStart,
-            lap_end_ms: lapEnd,
-            total_lap_time_ms: totalLapTimeMs,
-            splits_ms,
-            sectors_ms,
-            trap_speeds_mps,
-            speed_stats: computeSpeedStats(trap_speeds_mps),
-            valid,
-            invalid_reasons: invalidReasons,
+            ...lapPayloadBase,
             created_at: admin.firestore.FieldValue.serverTimestamp(),
           };
+          const totalLapTimeMs = lapPayload.total_lap_time_ms;
+          const valid = lapPayload.valid;
 
           if (sessionLapsRefs.length) {
             await Promise.all(
@@ -412,8 +546,10 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
             race_id: raceId,
             checkpoint_index: finishCheckpointIndex,
             flags: [],
-            sector_time: sectors_ms[sectors_ms.length - 1] || null,
-            split_time: splits_ms[splits_ms.length - 1] || null,
+            sector_time:
+              lapPayload.sectors_ms[lapPayload.sectors_ms.length - 1] || null,
+            split_time:
+              lapPayload.splits_ms[lapPayload.splits_ms.length - 1] || null,
             trap_speed: bestPP.speed,
             valid,
           };
@@ -474,7 +610,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
     eventId,
     uid,
     sessionId,
-    checkpoints,
+    checkpoints: effectiveCheckpoints,
+    timelines: Array.isArray(timelines) ? timelines : null,
     points,
     ingestedAt: Date.now(),
     userEmail: context.auth.token.email || null,
@@ -589,4 +726,300 @@ exports.processTelemetry = functions.pubsub.topic(TOPIC_NAME).onPublish(async (m
   }
 
   await Promise.all(tasks);
+});
+
+exports.backfillSessionAnalytics = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'Authentication is required to run backfill.',
+    );
+  }
+
+  const role = (context.auth.token.role || '').toString().trim().toLowerCase();
+  const isAdmin =
+    context.auth.token.admin === true || role === 'admin' || role === 'root';
+  if (!isAdmin) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'Only administrators can run backfill.',
+    );
+  }
+
+  const raceId = (data.raceId || '').toString().trim();
+  const sessionId = (data.sessionId || '').toString().trim();
+  const eventId = (data.eventId || '').toString().trim() || null;
+  if (!raceId || !sessionId) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'raceId and sessionId are required.',
+    );
+  }
+
+  const participantLimitRaw = asFiniteNumber(data.participantLimit, 250);
+  const participantLimit = Math.min(
+    500,
+    Math.max(1, Math.trunc(participantLimitRaw || 250)),
+  );
+  const requestedMinLap = asFiniteNumber(data.minLapTimeSeconds, null);
+
+  const db = admin.firestore();
+  const minLapTimeSeconds = await resolveMinLapTimeSeconds(
+    db,
+    eventId,
+    sessionId,
+    requestedMinLap !== null
+      ? Math.max(0, Math.trunc(requestedMinLap))
+      : DEFAULT_MIN_LAP_TIME_SECONDS,
+  );
+  const minLapMs = minLapTimeSeconds * 1000;
+
+  const participantsSnap = await db
+    .collection('races')
+    .doc(raceId)
+    .collection('participants')
+    .limit(participantLimit)
+    .get();
+
+  const result = {
+    raceId,
+    eventId,
+    sessionId,
+    minLapTimeSeconds,
+    participantsScanned: participantsSnap.size,
+    participantsUpdated: 0,
+    lapsRebuilt: 0,
+    crossingsRebuilt: 0,
+  };
+
+  for (const participantDoc of participantsSnap.docs) {
+    const uid = participantDoc.id;
+    const passingsRaw = [];
+
+    if (eventId) {
+      const eventPassingsSnap = await db
+        .collection('events')
+        .doc(eventId)
+        .collection('sessions')
+        .doc(sessionId)
+        .collection('passings')
+        .where('participant_uid', '==', uid)
+        .limit(6000)
+        .get();
+      for (const doc of eventPassingsSnap.docs) {
+        passingsRaw.push({ id: doc.id, ...doc.data() });
+      }
+    }
+
+    if (!passingsRaw.length) {
+      const legacyPassingsSnap = await db
+        .collection('races')
+        .doc(raceId)
+        .collection('passings')
+        .where('participant_uid', '==', uid)
+        .limit(10000)
+        .get();
+      for (const doc of legacyPassingsSnap.docs) {
+        passingsRaw.push({ id: doc.id, ...doc.data() });
+      }
+    }
+
+    const passings = passingsRaw
+      .filter((passing) => {
+        const passingSessionId = (passing.session_id || '').toString().trim();
+        return passingSessionId === sessionId;
+      })
+      .sort((a, b) => {
+        const at = toMillis(a.timestamp) || 0;
+        const bt = toMillis(b.timestamp) || 0;
+        return at - bt;
+      });
+
+    if (!passings.length) {
+      continue;
+    }
+
+    const passingsByLap = new Map();
+    for (const passing of passings) {
+      const lapNumber = asFiniteNumber(passing.lap_number, null);
+      if (lapNumber === null || lapNumber <= 0) continue;
+      const normalizedLapNumber = Math.trunc(lapNumber);
+      if (!passingsByLap.has(normalizedLapNumber)) {
+        passingsByLap.set(normalizedLapNumber, []);
+      }
+      passingsByLap.get(normalizedLapNumber).push(passing);
+    }
+
+    if (!passingsByLap.size) {
+      continue;
+    }
+
+    const raceParticipantRef = db.collection('races').doc(raceId).collection('participants').doc(uid);
+    const raceSessionRef = raceParticipantRef.collection('sessions').doc(sessionId);
+    const raceSessionLapsRef = raceSessionRef.collection('laps');
+    const raceSessionCrossingsRef = raceSessionRef.collection('crossings');
+    const raceSessionSummaryRef = raceSessionRef.collection('analysis').doc('summary');
+
+    const eventSessionParticipantRef = eventId
+      ? db
+        .collection('events')
+        .doc(eventId)
+        .collection('sessions')
+        .doc(sessionId)
+        .collection('participants')
+        .doc(uid)
+      : null;
+    const eventSessionLapsRef = eventSessionParticipantRef
+      ? eventSessionParticipantRef.collection('laps')
+      : null;
+    const eventSessionCrossingsRef = eventSessionParticipantRef
+      ? eventSessionParticipantRef.collection('crossings')
+      : null;
+    const eventSummaryRef = eventId
+      ? db
+        .collection('events')
+        .doc(eventId)
+        .collection('sessions')
+        .doc(sessionId)
+        .collection('analysis')
+        .doc('summary')
+      : null;
+
+    const writeOps = [];
+    const rebuiltLaps = [];
+
+    const sortedLapNumbers = [...passingsByLap.keys()].sort((a, b) => a - b);
+    for (const lapNumber of sortedLapNumbers) {
+      const lapPassings = passingsByLap.get(lapNumber) || [];
+      const lapPayloadBase = buildLapPayloadFromPassings({
+        lapNumber,
+        passings: lapPassings,
+        minLapMs,
+        minLapTimeSeconds,
+      });
+      if (!lapPayloadBase) continue;
+
+      const lapDocId = `lap_${lapNumber}`;
+      const lapPayload = {
+        ...lapPayloadBase,
+        created_at: admin.firestore.FieldValue.serverTimestamp(),
+        backfilled_from_passings: true,
+      };
+      rebuiltLaps.push(lapPayloadBase);
+      result.lapsRebuilt += 1;
+
+      writeOps.push({
+        ref: raceSessionLapsRef.doc(lapDocId),
+        data: lapPayload,
+        options: { merge: true },
+      });
+      writeOps.push({
+        ref: raceParticipantRef.collection('laps').doc(lapDocId),
+        data: {
+          ...lapPayload,
+          session_id: sessionId,
+          event_id: eventId || null,
+        },
+        options: { merge: true },
+      });
+
+      if (eventSessionLapsRef) {
+        writeOps.push({
+          ref: eventSessionLapsRef.doc(lapDocId),
+          data: lapPayload,
+          options: { merge: true },
+        });
+      }
+
+      for (const passing of lapPassings) {
+        const checkpointIndex = asFiniteNumber(passing.checkpoint_index, null);
+        const crossedAtMs = toMillis(passing.timestamp);
+        if (
+          checkpointIndex === null ||
+          checkpointIndex < 0 ||
+          !Number.isFinite(crossedAtMs)
+        ) {
+          continue;
+        }
+        const sectorTime = asFiniteNumber(passing.sector_time, null);
+        const splitTime = asFiniteNumber(passing.split_time, null);
+        const trapSpeed = asFiniteNumber(
+          passing.trap_speed ?? passing.speed_mps,
+          0,
+        );
+        const lat = asFiniteNumber(passing.lat, 0) || 0;
+        const lng = asFiniteNumber(passing.lng, 0) || 0;
+        const crossingDocId = `bf_${lapNumber}_${Math.trunc(checkpointIndex)}_${crossedAtMs}`;
+        const crossingPayload = {
+          lap_number: lapNumber,
+          checkpoint_index: Math.trunc(checkpointIndex),
+          crossed_at_ms: crossedAtMs,
+          speed_mps: trapSpeed || 0,
+          lat,
+          lng,
+          sector_time_ms: sectorTime,
+          split_time_ms: splitTime,
+          method: 'backfill_passings',
+          distance_to_checkpoint_m: 0,
+          confidence: 0.5,
+          created_at: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        writeOps.push({
+          ref: raceSessionCrossingsRef.doc(crossingDocId),
+          data: crossingPayload,
+          options: { merge: true },
+        });
+        if (eventSessionCrossingsRef) {
+          writeOps.push({
+            ref: eventSessionCrossingsRef.doc(crossingDocId),
+            data: crossingPayload,
+            options: { merge: true },
+          });
+        }
+        result.crossingsRebuilt += 1;
+      }
+    }
+
+    if (!rebuiltLaps.length) {
+      continue;
+    }
+
+    const summaryPayload = {
+      ...buildSessionSummaryFromLaps(rebuiltLaps),
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      backfilled_from_passings: true,
+    };
+    writeOps.push({ ref: raceSessionSummaryRef, data: summaryPayload });
+    if (eventSummaryRef) {
+      writeOps.push({ ref: eventSummaryRef, data: summaryPayload });
+    }
+    writeOps.push({
+      ref: raceSessionRef,
+      data: {
+        backfilled_at: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      options: { merge: true },
+    });
+    if (eventSessionParticipantRef) {
+      writeOps.push({
+        ref: eventSessionParticipantRef,
+        data: {
+          backfilled_at: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        options: { merge: true },
+      });
+    }
+
+    await commitSetOperations(db, writeOps);
+    result.participantsUpdated += 1;
+  }
+
+  console.log(
+    `Backfill completed for race=${raceId} session=${sessionId}: ` +
+      `participantsUpdated=${result.participantsUpdated}, ` +
+      `laps=${result.lapsRebuilt}, crossings=${result.crossingsRebuilt}`,
+  );
+
+  return result;
 });

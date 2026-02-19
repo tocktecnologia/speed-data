@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:speed_data/features/models/competitor_model.dart';
@@ -16,6 +18,8 @@ class _LapAggregate {
   double? lapTimeMs;
   bool hasStarted = false;
   final Map<int, double> sectorByIndex = {};
+  final Map<int, double> splitByIndex = {};
+  final Map<int, double> trapSpeedByIndex = {};
   final Set<String> flags = {};
 
   _LapAggregate({
@@ -47,6 +51,9 @@ class PassingsPanel extends StatefulWidget {
   final SessionType sessionType;
   final RaceSession? session;
   final Map<String, Competitor> competitorsByUid;
+  final FirestoreService? firestoreService;
+  final Stream<List<PassingModel>>? passingsStream;
+  final Future<List<Competitor>> Function(String eventId)? competitorsLoader;
 
   const PassingsPanel({
     Key? key,
@@ -56,6 +63,9 @@ class PassingsPanel extends StatefulWidget {
     required this.sessionType,
     this.session,
     this.competitorsByUid = const {},
+    this.firestoreService,
+    this.passingsStream,
+    this.competitorsLoader,
   }) : super(key: key);
 
   @override
@@ -66,10 +76,13 @@ class _PassingsPanelState extends State<PassingsPanel> {
   final ScrollController _verticalScrollController = ScrollController();
   final ScrollController _horizontalScrollController = ScrollController();
   final Map<String, String> _competitorNameCache = {};
+  FirestoreService? _localFirestoreService;
   static const double _timeColWidth = 90;
   static const double _nameColWidth = 220;
   static const double _lapColWidth = 44;
   static const double _lapTimeColWidth = 90;
+  static const double _splitColWidth = 90;
+  static const double _trapColWidth = 76;
   static const double _sectorColWidth = 90;
   static const double _rowPaddingHorizontal = 8;
 
@@ -78,6 +91,10 @@ class _PassingsPanelState extends State<PassingsPanel> {
     super.initState();
     _loadCompetitorNames();
   }
+
+  FirestoreService get _firestoreService =>
+      widget.firestoreService ??
+      (_localFirestoreService ??= FirestoreService());
 
   @override
   void didUpdateWidget(covariant PassingsPanel oldWidget) {
@@ -92,12 +109,14 @@ class _PassingsPanelState extends State<PassingsPanel> {
     String? eventId = widget.eventId;
     if (eventId == null || eventId.isEmpty) {
       final event =
-          await FirestoreService().getActiveEventForTrack(widget.raceId);
+          await _firestoreService.getActiveEventForTrack(widget.raceId);
       eventId = event?.id;
     }
     if (eventId == null || eventId.isEmpty) return;
     try {
-      final competitors = await FirestoreService().getCompetitors(eventId);
+      final competitors = widget.competitorsLoader != null
+          ? await widget.competitorsLoader!(eventId)
+          : await _firestoreService.getCompetitors(eventId);
       if (!mounted) return;
       setState(() {
         for (final c in competitors) {
@@ -147,15 +166,28 @@ class _PassingsPanelState extends State<PassingsPanel> {
     return '$minutes:$seconds.$millis';
   }
 
+  String _formatSpeed(num? speedMps) {
+    if (speedMps == null) return '--.-';
+    return speedMps.toStringAsFixed(1);
+  }
+
+  double? _latestMetricByCheckpoint(Map<int, double> values) {
+    if (values.isEmpty) return null;
+    final latestCheckpoint = values.keys.reduce(math.max);
+    return values[latestCheckpoint];
+  }
+
   @override
   Widget build(BuildContext context) {
+    final passingsStream = widget.passingsStream ??
+        _firestoreService.getPassingsStream(
+          widget.raceId,
+          sessionId: widget.sessionId,
+          eventId: widget.eventId,
+          session: widget.session,
+        );
     return StreamBuilder<List<PassingModel>>(
-      stream: FirestoreService().getPassingsStream(
-        widget.raceId,
-        sessionId: widget.sessionId,
-        eventId: widget.eventId,
-        session: widget.session,
-      ),
+      stream: passingsStream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Center(
@@ -196,8 +228,15 @@ class _PassingsPanelState extends State<PassingsPanel> {
             }
           }
           agg.flags.addAll(p.flags.map((f) => f.toLowerCase()));
+          // New analytical passings fields: sector_time, split_time, trap_speed.
           if (p.checkpointIndex > 0 && p.sectorTime != null) {
             agg.sectorByIndex[p.checkpointIndex] = p.sectorTime!;
+          }
+          if (p.splitTime != null) {
+            agg.splitByIndex[p.checkpointIndex] = p.splitTime!;
+          }
+          if (p.trapSpeed != null) {
+            agg.trapSpeedByIndex[p.checkpointIndex] = p.trapSpeed!;
           }
           if (p.lapTime != null) {
             agg.lapTimeMs = p.lapTime;
@@ -242,6 +281,8 @@ class _PassingsPanelState extends State<PassingsPanel> {
             _nameColWidth +
             _lapColWidth +
             _lapTimeColWidth +
+            _splitColWidth +
+            _trapColWidth +
             (_sectorColWidth * maxSector);
         final entries = <_LapListEntry>[
           ...flagPassings
@@ -356,6 +397,10 @@ class _PassingsPanelState extends State<PassingsPanel> {
                                     : Colors.transparent);
 
                             final time = lap.startTime ?? lap.firstTime;
+                            final latestSplitMs =
+                                _latestMetricByCheckpoint(lap.splitByIndex);
+                            final latestTrapSpeed =
+                                _latestMetricByCheckpoint(lap.trapSpeedByIndex);
                             return Container(
                               color: rowColor,
                               padding: const EdgeInsets.symmetric(
@@ -399,6 +444,28 @@ class _PassingsPanelState extends State<PassingsPanel> {
                                         fontSize: 12,
                                         color: baseColor,
                                         fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: _splitColWidth,
+                                    child: Text(
+                                      _formatDuration(latestSplitMs),
+                                      style: const TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 11,
+                                        color: SpeedDataTheme.textSecondary,
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: _trapColWidth,
+                                    child: Text(
+                                      _formatSpeed(latestTrapSpeed),
+                                      style: const TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 11,
+                                        color: SpeedDataTheme.textSecondary,
                                       ),
                                     ),
                                   ),
@@ -460,6 +527,16 @@ class _PassingsPanelState extends State<PassingsPanel> {
             const SizedBox(
               width: _lapTimeColWidth,
               child: Text('LAP TIME',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+            ),
+            const SizedBox(
+              width: _splitColWidth,
+              child: Text('SPLIT',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+            ),
+            const SizedBox(
+              width: _trapColWidth,
+              child: Text('TRAP',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
             ),
             for (int sector = 1; sector <= maxSector; sector++)

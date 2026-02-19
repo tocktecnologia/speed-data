@@ -60,26 +60,60 @@ class PassingModel {
   }
 
   factory PassingModel.fromMap(String id, Map<String, dynamic> map) {
-    // Debug: print raw data to see what we're receiving
-
     return PassingModel(
       id: id,
-      raceId: map['race_id'] ?? '',
-      eventId: map['event_id'],
-      sessionId: map['session_id'],
-      participantUid: map['participant_uid'] ?? '',
-      driverName: map['driver_name'] ?? 'Unknown',
-      carNumber: map['car_number'] ?? '',
+      raceId: _parseString(map['race_id']) ?? '',
+      eventId: _parseString(map['event_id']),
+      sessionId: _parseString(map['session_id']),
+      participantUid: _parseString(map['participant_uid']) ??
+          _parseString(map['uid']) ??
+          '',
+      driverName: _parseString(map['driver_name']) ??
+          _parseString(map['display_name']) ??
+          'Unknown',
+      carNumber:
+          _parseString(map['car_number']) ?? _parseString(map['number']) ?? '',
       timestamp: _parseTimestamp(map['timestamp']),
-      checkpointIndex: map['checkpoint_index'] ?? 0,
-      lapNumber: map['lap_number'] ?? 0,
-      lapTime: (map['lap_time'] as num?)?.toDouble(),
-      sectorTime: (map['sector_time'] as num?)?.toDouble(),
-      splitTime: (map['split_time'] as num?)?.toDouble(),
-      trapSpeed: (map['trap_speed'] as num?)?.toDouble(),
+      checkpointIndex: _parseInt(map['checkpoint_index']) ??
+          _parseInt(map['checkpoint']) ??
+          0,
+      lapNumber: _parseInt(map['lap_number']) ?? _parseInt(map['lap']) ?? 0,
+      lapTime: _parseDouble(map['lap_time']) ??
+          _parseDouble(map['lap_time_ms']) ??
+          _parseDouble(map['total_lap_time_ms']),
+      sectorTime: _parseDouble(map['sector_time']) ??
+          _parseDouble(map['sector_time_ms']),
+      splitTime:
+          _parseDouble(map['split_time']) ?? _parseDouble(map['split_time_ms']),
+      trapSpeed: _parseDouble(map['trap_speed']) ??
+          _parseDouble(map['trap_speed_mps']) ??
+          _parseDouble(map['speed_mps']),
       valid: map['valid'] as bool?,
-      flags: List<String>.from(map['flags'] ?? []),
+      flags: (map['flags'] is List)
+          ? List<String>.from((map['flags'] as List)
+              .where((value) => value != null)
+              .map((value) => value.toString()))
+          : const [],
     );
+  }
+
+  static String? _parseString(dynamic value) {
+    if (value == null) return null;
+    final parsed = value.toString().trim();
+    return parsed.isEmpty ? null : parsed;
+  }
+
+  static int? _parseInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value.trim());
+    return null;
+  }
+
+  static double? _parseDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value.trim());
+    return null;
   }
 
   /// Helper to parse timestamp from either Firestore Timestamp or int milliseconds
@@ -88,8 +122,20 @@ class PassingModel {
 
     if (timestamp is Timestamp) {
       return timestamp.toDate();
+    } else if (timestamp is DateTime) {
+      return timestamp;
     } else if (timestamp is int) {
       return DateTime.fromMillisecondsSinceEpoch(timestamp);
+    } else if (timestamp is num) {
+      return DateTime.fromMillisecondsSinceEpoch(timestamp.toInt());
+    } else if (timestamp is String) {
+      final parsedIso = DateTime.tryParse(timestamp);
+      if (parsedIso != null) return parsedIso;
+      final parsedMs = int.tryParse(timestamp);
+      if (parsedMs != null) {
+        return DateTime.fromMillisecondsSinceEpoch(parsedMs);
+      }
+      return DateTime.now();
     } else {
       return DateTime.now();
     }

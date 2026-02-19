@@ -5,6 +5,9 @@ const { BigQuery } = require('@google-cloud/bigquery');
 const {
   DEFAULT_DEDUP_WINDOW_MS,
   DEFAULT_MIN_LAP_TIME_SECONDS,
+  DEFAULT_TRAP_WIDTH_M,
+  buildCheckpointLines,
+  interpolateLineCrossing,
   shouldSkipCheckpointCrossing,
   buildLapPayloadFromState,
   buildLapPayloadFromPassings,
@@ -20,6 +23,7 @@ const TOPIC_NAME = 'telemetry-topic';
 // Tunables for lap detection/validation
 const DEDUP_WINDOW_MS = DEFAULT_DEDUP_WINDOW_MS; // ignore checkpoint repeats inside this window
 const CHECKPOINT_DISTANCE_TOLERANCE_M = 40;
+const TRAP_WIDTH_M = DEFAULT_TRAP_WIDTH_M;
 const STATE_STALE_RESET_MS = 6 * 60 * 60 * 1000;
 
 function getDistanceMeters(lat1, lon1, lat2, lon2) {
@@ -330,6 +334,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
       last_crossed_at_ms: null,
       checkpoint_times: {},
       checkpoint_speeds: {},
+      last_point: null,
     };
   }
 
@@ -354,6 +359,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
         last_crossed_at_ms: null,
         checkpoint_times: {},
         checkpoint_speeds: {},
+        last_point: null,
       };
       console.log(`Resetting stale lap state for user ${uid} session ${sessionId || 'legacy'}`);
     }
@@ -370,94 +376,228 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
         effectiveCheckpoints[finishCheckpointIndex].lng,
       );
       const startFinishSamePoint = startFinishDistanceM <= CHECKPOINT_DISTANCE_TOLERANCE_M;
+      const checkpointLines = buildCheckpointLines(
+        effectiveCheckpoints,
+        TRAP_WIDTH_M,
+      );
 
-      for (let i = 0; i < checkpointCount; i++) {
-        const pm = effectiveCheckpoints[i];
-        const nextPm = i < finishCheckpointIndex ? effectiveCheckpoints[i + 1] : null;
+      const normalizedPoints = points
+        .map((raw) => ({
+          lat: Number(raw && raw.lat),
+          lng: Number(raw && raw.lng),
+          speed: Number(raw && raw.speed),
+          heading: Number(raw && raw.heading),
+          altitude: Number(raw && raw.altitude),
+          timestamp: Number(raw && raw.timestamp),
+        }))
+        .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && Number.isFinite(p.timestamp))
+        .sort((a, b) => a.timestamp - b.timestamp);
 
-        let bestPP = null;
-        let minDist = CHECKPOINT_DISTANCE_TOLERANCE_M;
+      state.lap_number = Math.max(1, Math.trunc(asFiniteNumber(state.lap_number, 1) || 1));
+      state.last_checkpoint_index = Math.trunc(asFiniteNumber(state.last_checkpoint_index, -1) || -1);
+      state.lap_start_ms = asFiniteNumber(state.lap_start_ms, null);
+      state.last_crossed_at_ms = asFiniteNumber(state.last_crossed_at_ms, null);
+      state.checkpoint_times =
+        state.checkpoint_times && typeof state.checkpoint_times === 'object'
+          ? state.checkpoint_times
+          : {};
+      state.checkpoint_speeds =
+        state.checkpoint_speeds && typeof state.checkpoint_speeds === 'object'
+          ? state.checkpoint_speeds
+          : {};
 
-        for (const pp of points) {
-          // If start and finish are the same physical point, the finish crossing
-          // must come from a later sample than the lap-opening crossing.
-          if (
-            startFinishSamePoint &&
-            i === finishCheckpointIndex &&
-            state.lap_start_ms &&
-            pp.timestamp <= state.lap_start_ms + DEDUP_WINDOW_MS
-          ) {
+      const previousPoint =
+        state.last_point &&
+        Number.isFinite(Number(state.last_point.lat)) &&
+        Number.isFinite(Number(state.last_point.lng)) &&
+        Number.isFinite(Number(state.last_point.timestamp))
+          ? {
+            lat: Number(state.last_point.lat),
+            lng: Number(state.last_point.lng),
+            speed: Number(state.last_point.speed),
+            heading: Number(state.last_point.heading),
+            altitude: Number(state.last_point.altitude),
+            timestamp: Number(state.last_point.timestamp),
+          }
+          : null;
+
+      const segmentPoints = [];
+      if (
+        previousPoint &&
+        normalizedPoints.length &&
+        previousPoint.timestamp < normalizedPoints[0].timestamp
+      ) {
+        segmentPoints.push(previousPoint);
+      }
+      segmentPoints.push(...normalizedPoints);
+
+      const persistState = async () => {
+        if (!stateRefs.length) return;
+        await Promise.all(stateRefs.map((ref) => ref.set(state, { merge: true })));
+      };
+
+      let selectedInterpolatedCrossings = 0;
+      let selectedFallbackCrossings = 0;
+
+      for (let idx = 1; idx < segmentPoints.length; idx++) {
+        const pointA = segmentPoints[idx - 1];
+        const pointB = segmentPoints[idx];
+        if (!Number.isFinite(pointA.timestamp) || !Number.isFinite(pointB.timestamp)) {
+          continue;
+        }
+        if (pointB.timestamp <= pointA.timestamp) {
+          continue;
+        }
+
+        const crossingCandidates = [];
+        for (const line of checkpointLines) {
+          if (!line) continue;
+          const rawCheckpointIndex = line.index;
+          if (rawCheckpointIndex < 0 || rawCheckpointIndex > finishCheckpointIndex) {
             continue;
           }
 
-          const dist = getDistanceMeters(pm.lat, pm.lng, pp.lat, pp.lng);
-          if (dist >= minDist) continue;
-
-          // Keep finish checkpoint permissive to ensure lap closure with sparse/noisy data.
-          if (i !== finishCheckpointIndex && nextPm) {
-            const vTrackLat = nextPm.lat - pm.lat;
-            const vTrackLng = nextPm.lng - pm.lng;
-            const vPilotLat = pp.lat - pm.lat;
-            const vPilotLng = pp.lng - pm.lng;
-            const dot = vPilotLat * vTrackLat + vPilotLng * vTrackLng;
-            const lenSq = vTrackLat * vTrackLat + vTrackLng * vTrackLng;
-            if (dot < 0 || dot > lenSq) continue;
+          // Avoid ambiguity when start and finish share the same physical line.
+          if (startFinishSamePoint) {
+            if (!state.lap_start_ms && rawCheckpointIndex === finishCheckpointIndex) {
+              continue;
+            }
+            if (state.lap_start_ms && rawCheckpointIndex === 0) {
+              continue;
+            }
           }
 
-          minDist = dist;
-          bestPP = pp;
+          let crossingCandidate = interpolateLineCrossing(line, pointA, pointB);
+
+          // Fallback path (legacy-like): if exact line crossing isn't found in
+          // the segment, allow nearest-point capture near checkpoint.
+          if (!crossingCandidate) {
+            const checkpoint = effectiveCheckpoints[rawCheckpointIndex];
+            if (checkpoint) {
+              const distToCheckpoint = getDistanceMeters(
+                checkpoint.lat,
+                checkpoint.lng,
+                pointB.lat,
+                pointB.lng,
+              );
+              if (distToCheckpoint <= CHECKPOINT_DISTANCE_TOLERANCE_M) {
+                let passesDirectionGate = true;
+                if (rawCheckpointIndex !== finishCheckpointIndex) {
+                  const nextCheckpoint =
+                    rawCheckpointIndex < finishCheckpointIndex
+                      ? effectiveCheckpoints[rawCheckpointIndex + 1]
+                      : null;
+                  if (nextCheckpoint) {
+                    const vTrackLat = nextCheckpoint.lat - checkpoint.lat;
+                    const vTrackLng = nextCheckpoint.lng - checkpoint.lng;
+                    const vPilotLat = pointB.lat - checkpoint.lat;
+                    const vPilotLng = pointB.lng - checkpoint.lng;
+                    const dot = vPilotLat * vTrackLat + vPilotLng * vTrackLng;
+                    const lenSq = vTrackLat * vTrackLat + vTrackLng * vTrackLng;
+                    if (dot < 0 || dot > lenSq) {
+                      passesDirectionGate = false;
+                    }
+                  }
+                }
+
+                if (passesDirectionGate) {
+                  crossingCandidate = {
+                    checkpointIndex: rawCheckpointIndex,
+                    timestamp: Math.trunc(pointB.timestamp),
+                    lat: pointB.lat,
+                    lng: pointB.lng,
+                    speed: Number.isFinite(pointB.speed) ? pointB.speed : 0,
+                    heading: Number.isFinite(pointB.heading) ? pointB.heading : 0,
+                    altitude: Number.isFinite(pointB.altitude) ? pointB.altitude : 0,
+                    alpha: null,
+                    line_offset_m: 0,
+                    distance_to_checkpoint_m: distToCheckpoint,
+                    method: 'nearest_point_fallback',
+                    confidence: 0.7,
+                  };
+                }
+              }
+            }
+          }
+
+          if (!crossingCandidate) continue;
+
+          const openingOnSharedLine =
+            startFinishSamePoint &&
+            rawCheckpointIndex === finishCheckpointIndex &&
+            !state.lap_start_ms;
+          const checkpointIndex = openingOnSharedLine ? 0 : rawCheckpointIndex;
+
+          const shouldSkip = shouldSkipCheckpointCrossing({
+            lastCheckpointIndex: state.last_checkpoint_index,
+            checkpointIndex,
+            lastCrossedAtMs: state.last_crossed_at_ms,
+            crossedAtMs: crossingCandidate.timestamp,
+            finishCheckpointIndex,
+            dedupWindowMs: DEDUP_WINDOW_MS,
+          });
+          if (shouldSkip) {
+            continue;
+          }
+
+          const ignoreFinishAtLapOpen =
+            startFinishSamePoint &&
+            rawCheckpointIndex === finishCheckpointIndex &&
+            state.lap_start_ms &&
+            crossingCandidate.timestamp - state.lap_start_ms < minLapMs;
+          if (ignoreFinishAtLapOpen) {
+            continue;
+          }
+
+          crossingCandidates.push({
+            crossing: crossingCandidate,
+            rawCheckpointIndex,
+            checkpointIndex,
+            openingOnSharedLine,
+          });
         }
 
-        if (!bestPP) continue;
-        const openingOnSharedLine =
-          startFinishSamePoint &&
-          i === finishCheckpointIndex &&
-          !state.lap_start_ms;
-        const checkpointIndex = openingOnSharedLine ? 0 : i;
+        if (!crossingCandidates.length) {
+          continue;
+        }
 
-        // Dedup and checkpoint order control.
-        const shouldSkip = shouldSkipCheckpointCrossing({
-          lastCheckpointIndex: state.last_checkpoint_index,
-          checkpointIndex,
-          lastCrossedAtMs: state.last_crossed_at_ms,
-          crossedAtMs: bestPP.timestamp,
-          finishCheckpointIndex,
-          dedupWindowMs: DEDUP_WINDOW_MS,
+        crossingCandidates.sort((a, b) => {
+          if (a.crossing.timestamp !== b.crossing.timestamp) {
+            return a.crossing.timestamp - b.crossing.timestamp;
+          }
+          return Math.abs(a.crossing.line_offset_m || 0) - Math.abs(b.crossing.line_offset_m || 0);
         });
-        if (shouldSkip) {
-          continue;
-        }
 
-        const ignoreFinishAtLapOpen =
-          startFinishSamePoint &&
-          i === finishCheckpointIndex &&
-          state.lap_start_ms &&
-          bestPP.timestamp - state.lap_start_ms < minLapMs;
-        if (ignoreFinishAtLapOpen) {
-          // Start and finish share the same physical point; avoid closing
-          // immediately after opening while still near the line.
-          continue;
+        const selected = crossingCandidates[0];
+        const crossing = selected.crossing;
+        const checkpointIndex = selected.checkpointIndex;
+        const rawCheckpointIndex = selected.rawCheckpointIndex;
+        const openingOnSharedLine = selected.openingOnSharedLine;
+        if (crossing.method === 'line_interpolation') {
+          selectedInterpolatedCrossings += 1;
+        } else {
+          selectedFallbackCrossings += 1;
         }
-
         const lapNumber = state.lap_number || 1;
         const prevTs = state.checkpoint_times ? state.checkpoint_times[checkpointIndex - 1] : null;
         const lapStartTs = state.lap_start_ms;
-        const sectorTime = prevTs ? bestPP.timestamp - prevTs : null;
-        const splitTime = lapStartTs ? bestPP.timestamp - lapStartTs : null;
+        const sectorTime = prevTs ? crossing.timestamp - prevTs : null;
+        const splitTime = lapStartTs ? crossing.timestamp - lapStartTs : null;
 
         if (crossingsRefs.length) {
           const crossingPayload = {
             lap_number: lapNumber,
             checkpoint_index: checkpointIndex,
-            crossed_at_ms: bestPP.timestamp,
-            speed_mps: bestPP.speed,
-            lat: bestPP.lat,
-            lng: bestPP.lng,
+            crossed_at_ms: crossing.timestamp,
+            speed_mps: crossing.speed,
+            lat: crossing.lat,
+            lng: crossing.lng,
             sector_time_ms: sectorTime,
             split_time_ms: splitTime,
-            method: 'nearest_point',
-            distance_to_checkpoint_m: minDist,
-            confidence: 0.9,
+            method: crossing.method,
+            distance_to_checkpoint_m: crossing.distance_to_checkpoint_m || 0,
+            line_offset_m: crossing.line_offset_m,
+            confidence: crossing.confidence,
             created_at: admin.firestore.FieldValue.serverTimestamp(),
           };
           await Promise.all(crossingsRefs.map((ref) => ref.add(crossingPayload)));
@@ -467,7 +607,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
           participant_uid: uid,
           lap_number: lapNumber,
           lap_time: null,
-          timestamp: admin.firestore.Timestamp.fromMillis(bestPP.timestamp),
+          timestamp: admin.firestore.Timestamp.fromMillis(crossing.timestamp),
           session_id: sessionId || null,
           event_id: eventId || null,
           race_id: raceId,
@@ -475,27 +615,26 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
           flags: [],
           sector_time: sectorTime,
           split_time: splitTime,
-          trap_speed: bestPP.speed,
+          trap_speed: crossing.speed,
+          lat: crossing.lat,
+          lng: crossing.lng,
         };
         await Promise.all(passingsRefs.map((ref) => ref.add(passingPayload)));
 
-        // Update state
         state.last_checkpoint_index = checkpointIndex;
-        state.last_crossed_at_ms = bestPP.timestamp;
+        state.last_crossed_at_ms = crossing.timestamp;
         state.checkpoint_times = state.checkpoint_times || {};
         state.checkpoint_speeds = state.checkpoint_speeds || {};
-        state.checkpoint_times[checkpointIndex] = bestPP.timestamp;
-        state.checkpoint_speeds[checkpointIndex] = bestPP.speed;
+        state.checkpoint_times[checkpointIndex] = crossing.timestamp;
+        state.checkpoint_speeds[checkpointIndex] = crossing.speed;
 
-        // Start timing on first checkpoint
         if (checkpointIndex === 0 && !state.lap_start_ms) {
-          state.lap_start_ms = bestPP.timestamp;
+          state.lap_start_ms = crossing.timestamp;
         }
 
-        // Close lap on finish checkpoint (last checkpoint)
-        if (i === finishCheckpointIndex && state.lap_start_ms && !openingOnSharedLine) {
+        if (rawCheckpointIndex === finishCheckpointIndex && state.lap_start_ms && !openingOnSharedLine) {
           const lapStart = state.lap_start_ms;
-          const lapEnd = bestPP.timestamp;
+          const lapEnd = crossing.timestamp;
           const lapPayloadBase = buildLapPayloadFromState({
             lapNumber,
             lapStartMs: lapStart,
@@ -535,7 +674,6 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
             { merge: true },
           );
 
-          // Passings record with lap_time for finish line
           const closingPassingPayload = {
             participant_uid: uid,
             lap_number: lapNumber,
@@ -550,15 +688,15 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
               lapPayload.sectors_ms[lapPayload.sectors_ms.length - 1] || null,
             split_time:
               lapPayload.splits_ms[lapPayload.splits_ms.length - 1] || null,
-            trap_speed: bestPP.speed,
+            trap_speed: crossing.speed,
             valid,
+            lat: crossing.lat,
+            lng: crossing.lng,
           };
           await Promise.all(passingsRefs.map((ref) => ref.add(closingPassingPayload)));
 
           const nextLapNumber = lapNumber + 1;
           if (startFinishSamePoint) {
-            // In start/finish tracks, closing a lap also opens the next lap on
-            // the same line crossing.
             const autoOpenPayload = {
               participant_uid: uid,
               lap_number: nextLapNumber,
@@ -571,7 +709,9 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
               flags: ['auto_open'],
               sector_time: null,
               split_time: 0,
-              trap_speed: bestPP.speed,
+              trap_speed: crossing.speed,
+              lat: crossing.lat,
+              lng: crossing.lng,
             };
             await Promise.all(passingsRefs.map((ref) => ref.add(autoOpenPayload)));
 
@@ -580,9 +720,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
             state.last_checkpoint_index = 0;
             state.last_crossed_at_ms = lapEnd;
             state.checkpoint_times = { 0: lapEnd };
-            state.checkpoint_speeds = { 0: bestPP.speed };
+            state.checkpoint_speeds = { 0: crossing.speed };
           } else {
-            // Non start/finish tracks open next lap only when checkpoint 0 is crossed.
             state.lap_number = nextLapNumber;
             state.lap_start_ms = null;
             state.last_checkpoint_index = finishCheckpointIndex;
@@ -590,14 +729,33 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
             state.checkpoint_times = {};
             state.checkpoint_speeds = {};
           }
-        } else if (i === 0 && !state.lap_start_ms) {
-          // keep compatibility branch (never hit due condition above)
-          state.lap_start_ms = bestPP.timestamp;
+        } else if (rawCheckpointIndex === 0 && !state.lap_start_ms) {
+          state.lap_start_ms = crossing.timestamp;
         }
 
-        if (stateRefs.length) {
-          await Promise.all(stateRefs.map((ref) => ref.set(state, { merge: true })));
-        }
+        await persistState();
+      }
+
+      if (normalizedPoints.length) {
+        const last = normalizedPoints[normalizedPoints.length - 1];
+        state.last_point = {
+          lat: last.lat,
+          lng: last.lng,
+          speed: last.speed,
+          heading: last.heading,
+          altitude: last.altitude,
+          timestamp: last.timestamp,
+        };
+        await persistState();
+      }
+
+      if (segmentPoints.length > 1) {
+        console.log(
+          `Crossing summary user=${uid} session=${sessionId || 'legacy'} ` +
+            `segments=${segmentPoints.length - 1} ` +
+            `interpolated=${selectedInterpolatedCrossings} ` +
+            `fallback=${selectedFallbackCrossings}`,
+        );
       }
     }
   } catch (e) {

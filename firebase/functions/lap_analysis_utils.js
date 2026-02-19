@@ -1,5 +1,6 @@
 const DEFAULT_MIN_LAP_TIME_SECONDS = 15;
 const DEFAULT_DEDUP_WINDOW_MS = 400;
+const DEFAULT_TRAP_WIDTH_M = 50;
 
 function toMillis(value) {
   if (value === null || value === undefined) return null;
@@ -28,6 +29,151 @@ function normalizeFlags(value) {
   return value
     .map((flag) => (flag || '').toString().trim().toLowerCase())
     .filter((flag) => flag.length > 0);
+}
+
+function metersPerDegree(latDeg) {
+  const latRad = (Number(latDeg) || 0) * (Math.PI / 180);
+  // Good enough approximation for short segments in a race track.
+  return {
+    lat: 111132.92,
+    lng: 111412.84 * Math.cos(latRad),
+  };
+}
+
+function pointToLocalMeters(point, center) {
+  if (!point || !center) return null;
+  const lat = Number(point.lat);
+  const lng = Number(point.lng);
+  const cLat = Number(center.lat);
+  const cLng = Number(center.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(cLat) || !Number.isFinite(cLng)) {
+    return null;
+  }
+  const m = metersPerDegree(cLat);
+  return {
+    x: (lng - cLng) * m.lng,
+    y: (lat - cLat) * m.lat,
+  };
+}
+
+function normalizeVec2(v) {
+  if (!v) return null;
+  const x = Number(v.x);
+  const y = Number(v.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const len = Math.hypot(x, y);
+  if (!Number.isFinite(len) || len < 1e-6) return null;
+  return { x: x / len, y: y / len };
+}
+
+function buildCheckpointLines(checkpoints = [], trapWidthM = DEFAULT_TRAP_WIDTH_M) {
+  if (!Array.isArray(checkpoints) || checkpoints.length < 2) return [];
+  const sanitized = checkpoints.map((cp) => ({
+    lat: Number(cp && cp.lat),
+    lng: Number(cp && cp.lng),
+  }));
+
+  const lines = [];
+  for (let i = 0; i < sanitized.length; i++) {
+    const center = sanitized[i];
+    if (!Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
+      lines.push(null);
+      continue;
+    }
+
+    const prev = i > 0 ? sanitized[i - 1] : sanitized[i];
+    const next = i < sanitized.length - 1 ? sanitized[i + 1] : sanitized[i];
+    const prevLocal = pointToLocalMeters(prev, center);
+    const nextLocal = pointToLocalMeters(next, center);
+    let tangent = null;
+    if (prevLocal && nextLocal) {
+      tangent = {
+        x: nextLocal.x - prevLocal.x,
+        y: nextLocal.y - prevLocal.y,
+      };
+    }
+
+    let normalUnit = normalizeVec2(tangent);
+    if (!normalUnit) {
+      // Fallback direction if checkpoints collapse in the same spot.
+      normalUnit = { x: 1, y: 0 };
+    }
+    const lineUnit = { x: -normalUnit.y, y: normalUnit.x };
+
+    lines.push({
+      index: i,
+      center,
+      normalUnit,
+      lineUnit,
+      halfWidthM: Math.max(1, Number(trapWidthM) || DEFAULT_TRAP_WIDTH_M) / 2,
+    });
+  }
+  return lines.filter(Boolean);
+}
+
+function interpolateLineCrossing(line, pointA, pointB) {
+  if (!line || !pointA || !pointB) return null;
+
+  const t0 = Number(pointA.timestamp);
+  const t1 = Number(pointB.timestamp);
+  if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 < t0) return null;
+
+  const localA = pointToLocalMeters(pointA, line.center);
+  const localB = pointToLocalMeters(pointB, line.center);
+  if (!localA || !localB) return null;
+
+  const signedA = localA.x * line.normalUnit.x + localA.y * line.normalUnit.y;
+  const signedB = localB.x * line.normalUnit.x + localB.y * line.normalUnit.y;
+
+  const eps = 1e-9;
+  const bothOnLine = Math.abs(signedA) <= eps && Math.abs(signedB) <= eps;
+  if (bothOnLine) return null;
+
+  if (signedA * signedB > 0 && Math.abs(signedA) > eps && Math.abs(signedB) > eps) {
+    return null;
+  }
+
+  const denom = signedB - signedA;
+  if (Math.abs(denom) <= eps) {
+    return null;
+  }
+
+  const alpha = -signedA / denom;
+  if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
+    return null;
+  }
+
+  const alongA = localA.x * line.lineUnit.x + localA.y * line.lineUnit.y;
+  const alongB = localB.x * line.lineUnit.x + localB.y * line.lineUnit.y;
+  const alongCross = alongA + (alongB - alongA) * alpha;
+  if (Math.abs(alongCross) > line.halfWidthM) {
+    return null;
+  }
+
+  const interp = (a, b, fallback = 0) => {
+    const av = Number(a);
+    const bv = Number(b);
+    if (Number.isFinite(av) && Number.isFinite(bv)) {
+      return av + (bv - av) * alpha;
+    }
+    if (Number.isFinite(av)) return av;
+    if (Number.isFinite(bv)) return bv;
+    return fallback;
+  };
+
+  return {
+    checkpointIndex: line.index,
+    timestamp: Math.trunc(interp(t0, t1, t0)),
+    lat: interp(pointA.lat, pointB.lat),
+    lng: interp(pointA.lng, pointB.lng),
+    speed: interp(pointA.speed, pointB.speed, 0),
+    heading: interp(pointA.heading, pointB.heading, 0),
+    altitude: interp(pointA.altitude, pointB.altitude, 0),
+    alpha,
+    line_offset_m: alongCross,
+    method: 'line_interpolation',
+    confidence: 0.97,
+  };
 }
 
 function computeSpeedStats(speeds = []) {
@@ -269,9 +415,12 @@ function buildSessionSummaryFromLaps(laps = []) {
 module.exports = {
   DEFAULT_DEDUP_WINDOW_MS,
   DEFAULT_MIN_LAP_TIME_SECONDS,
+  DEFAULT_TRAP_WIDTH_M,
   toMillis,
   normalizeFlags,
   computeSpeedStats,
+  buildCheckpointLines,
+  interpolateLineCrossing,
   shouldSkipCheckpointCrossing,
   buildLapPayloadFromState,
   buildLapPayloadFromPassings,

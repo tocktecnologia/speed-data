@@ -2,6 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  DEFAULT_TRAP_WIDTH_M,
+  buildCheckpointLines,
+  interpolateLineCrossing,
   shouldSkipCheckpointCrossing,
   buildLapPayloadFromState,
   buildLapPayloadFromPassings,
@@ -139,4 +142,79 @@ test('buildSessionSummaryFromLaps uses only valid laps to compute best and optim
   assert.deepEqual(summary.best_sectors_ms, [29000, 31000]);
   assert.equal(summary.valid_laps_count, 2);
   assert.equal(summary.total_laps_count, 3);
+});
+
+test('buildCheckpointLines creates virtual line definitions with default width', () => {
+  const checkpoints = [
+    { lat: 0, lng: 0 },
+    { lat: 0, lng: 0.001 },
+    { lat: 0, lng: 0.002 },
+  ];
+  const lines = buildCheckpointLines(checkpoints);
+  assert.equal(lines.length, checkpoints.length);
+  assert.equal(lines[1].index, 1);
+  assert.equal(lines[1].halfWidthM, DEFAULT_TRAP_WIDTH_M / 2);
+  assert.ok(Number.isFinite(lines[1].normalUnit.x));
+  assert.ok(Number.isFinite(lines[1].normalUnit.y));
+  assert.ok(Number.isFinite(lines[1].lineUnit.x));
+  assert.ok(Number.isFinite(lines[1].lineUnit.y));
+});
+
+test('interpolateLineCrossing returns interpolated crossing when segment crosses virtual line', () => {
+  const checkpoints = [
+    { lat: 0, lng: 0 },
+    { lat: 0, lng: 0.001 },
+    { lat: 0, lng: 0.002 },
+  ];
+  const line = buildCheckpointLines(checkpoints)[1];
+
+  const crossing = interpolateLineCrossing(
+    line,
+    {
+      lat: 0,
+      lng: 0.0009,
+      speed: 30,
+      timestamp: 1000,
+    },
+    {
+      lat: 0,
+      lng: 0.0011,
+      speed: 40,
+      timestamp: 2000,
+    },
+  );
+
+  assert.ok(crossing);
+  assert.equal(crossing.checkpointIndex, 1);
+  assert.equal(crossing.method, 'line_interpolation');
+  assert.equal(crossing.timestamp, 1500);
+  assert.ok(Math.abs(crossing.lng - 0.001) < 1e-8);
+  assert.ok(Math.abs(crossing.speed - 35) < 0.0001);
+});
+
+test('interpolateLineCrossing rejects crossings outside trap width', () => {
+  const checkpoints = [
+    { lat: 0, lng: 0 },
+    { lat: 0, lng: 0.001 },
+    { lat: 0, lng: 0.002 },
+  ];
+  const line = buildCheckpointLines(checkpoints)[1];
+
+  const notCrossing = interpolateLineCrossing(
+    line,
+    {
+      lat: 0.001,
+      lng: 0.0009,
+      speed: 30,
+      timestamp: 1000,
+    },
+    {
+      lat: 0.001,
+      lng: 0.0011,
+      speed: 40,
+      timestamp: 2000,
+    },
+  );
+
+  assert.equal(notCrossing, null);
 });

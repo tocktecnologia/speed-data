@@ -69,6 +69,22 @@ class _PilotDashboardState extends State<PilotDashboard> {
     return null;
   }
 
+  int _compareEventPriority(RaceEvent a, RaceEvent b, DateTime now) {
+    final aHasActive = _findActiveSession(a) != null;
+    final bHasActive = _findActiveSession(b) != null;
+    if (aHasActive != bHasActive) {
+      return aHasActive ? -1 : 1;
+    }
+
+    final aInWindow = _isEventActiveNow(a, now);
+    final bInWindow = _isEventActiveNow(b, now);
+    if (aInWindow != bInWindow) {
+      return aInWindow ? -1 : 1;
+    }
+
+    return b.date.compareTo(a.date);
+  }
+
   String _formatDurationUntil(DateTime from, DateTime to) {
     final diff = to.difference(from);
     if (diff.isNegative) return 'agora';
@@ -217,14 +233,21 @@ class _PilotDashboardState extends State<PilotDashboard> {
     String uid,
   ) async {
     final now = DateTime.now();
-    final activeEvents =
-        events.where((e) => _isEventActiveNow(e, now)).toList();
-    final checks = await Future.wait(activeEvents.map((event) async {
+    final activeCandidates = events
+        .where(
+          (e) => _isEventActiveNow(e, now) || _findActiveSession(e) != null,
+        )
+        .toList()
+      ..sort((a, b) => _compareEventPriority(a, b, now));
+
+    final checks = await Future.wait(activeCandidates.map((event) async {
       final isRegistered =
           await firestoreService.isUserRegisteredInEvent(event.id, uid);
       return isRegistered ? event : null;
     }));
-    return checks.whereType<RaceEvent>().toList();
+    final registered = checks.whereType<RaceEvent>().toList()
+      ..sort((a, b) => _compareEventPriority(a, b, now));
+    return registered;
   }
 
   Widget _buildDashboardBody(
@@ -250,9 +273,7 @@ class _PilotDashboardState extends State<PilotDashboard> {
                 ),
           builder: (context, activeEventsSnapshot) {
             final activeEvents = activeEventsSnapshot.data ?? [];
-            final sortedActiveEvents = activeEvents.isNotEmpty
-                ? (activeEvents..sort((a, b) => a.date.compareTo(b.date)))
-                : <RaceEvent>[];
+            final sortedActiveEvents = List<RaceEvent>.from(activeEvents);
             final RaceEvent? highlightedEvent = sortedActiveEvents.isEmpty
                 ? null
                 : sortedActiveEvents.firstWhere(

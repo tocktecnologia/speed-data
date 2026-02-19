@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -15,6 +16,10 @@ class TelemetryService extends ChangeNotifier {
 
   StreamSubscription<Position>? _positionStreamSubscription;
   Timer? _syncTimer;
+
+  static const double _checkpointDistanceToleranceM = 40.0;
+  static const int _dedupWindowMs = 400;
+  static const double _defaultTrapWidthM = 50.0;
 
   bool _enableSendDataToCloud =
       false; // Default to false, wait for active session
@@ -33,6 +38,38 @@ class TelemetryService extends ChangeNotifier {
       _simulationOverride = value;
       notifyListeners();
     }
+  }
+
+  bool _localTimingEnabled = false;
+  bool get localTimingEnabled => _localTimingEnabled;
+
+  int _localTimingMinLapMs = 0;
+
+  List<_LocalTimingLine> _localTimingLines = const [];
+  _LocalTimingPoint? _localTimingPreviousPoint;
+  bool _localStartFinishSamePoint = false;
+  int _localFinishCheckpointIndex = 0;
+  int _localCurrentLapNumber = 1;
+  int? _localLapStartMs;
+  int _localLastCheckpointIndex = -1;
+  int? _localLastCrossedAtMs;
+  Map<int, int> _localCheckpointTimes = {};
+  Map<int, double> _localCheckpointSpeeds = {};
+  final List<int> _localCompletedLapTimesMs = [];
+  int? _localBestLapMs;
+  int? _localPreviousLapMs;
+
+  int get localCurrentLapNumber => _localCurrentLapNumber;
+  int? get localLapStartMs => _localLapStartMs;
+  int? get localBestLapMs => _localBestLapMs;
+  int? get localPreviousLapMs => _localPreviousLapMs;
+  List<int> get localCompletedLapTimesMs =>
+      List<int>.unmodifiable(_localCompletedLapTimesMs);
+
+  int? get localCurrentLapMs {
+    if (_localLapStartMs == null) return null;
+    final diff = DateTime.now().millisecondsSinceEpoch - _localLapStartMs!;
+    return diff > 0 ? diff : 0;
   }
 
   // Simulation state
@@ -55,6 +92,7 @@ class TelemetryService extends ChangeNotifier {
   void setSessionId(String? id) {
     if (_currentSessionId != id) {
       _currentSessionId = id;
+      _resetLocalTimingState(clearHistory: true, clearPrevPoint: true);
       notifyListeners();
     }
   }
@@ -88,10 +126,469 @@ class TelemetryService extends ChangeNotifier {
 
   void setCheckpoints(List<Map<String, dynamic>> checkpoints) {
     _checkpoints = checkpoints;
+    _rebuildLocalTimingGeometry();
   }
 
   void setTimelines(List<Map<String, dynamic>> timelines) {
     _timelines = timelines;
+    _rebuildLocalTimingGeometry();
+  }
+
+  void setLocalTimingEnabled(bool enabled) {
+    if (_localTimingEnabled == enabled) return;
+    _localTimingEnabled = enabled;
+    _resetLocalTimingState(clearHistory: true, clearPrevPoint: true);
+    _rebuildLocalTimingGeometry();
+    notifyListeners();
+  }
+
+  void setLocalTimingMinLapSeconds(int seconds) {
+    _localTimingMinLapMs = math.max(0, seconds) * 1000;
+  }
+
+  void _resetLocalTimingState({
+    bool clearHistory = false,
+    bool clearPrevPoint = false,
+  }) {
+    _localCurrentLapNumber = 1;
+    _localLapStartMs = null;
+    _localLastCheckpointIndex = -1;
+    _localLastCrossedAtMs = null;
+    _localCheckpointTimes = {};
+    _localCheckpointSpeeds = {};
+    if (clearHistory) {
+      _localCompletedLapTimesMs.clear();
+      _localBestLapMs = null;
+      _localPreviousLapMs = null;
+    }
+    if (clearPrevPoint) {
+      _localTimingPreviousPoint = null;
+    }
+  }
+
+  void _rebuildLocalTimingGeometry() {
+    if (!_localTimingEnabled) {
+      _localTimingLines = const [];
+      return;
+    }
+    final effectiveCheckpoints = _resolveEffectiveCheckpoints(
+      _checkpoints,
+      _timelines,
+    );
+    _localTimingLines = _buildTimingLines(
+      effectiveCheckpoints,
+      trapWidthM: _defaultTrapWidthM,
+    );
+    _localFinishCheckpointIndex =
+        _localTimingLines.isEmpty ? 0 : (_localTimingLines.length - 1);
+    if (_localTimingLines.length >= 2) {
+      final first = _localTimingLines.first.center;
+      final last = _localTimingLines.last.center;
+      _localStartFinishSamePoint = Geolocator.distanceBetween(
+            first.latitude,
+            first.longitude,
+            last.latitude,
+            last.longitude,
+          ) <=
+          _checkpointDistanceToleranceM;
+    } else {
+      _localStartFinishSamePoint = false;
+    }
+  }
+
+  List<LatLng> _resolveEffectiveCheckpoints(
+    List<Map<String, dynamic>>? rawCheckpoints,
+    List<Map<String, dynamic>>? rawTimelines,
+  ) {
+    final checkpoints = <LatLng>[];
+    if (rawCheckpoints != null) {
+      for (final raw in rawCheckpoints) {
+        final lat = raw['lat'];
+        final lng = raw['lng'];
+        if (lat is num && lng is num) {
+          checkpoints.add(LatLng(lat.toDouble(), lng.toDouble()));
+        }
+      }
+    }
+    if (checkpoints.length < 2) return checkpoints;
+
+    final timelines = <_LocalTimelineRef>[];
+    if (rawTimelines != null) {
+      for (int i = 0; i < rawTimelines.length; i++) {
+        final raw = rawTimelines[i];
+        final checkpointIndexRaw = raw['checkpoint_index'] ??
+            raw['checkpointIndex'] ??
+            raw['checkpoint'];
+        final checkpointIndex = _asInt(checkpointIndexRaw);
+        if (checkpointIndex == null) continue;
+        final order = _asInt(raw['order']) ?? i;
+        final enabled = raw['enabled'] != false;
+        if (!enabled) continue;
+        final typeRaw = '${raw['type'] ?? ''}'.trim().toLowerCase();
+        String type = 'split';
+        if (typeRaw == 'start_finish' ||
+            typeRaw == 'startfinish' ||
+            typeRaw == 'start-finish' ||
+            typeRaw == 'sf') {
+          type = 'start_finish';
+        } else if (typeRaw == 'trap') {
+          type = 'trap';
+        }
+        timelines.add(
+          _LocalTimelineRef(
+            type: type,
+            checkpointIndex: checkpointIndex,
+            order: order,
+          ),
+        );
+      }
+    }
+
+    if (timelines.isEmpty) return checkpoints;
+    timelines.sort((a, b) => a.order.compareTo(b.order));
+
+    final startTimeline = timelines.cast<_LocalTimelineRef?>().firstWhere(
+          (t) => t?.type == 'start_finish',
+          orElse: () => null,
+        );
+
+    final startIdx = startTimeline != null &&
+            startTimeline.checkpointIndex >= 0 &&
+            startTimeline.checkpointIndex < checkpoints.length
+        ? startTimeline.checkpointIndex
+        : 0;
+
+    final originalFinishIdx = checkpoints.length - 1;
+    final originalStart = checkpoints.first;
+    final originalFinish = checkpoints.last;
+    final trackIsClosed = Geolocator.distanceBetween(
+          originalStart.latitude,
+          originalStart.longitude,
+          originalFinish.latitude,
+          originalFinish.longitude,
+        ) <=
+        _checkpointDistanceToleranceM;
+    final finishIdx = trackIsClosed ? startIdx : originalFinishIdx;
+
+    final usedIndices = <int>{startIdx, finishIdx};
+    final intermediate = <LatLng>[];
+    for (final timeline in timelines) {
+      if (timeline.type == 'start_finish') continue;
+      final idx = timeline.checkpointIndex;
+      if (idx < 0 || idx >= checkpoints.length) continue;
+      if (usedIndices.contains(idx)) continue;
+      usedIndices.add(idx);
+      intermediate.add(checkpoints[idx]);
+    }
+
+    if (intermediate.isEmpty &&
+        startIdx == 0 &&
+        finishIdx == originalFinishIdx) {
+      for (int i = 1; i < originalFinishIdx; i++) {
+        intermediate.add(checkpoints[i]);
+      }
+    }
+
+    final effective = <LatLng>[
+      checkpoints[startIdx],
+      ...intermediate,
+      checkpoints[finishIdx],
+    ];
+
+    return effective.length < 2 ? checkpoints : effective;
+  }
+
+  List<_LocalTimingLine> _buildTimingLines(
+    List<LatLng> checkpoints, {
+    required double trapWidthM,
+  }) {
+    if (checkpoints.length < 2) return const [];
+    final lines = <_LocalTimingLine>[];
+    for (int i = 0; i < checkpoints.length; i++) {
+      final center = checkpoints[i];
+      final prev = i > 0 ? checkpoints[i - 1] : checkpoints[i];
+      final next =
+          i < checkpoints.length - 1 ? checkpoints[i + 1] : checkpoints[i];
+      final prevLocal = _pointToLocalMeters(prev, center);
+      final nextLocal = _pointToLocalMeters(next, center);
+      final tangent = _Vec2(
+        x: nextLocal.x - prevLocal.x,
+        y: nextLocal.y - prevLocal.y,
+      );
+
+      _Vec2? normalUnit = _normalizeVec2(tangent);
+      normalUnit ??= const _Vec2(x: 1, y: 0);
+      final lineUnit = _Vec2(x: -normalUnit.y, y: normalUnit.x);
+      lines.add(
+        _LocalTimingLine(
+          index: i,
+          center: center,
+          normalUnit: normalUnit,
+          lineUnit: lineUnit,
+          halfWidthM: math.max(1, trapWidthM) / 2,
+        ),
+      );
+    }
+    return lines;
+  }
+
+  int? _asInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value);
+    return null;
+  }
+
+  _Vec2 _metersPerDegree(double latDeg) {
+    final latRad = latDeg * (math.pi / 180.0);
+    return _Vec2(
+      x: 111412.84 * math.cos(latRad), // lng
+      y: 111132.92, // lat
+    );
+  }
+
+  _Vec2 _pointToLocalMeters(LatLng point, LatLng center) {
+    final m = _metersPerDegree(center.latitude);
+    return _Vec2(
+      x: (point.longitude - center.longitude) * m.x,
+      y: (point.latitude - center.latitude) * m.y,
+    );
+  }
+
+  _Vec2? _normalizeVec2(_Vec2 v) {
+    final len = math.sqrt(v.x * v.x + v.y * v.y);
+    if (len <= 1e-6) return null;
+    return _Vec2(x: v.x / len, y: v.y / len);
+  }
+
+  double _dot(_Vec2 a, _Vec2 b) => a.x * b.x + a.y * b.y;
+
+  _LocalTimingPoint? _interpolateLineCrossing(
+    _LocalTimingLine line,
+    _LocalTimingPoint a,
+    _LocalTimingPoint b,
+  ) {
+    final localA = _pointToLocalMeters(LatLng(a.lat, a.lng), line.center);
+    final localB = _pointToLocalMeters(LatLng(b.lat, b.lng), line.center);
+    final signedA = _dot(localA, line.normalUnit);
+    final signedB = _dot(localB, line.normalUnit);
+    const eps = 1e-9;
+    final bothOnLine = signedA.abs() <= eps && signedB.abs() <= eps;
+    if (bothOnLine) return null;
+    if (signedA * signedB > 0 && signedA.abs() > eps && signedB.abs() > eps) {
+      return null;
+    }
+
+    final denom = signedB - signedA;
+    if (denom.abs() <= eps) return null;
+    final alpha = -signedA / denom;
+    if (!alpha.isFinite || alpha < 0 || alpha > 1) return null;
+
+    final alongA = _dot(localA, line.lineUnit);
+    final alongB = _dot(localB, line.lineUnit);
+    final alongCross = alongA + (alongB - alongA) * alpha;
+    if (alongCross.abs() > line.halfWidthM) return null;
+
+    double interp(double av, double bv) => av + (bv - av) * alpha;
+    final timestamp =
+        (a.timestamp + ((b.timestamp - a.timestamp) * alpha)).round();
+    return _LocalTimingPoint(
+      lat: interp(a.lat, b.lat),
+      lng: interp(a.lng, b.lng),
+      speed: interp(a.speed, b.speed),
+      heading: interp(a.heading, b.heading),
+      altitude: interp(a.altitude, b.altitude),
+      timestamp: timestamp,
+      method: 'line_interpolation',
+      lineOffsetM: alongCross,
+      distanceToCheckpointM: 0,
+      confidence: 0.97,
+    );
+  }
+
+  bool _shouldSkipLocalCheckpointCrossing({
+    required int lastCheckpointIndex,
+    required int checkpointIndex,
+    required int? lastCrossedAtMs,
+    required int crossedAtMs,
+    required int finishCheckpointIndex,
+  }) {
+    final sameCheckpoint = lastCheckpointIndex == checkpointIndex;
+    final tooSoon = lastCrossedAtMs != null &&
+        crossedAtMs - lastCrossedAtMs < _dedupWindowMs &&
+        sameCheckpoint;
+    final wrappedStart =
+        lastCheckpointIndex == finishCheckpointIndex && checkpointIndex == 0;
+    final outOfOrder = !wrappedStart &&
+        checkpointIndex != finishCheckpointIndex &&
+        lastCheckpointIndex > checkpointIndex;
+    return tooSoon || outOfOrder;
+  }
+
+  void _processLocalTimingPoint(_LocalTimingPoint currentPoint) {
+    if (!_localTimingEnabled) return;
+    if (_localTimingLines.length < 2) {
+      _localTimingPreviousPoint = currentPoint;
+      return;
+    }
+
+    final previous = _localTimingPreviousPoint;
+    _localTimingPreviousPoint = currentPoint;
+    if (previous == null) return;
+    if (currentPoint.timestamp <= previous.timestamp) return;
+
+    final candidates = <_LocalTimingCandidate>[];
+
+    for (final line in _localTimingLines) {
+      final rawCheckpointIndex = line.index;
+      if (rawCheckpointIndex < 0 ||
+          rawCheckpointIndex > _localFinishCheckpointIndex) {
+        continue;
+      }
+
+      if (_localStartFinishSamePoint) {
+        if (_localLapStartMs == null &&
+            rawCheckpointIndex == _localFinishCheckpointIndex) {
+          continue;
+        }
+        if (_localLapStartMs != null && rawCheckpointIndex == 0) {
+          continue;
+        }
+      }
+
+      _LocalTimingPoint? crossing =
+          _interpolateLineCrossing(line, previous, currentPoint);
+
+      if (crossing == null) {
+        final distToCheckpoint = Geolocator.distanceBetween(
+          line.center.latitude,
+          line.center.longitude,
+          currentPoint.lat,
+          currentPoint.lng,
+        );
+        if (distToCheckpoint <= _checkpointDistanceToleranceM) {
+          bool passesDirectionGate = true;
+          if (rawCheckpointIndex != _localFinishCheckpointIndex &&
+              rawCheckpointIndex + 1 < _localTimingLines.length) {
+            final nextCheckpoint =
+                _localTimingLines[rawCheckpointIndex + 1].center;
+            final vTrackLat = nextCheckpoint.latitude - line.center.latitude;
+            final vTrackLng = nextCheckpoint.longitude - line.center.longitude;
+            final vPilotLat = currentPoint.lat - line.center.latitude;
+            final vPilotLng = currentPoint.lng - line.center.longitude;
+            final dot = vPilotLat * vTrackLat + vPilotLng * vTrackLng;
+            final lenSq = vTrackLat * vTrackLat + vTrackLng * vTrackLng;
+            if (dot < 0 || dot > lenSq) {
+              passesDirectionGate = false;
+            }
+          }
+
+          if (passesDirectionGate) {
+            crossing = _LocalTimingPoint(
+              lat: currentPoint.lat,
+              lng: currentPoint.lng,
+              speed: currentPoint.speed,
+              heading: currentPoint.heading,
+              altitude: currentPoint.altitude,
+              timestamp: currentPoint.timestamp,
+              method: 'nearest_point_fallback',
+              lineOffsetM: 0,
+              distanceToCheckpointM: distToCheckpoint,
+              confidence: 0.7,
+            );
+          }
+        }
+      }
+
+      if (crossing == null) continue;
+
+      final openingOnSharedLine = _localStartFinishSamePoint &&
+          rawCheckpointIndex == _localFinishCheckpointIndex &&
+          _localLapStartMs == null;
+      final checkpointIndex = openingOnSharedLine ? 0 : rawCheckpointIndex;
+
+      final shouldSkip = _shouldSkipLocalCheckpointCrossing(
+        lastCheckpointIndex: _localLastCheckpointIndex,
+        checkpointIndex: checkpointIndex,
+        lastCrossedAtMs: _localLastCrossedAtMs,
+        crossedAtMs: crossing.timestamp,
+        finishCheckpointIndex: _localFinishCheckpointIndex,
+      );
+      if (shouldSkip) continue;
+
+      final ignoreFinishAtLapOpen = _localStartFinishSamePoint &&
+          rawCheckpointIndex == _localFinishCheckpointIndex &&
+          _localLapStartMs != null &&
+          crossing.timestamp - _localLapStartMs! < _localTimingMinLapMs;
+      if (ignoreFinishAtLapOpen) continue;
+
+      candidates.add(
+        _LocalTimingCandidate(
+          crossing: crossing,
+          rawCheckpointIndex: rawCheckpointIndex,
+          checkpointIndex: checkpointIndex,
+          openingOnSharedLine: openingOnSharedLine,
+        ),
+      );
+    }
+
+    if (candidates.isEmpty) return;
+    candidates.sort((a, b) {
+      if (a.crossing.timestamp != b.crossing.timestamp) {
+        return a.crossing.timestamp.compareTo(b.crossing.timestamp);
+      }
+      return a.crossing.lineOffsetM
+          .abs()
+          .compareTo(b.crossing.lineOffsetM.abs());
+    });
+
+    final selected = candidates.first;
+    final crossing = selected.crossing;
+    final checkpointIndex = selected.checkpointIndex;
+    final rawCheckpointIndex = selected.rawCheckpointIndex;
+    final openingOnSharedLine = selected.openingOnSharedLine;
+
+    _localLastCheckpointIndex = checkpointIndex;
+    _localLastCrossedAtMs = crossing.timestamp;
+    _localCheckpointTimes[checkpointIndex] = crossing.timestamp;
+    _localCheckpointSpeeds[checkpointIndex] = crossing.speed;
+
+    if (checkpointIndex == 0 && _localLapStartMs == null) {
+      _localLapStartMs = crossing.timestamp;
+    }
+
+    if (rawCheckpointIndex == _localFinishCheckpointIndex &&
+        _localLapStartMs != null &&
+        !openingOnSharedLine) {
+      final lapEnd = crossing.timestamp;
+      final lapTime = lapEnd - _localLapStartMs!;
+      if (lapTime > 0 && lapTime >= _localTimingMinLapMs) {
+        _localCompletedLapTimesMs.add(lapTime);
+        _localPreviousLapMs = lapTime;
+        if (_localBestLapMs == null || lapTime < _localBestLapMs!) {
+          _localBestLapMs = lapTime;
+        }
+      }
+
+      final nextLap = _localCurrentLapNumber + 1;
+      if (_localStartFinishSamePoint) {
+        _localCurrentLapNumber = nextLap;
+        _localLapStartMs = lapEnd;
+        _localLastCheckpointIndex = 0;
+        _localLastCrossedAtMs = lapEnd;
+        _localCheckpointTimes = {0: lapEnd};
+        _localCheckpointSpeeds = {0: crossing.speed};
+      } else {
+        _localCurrentLapNumber = nextLap;
+        _localLapStartMs = null;
+        _localLastCheckpointIndex = _localFinishCheckpointIndex;
+        _localLastCrossedAtMs = lapEnd;
+        _localCheckpointTimes = {};
+        _localCheckpointSpeeds = {};
+      }
+    }
+
+    notifyListeners();
   }
 
   void setSimulationSpeed(double value) {
@@ -127,6 +624,7 @@ class TelemetryService extends ChangeNotifier {
     _currentEventId = eventId;
     _currentUserId = userId;
     setSessionId(sessionId);
+    _resetLocalTimingState(clearHistory: true, clearPrevPoint: true);
 
     final totalLength = _calculatePathLength(_simulationRoutePath);
     double initialDistance = 0.0;
@@ -226,6 +724,7 @@ class TelemetryService extends ChangeNotifier {
     _isRecording = true;
     _buffer.clear(); // Start fresh
     _buffer.clear();
+    _resetLocalTimingState(clearHistory: true, clearPrevPoint: true);
     notifyListeners();
 
     // Start Location Stream
@@ -310,6 +809,7 @@ class TelemetryService extends ChangeNotifier {
     // We capture every point as requested (100ms ideally).
     // No minimum distance filter to ensure raw telemetry for high-speed analysis.
 
+    final timestamp = position.timestamp.millisecondsSinceEpoch;
     final point = {
       'raceId': _currentRaceId,
       'eventId': _currentEventId,
@@ -320,8 +820,19 @@ class TelemetryService extends ChangeNotifier {
       'speed': position.speed, // in m/s
       'heading': position.heading,
       'altitude': position.altitude,
-      'timestamp': position.timestamp.millisecondsSinceEpoch,
+      'timestamp': timestamp,
     };
+
+    _processLocalTimingPoint(
+      _LocalTimingPoint(
+        lat: position.latitude,
+        lng: position.longitude,
+        speed: position.speed,
+        heading: position.heading,
+        altitude: position.altitude,
+        timestamp: timestamp,
+      ),
+    );
 
     _buffer.add(point);
   }
@@ -352,6 +863,16 @@ class TelemetryService extends ChangeNotifier {
       'altitude': 0.0,
       'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
+    _processLocalTimingPoint(
+      _LocalTimingPoint(
+        lat: newPos.latitude,
+        lng: newPos.longitude,
+        speed: _simulationSpeed,
+        heading: 0,
+        altitude: 0,
+        timestamp: point['timestamp'] as int,
+      ),
+    );
     _simulationBuffer.add(point);
   }
 
@@ -447,4 +968,79 @@ class TelemetryService extends ChangeNotifier {
       _buffer.insertAll(0, batch);
     }
   }
+}
+
+class _Vec2 {
+  final double x;
+  final double y;
+
+  const _Vec2({required this.x, required this.y});
+}
+
+class _LocalTimelineRef {
+  final String type;
+  final int checkpointIndex;
+  final int order;
+
+  const _LocalTimelineRef({
+    required this.type,
+    required this.checkpointIndex,
+    required this.order,
+  });
+}
+
+class _LocalTimingLine {
+  final int index;
+  final LatLng center;
+  final _Vec2 normalUnit;
+  final _Vec2 lineUnit;
+  final double halfWidthM;
+
+  const _LocalTimingLine({
+    required this.index,
+    required this.center,
+    required this.normalUnit,
+    required this.lineUnit,
+    required this.halfWidthM,
+  });
+}
+
+class _LocalTimingPoint {
+  final double lat;
+  final double lng;
+  final double speed;
+  final double heading;
+  final double altitude;
+  final int timestamp;
+  final String method;
+  final double lineOffsetM;
+  final double distanceToCheckpointM;
+  final double confidence;
+
+  const _LocalTimingPoint({
+    required this.lat,
+    required this.lng,
+    required this.speed,
+    required this.heading,
+    required this.altitude,
+    required this.timestamp,
+    this.method = 'sample',
+    this.lineOffsetM = 0,
+    this.distanceToCheckpointM = 0,
+    this.confidence = 0,
+  });
+}
+
+class _LocalTimingCandidate {
+  final _LocalTimingPoint crossing;
+  final int rawCheckpointIndex;
+  final int checkpointIndex;
+  final bool openingOnSharedLine;
+
+  const _LocalTimingCandidate({
+    required this.crossing,
+    required this.rawCheckpointIndex,
+    required this.checkpointIndex,
+    required this.openingOnSharedLine,
+  });
 }

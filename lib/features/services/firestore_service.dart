@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:speed_data/features/models/user_role.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:speed_data/features/models/event_model.dart';
@@ -14,6 +15,12 @@ import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    final ts = DateTime.now().toIso8601String();
+    debugPrint('[FirestoreService][$ts] $message');
+  }
 
   String _normalizeEmail(String email) => email.trim().toLowerCase();
 
@@ -213,6 +220,72 @@ class FirestoreService {
     };
   }
 
+  /// Local timing config resolution:
+  /// 1) Global defaults in `app_config/local_timing`
+  /// 2) User override in `local_timing_testers/{normalized_email}`
+  ///
+  /// Expected fields:
+  /// - enabled_default (bool)
+  ///
+  /// User override fields:
+  /// - enabled (bool)
+  /// - valid_from (Timestamp/int, optional)
+  /// - valid_until (Timestamp/int, optional)
+  Future<Map<String, dynamic>> getLocalTimingRuntimeConfig(
+      {String? email}) async {
+    bool enabled = false;
+    String source = 'defaults';
+
+    try {
+      final globalDoc =
+          await _db.collection('app_config').doc('local_timing').get();
+      final globalData = globalDoc.data();
+      if (globalData != null) {
+        enabled = globalData['enabled_default'] is bool
+            ? globalData['enabled_default']
+            : enabled;
+        source = 'global';
+      }
+    } catch (e) {
+      print('Error loading global local timing config: $e');
+    }
+
+    final normalizedEmail =
+        (email == null || email.trim().isEmpty) ? null : _normalizeEmail(email);
+    if (normalizedEmail != null) {
+      try {
+        final userDoc = await _db
+            .collection('local_timing_testers')
+            .doc(normalizedEmail)
+            .get();
+        final userData = userDoc.data();
+        if (userData != null) {
+          final now = DateTime.now();
+          final validFrom = _asDateTime(userData['valid_from']);
+          final validUntil = _asDateTime(userData['valid_until']);
+          final inWindow = (validFrom == null || !now.isBefore(validFrom)) &&
+              (validUntil == null || !now.isAfter(validUntil));
+
+          if (inWindow) {
+            enabled =
+                userData['enabled'] is bool ? userData['enabled'] : enabled;
+            source = 'user';
+          } else {
+            source = 'global_out_of_window';
+          }
+        }
+      } catch (e) {
+        print('Error loading user local timing config: $e');
+      }
+    }
+
+    return {
+      'enabled': enabled,
+      'email': normalizedEmail,
+      'source': source,
+    };
+  }
+
   Future<void> setSimulationDefaults({
     required bool enabledDefault,
     required bool autoStartDefault,
@@ -321,6 +394,10 @@ class FirestoreService {
     bool forceServer = false,
   }) async {
     try {
+      _debugLog(
+        'getActiveEventForTrack(trackId=$trackId, allowFallback=$allowFallback, '
+        'requireActiveSession=$requireActiveSession, forceServer=$forceServer)',
+      );
       final query = _db
           .collection('events')
           .where('track_id', isEqualTo: trackId)
@@ -328,6 +405,9 @@ class FirestoreService {
       final snapshot = forceServer
           ? await query.get(const GetOptions(source: Source.server))
           : await query.get();
+      _debugLog(
+        'getActiveEventForTrack: fetched docs=${snapshot.docs.length}',
+      );
 
       if (snapshot.docs.isNotEmpty) {
         final events = snapshot.docs
@@ -335,12 +415,10 @@ class FirestoreService {
             .toList()
           ..sort((a, b) => b.date.compareTo(a.date));
         final now = DateTime.now();
-        RaceEvent? fallback;
+        RaceEvent? fallbackAny;
+        RaceEvent? fallbackWithActiveSession;
         for (final event in events) {
-          if (!requireActiveSession) {
-            fallback ??= event;
-          }
-
+          fallbackAny ??= event;
           final eventStart = DateTime(event.date.toLocal().year,
               event.date.toLocal().month, event.date.toLocal().day);
           final end = event.endDate?.toLocal() ??
@@ -348,15 +426,38 @@ class FirestoreService {
                   event.date.toLocal().day, 23, 59, 59, 999);
           final hasActiveSession =
               event.sessions.any((s) => s.status == SessionStatus.active);
+          if (hasActiveSession) {
+            fallbackWithActiveSession ??= event;
+          }
+          _debugLog(
+            'getActiveEventForTrack: candidate event=${event.id}, '
+            'date=${event.date.toIso8601String()}, '
+            'end=${end.toIso8601String()}, '
+            'sessions=${event.sessions.length}, hasActiveSession=$hasActiveSession',
+          );
           if ((now.isAfter(eventStart) || now.isAtSameMomentAs(eventStart)) &&
               (now.isBefore(end) || now.isAtSameMomentAs(end)) &&
               (!requireActiveSession || hasActiveSession)) {
+            _debugLog(
+              'getActiveEventForTrack: selected by date window -> ${event.id}',
+            );
             return event;
           }
         }
         if (allowFallback) {
-          return fallback;
+          if (requireActiveSession) {
+            _debugLog(
+              'getActiveEventForTrack: returning fallbackWithActiveSession='
+              '${fallbackWithActiveSession?.id ?? 'null'}',
+            );
+            return fallbackWithActiveSession;
+          }
+          _debugLog(
+            'getActiveEventForTrack: returning fallbackAny=${fallbackAny?.id ?? 'null'}',
+          );
+          return fallbackAny;
         }
+        _debugLog('getActiveEventForTrack: no match and no fallback');
         return null;
       }
     } catch (e) {
@@ -465,8 +566,14 @@ class FirestoreService {
     });
   }
 
-  Future<Map<String, dynamic>?> getRace(String raceId) async {
-    final doc = await _db.collection('races').doc(raceId).get();
+  Future<Map<String, dynamic>?> getRace(String raceId,
+      {bool forceServer = false}) async {
+    final doc = forceServer
+        ? await _db
+            .collection('races')
+            .doc(raceId)
+            .get(const GetOptions(source: Source.server))
+        : await _db.collection('races').doc(raceId).get();
     return doc.data() as Map<String, dynamic>?;
   }
 
@@ -511,6 +618,7 @@ class FirestoreService {
 
   Future<bool> isUserRegisteredInEvent(String eventId, String uid) async {
     try {
+      _debugLog('isUserRegisteredInEvent(eventId=$eventId, uid=$uid)');
       final uidSnapshot = await _db
           .collection('events')
           .doc(eventId)
@@ -518,7 +626,12 @@ class FirestoreService {
           .where('uid', isEqualTo: uid)
           .limit(1)
           .get();
-      if (uidSnapshot.docs.isNotEmpty) return true;
+      if (uidSnapshot.docs.isNotEmpty) {
+        _debugLog(
+          'isUserRegisteredInEvent: matched by competitors.uid (${uidSnapshot.docs.first.id})',
+        );
+        return true;
+      }
 
       final userIdSnapshot = await _db
           .collection('events')
@@ -527,6 +640,13 @@ class FirestoreService {
           .where('user_id', isEqualTo: uid)
           .limit(1)
           .get();
+      if (userIdSnapshot.docs.isNotEmpty) {
+        _debugLog(
+          'isUserRegisteredInEvent: matched by competitors.user_id (${userIdSnapshot.docs.first.id})',
+        );
+      } else {
+        _debugLog('isUserRegisteredInEvent: no match in competitors');
+      }
       return userIdSnapshot.docs.isNotEmpty;
     } catch (e) {
       print('Error checking registration: $e');

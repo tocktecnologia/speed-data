@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
@@ -24,14 +25,27 @@ class ActiveSessionTelemetryManager {
   String? _currentRaceId;
   bool _started = false;
 
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    final ts = DateTime.now().toIso8601String();
+    debugPrint(
+      '[ActiveSessionTelemetryManager][$ts]'
+      '[uid:${_currentUid ?? '-'}]'
+      '[event:${_currentEventId ?? '-'}]'
+      '[session:${_currentSessionId ?? '-'}] $message',
+    );
+  }
+
   void start() {
     if (_started) return;
     _started = true;
+    _debugLog('start');
     _authSubscription =
         FirebaseAuth.instance.authStateChanges().listen(_handleAuthChange);
   }
 
   void dispose() {
+    _debugLog('dispose');
     _eventsSubscription?.cancel();
     _eventsSubscription = null;
     _authSubscription?.cancel();
@@ -40,16 +54,19 @@ class ActiveSessionTelemetryManager {
   }
 
   void _handleAuthChange(User? user) {
+    _debugLog('auth change -> uid=${user?.uid}, email=${user?.email}');
     _currentUid = user?.uid;
     _eventsSubscription?.cancel();
     _eventsSubscription = null;
 
     if (user == null) {
+      _debugLog('auth change: no user, stopping telemetry');
       _stopTelemetry();
       return;
     }
 
     _eventsSubscription = _firestoreService.getEventsStream().listen((events) {
+      _debugLog('events stream update: events=${events.length}');
       _handleEvents(events);
     });
   }
@@ -89,26 +106,58 @@ class ActiveSessionTelemetryManager {
     }
   }
 
+  int _compareEventPriority(RaceEvent a, RaceEvent b, DateTime now) {
+    final aSession = _findActiveSession(a);
+    final bSession = _findActiveSession(b);
+    final aHasActive = aSession != null;
+    final bHasActive = bSession != null;
+    if (aHasActive != bHasActive) {
+      return aHasActive ? -1 : 1;
+    }
+
+    final aInWindow = _isEventActiveNow(a, now);
+    final bInWindow = _isEventActiveNow(b, now);
+    if (aInWindow != bInWindow) {
+      return aInWindow ? -1 : 1;
+    }
+
+    return b.date.compareTo(a.date);
+  }
+
   Future<void> _handleEvents(List<RaceEvent> events) async {
     final uid = _currentUid;
     if (uid == null) return;
 
     final now = DateTime.now();
-    final activeEvents =
-        events.where((e) => _isEventActiveNow(e, now)).toList();
+    final activeSessionCandidates = events
+        .where((e) => _findActiveSession(e) != null)
+        .toList()
+      ..sort((a, b) => _compareEventPriority(a, b, now));
 
-    if (activeEvents.isEmpty) {
+    if (activeSessionCandidates.isEmpty) {
+      _debugLog('_handleEvents: no events with active session');
       _stopTelemetry();
       return;
     }
+    _debugLog(
+      '_handleEvents: candidates with active session=${activeSessionCandidates.length}',
+    );
 
-    final checks = await Future.wait(activeEvents.map((event) async {
+    final checks = await Future.wait(activeSessionCandidates.map((event) async {
       final isRegistered =
           await _firestoreService.isUserRegisteredInEvent(event.id, uid);
+      _debugLog(
+        '_handleEvents: event=${event.id}, inWindow=${_isEventActiveNow(event, now)}, '
+        'registered=$isRegistered, sessions=${event.sessions.length}',
+      );
       if (!isRegistered) return null;
       final session = _findActiveSession(event);
       if (session == null) return null;
-      return {'event': event, 'session': session};
+      return {
+        'event': event,
+        'session': session,
+        'inWindow': _isEventActiveNow(event, now)
+      };
     }));
 
     final registeredWithActive =
@@ -116,10 +165,18 @@ class ActiveSessionTelemetryManager {
           ..sort((a, b) {
             final aEvent = a['event'] as RaceEvent;
             final bEvent = b['event'] as RaceEvent;
-            return aEvent.date.compareTo(bEvent.date);
+            final aInWindow = a['inWindow'] == true;
+            final bInWindow = b['inWindow'] == true;
+            if (aInWindow != bInWindow) {
+              return aInWindow ? -1 : 1;
+            }
+            return bEvent.date.compareTo(aEvent.date);
           });
 
     if (registeredWithActive.isEmpty) {
+      _debugLog(
+        '_handleEvents: no registered events with active session for uid=$uid',
+      );
       _stopTelemetry();
       return;
     }
@@ -127,6 +184,8 @@ class ActiveSessionTelemetryManager {
     final entry = registeredWithActive.first;
     final event = entry['event'] as RaceEvent;
     final session = entry['session'] as RaceSession;
+    _debugLog(
+        '_handleEvents: selected event=${event.id}, session=${session.id}');
     await _startTelemetryForSession(event, session);
   }
 
@@ -142,8 +201,15 @@ class ActiveSessionTelemetryManager {
     _telemetryService.setSessionId(session.id);
     _telemetryService.enableSendDataToCloud =
         !_telemetryService.simulationOverride;
+    _debugLog(
+      '_startTelemetryForSession: event=${event.id}, session=${session.id}, '
+      'race=${event.trackId}, simulationOverride=${_telemetryService.simulationOverride}, '
+      'sendToCloud=${_telemetryService.enableSendDataToCloud}',
+    );
 
     if (_telemetryService.simulationOverride) {
+      _debugLog(
+          '_startTelemetryForSession: simulation override active, skipping recording start');
       return;
     }
 
@@ -163,12 +229,21 @@ class ActiveSessionTelemetryManager {
         _telemetryService.currentRaceId != event.trackId ||
         _telemetryService.currentUserId != uid) {
       try {
+        _debugLog(
+            '_startTelemetryForSession: startRecording race=${event.trackId}');
         await _telemetryService.startRecording(event.trackId, uid);
-      } catch (_) {}
+      } catch (e) {
+        _debugLog('_startTelemetryForSession: startRecording failed: $e');
+      }
     }
   }
 
   void _stopTelemetry() {
+    _debugLog(
+      '_stopTelemetry: isSimulating=${_telemetryService.isSimulating}, '
+      'simulationOverride=${_telemetryService.simulationOverride}, '
+      'isRecording=${_telemetryService.isRecording}',
+    );
     _currentEventId = null;
     _currentSessionId = null;
     _currentRaceId = null;

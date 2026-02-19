@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:provider/provider.dart';
@@ -39,6 +40,9 @@ enum GaugeType { speed, gps }
 class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   bool _autoSimulationMode = false;
   bool _simulationConfigLoaded = false;
+  bool _simulationPausedByUser = false;
+  bool _localTimingMode = false;
+  bool _localTimingConfigLoaded = false;
   GoogleMapController? _mapController;
   final FirestoreService _firestoreService = FirestoreService();
   late TelemetryService _telemetryService;
@@ -72,18 +76,44 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     return widget.userId;
   }
 
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    final ts = DateTime.now().toIso8601String();
+    debugPrint(
+      '[ActiveRaceScreen][$ts][race:${widget.raceId}]'
+      '[event:${_currentEventId ?? widget.eventId ?? '-'}]'
+      '[session:${_activeSession?.id ?? '-'}]'
+      '[uid:$_effectiveUserId] $message',
+    );
+  }
+
+  String _sessionDebug(RaceSession? session) {
+    if (session == null) return 'null';
+    return 'id=${session.id}, status=${session.status.name}, '
+        'flag=${session.currentFlag.name}, '
+        'scheduled=${session.scheduledTime.toIso8601String()}, '
+        'actualStart=${session.actualStartTime?.toIso8601String()}';
+  }
+
   @override
   void initState() {
     super.initState();
     _telemetryService = TelemetryService.instance;
+    _debugLog(
+      'initState: raceName=${widget.raceName}, eventIdParam=${widget.eventId}, '
+      'authUid=${FirebaseAuth.instance.currentUser?.uid}, '
+      'authEmail=${FirebaseAuth.instance.currentUser?.email}',
+    );
 
     _loadSimulationModeConfig();
+    _loadLocalTimingModeConfig();
     _loadRaceDetails();
     _startUiTimer();
   }
 
   @override
   void dispose() {
+    _debugLog('dispose');
     _statusSubscription?.cancel(); // Cancel subscription on dispose
     _uiTimer?.cancel();
     super.dispose();
@@ -99,11 +129,211 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     });
   }
 
+  List<LatLng> _parseRoutePath(dynamic rawRoutePath) {
+    if (rawRoutePath is! List || rawRoutePath.isEmpty) return const [];
+    final points = <LatLng>[];
+    for (final item in rawRoutePath) {
+      if (item is! Map) continue;
+      final dynamic latRaw = item['lat'];
+      final dynamic lngRaw = item['lng'];
+      if (latRaw is num && lngRaw is num) {
+        points.add(LatLng(latRaw.toDouble(), lngRaw.toDouble()));
+      }
+    }
+    return points;
+  }
+
+  Future<bool> _applyRaceData(Map<String, dynamic> data,
+      {required String source}) async {
+    final checkpointsRaw = data['checkpoints'] as List<dynamic>?;
+    final savedRoutePathRaw = data['route_path'] as List<dynamic>?;
+    _debugLog(
+      '_applyRaceData($source): checkpoints=${checkpointsRaw?.length ?? 0}, '
+      'routePathSaved=${savedRoutePathRaw?.length ?? 0}',
+    );
+
+    if (checkpointsRaw == null || checkpointsRaw.isEmpty) {
+      final routeOnly = _parseRoutePath(savedRoutePathRaw);
+      if (routeOnly.length > 1 && mounted) {
+        setState(() {
+          _routePath = routeOnly;
+          _polylines = {
+            Polyline(
+              polylineId: const PolylineId('race_route'),
+              points: routeOnly,
+              color: Colors.blue,
+              width: 5,
+            ),
+          };
+          _raceMarkers = {};
+        });
+        _debugLog(
+          '_applyRaceData($source): loaded route-only path (${routeOnly.length} points)',
+        );
+        await _maybeAutoStartSimulation();
+        return true;
+      }
+      _debugLog('_applyRaceData($source): no checkpoints/route to apply');
+      return false;
+    }
+
+    final checkpoints = checkpointsRaw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList(growable: false);
+    if (checkpoints.isEmpty) {
+      _debugLog('_applyRaceData($source): checkpoints list parsed empty');
+      return false;
+    }
+    _checkpoints = checkpoints;
+    _telemetryService.setCheckpoints(_checkpoints);
+
+    final firstPoint = checkpoints.first;
+    final firstLatRaw = firstPoint['lat'];
+    final firstLngRaw = firstPoint['lng'];
+    if (firstLatRaw is num && firstLngRaw is num) {
+      _startLocation = LatLng(firstLatRaw.toDouble(), firstLngRaw.toDouble());
+      if (_mapController != null && mounted) {
+        _mapController!
+            .animateCamera(CameraUpdate.newLatLngZoom(_startLocation!, 16));
+        _isInitLocationSet = true;
+      }
+    }
+
+    final straightRoutePoints = <LatLng>[];
+    final markerDefs = <({int index, LatLng position, String label})>[];
+    for (int i = 0; i < checkpoints.length; i++) {
+      final point = checkpoints[i];
+      final latRaw = point['lat'];
+      final lngRaw = point['lng'];
+      if (latRaw is! num || lngRaw is! num) continue;
+      final lat = latRaw.toDouble();
+      final lng = lngRaw.toDouble();
+
+      if (i == checkpoints.length - 1 && checkpoints.length > 1) {
+        final first = checkpoints.first;
+        final fLatRaw = first['lat'];
+        final fLngRaw = first['lng'];
+        if (fLatRaw is num &&
+            fLngRaw is num &&
+            (lat - fLatRaw.toDouble()).abs() < 0.000001 &&
+            (lng - fLngRaw.toDouble()).abs() < 0.000001) {
+          continue;
+        }
+      }
+
+      final position = LatLng(lat, lng);
+      straightRoutePoints.add(position);
+      markerDefs.add((
+        index: i,
+        position: position,
+        label: String.fromCharCode(65 + i),
+      ));
+    }
+
+    List<LatLng> finalRoutePoints = straightRoutePoints;
+    final savedRoutePath = _parseRoutePath(savedRoutePathRaw);
+    if (savedRoutePath.isNotEmpty) {
+      finalRoutePoints = savedRoutePath;
+    }
+
+    final polylines = <Polyline>{};
+    if (finalRoutePoints.length > 1) {
+      polylines.add(
+        Polyline(
+          polylineId: const PolylineId('race_route'),
+          points: finalRoutePoints,
+          color: Colors.blue,
+          width: 5,
+        ),
+      );
+    }
+
+    if (mounted) {
+      setState(() {
+        _routePath = finalRoutePoints;
+        _polylines = polylines;
+      });
+    }
+    _debugLog(
+      '_applyRaceData($source): route prepared with ${finalRoutePoints.length} points; '
+      'markersPending=${markerDefs.length}',
+    );
+    await _maybeAutoStartSimulation();
+
+    if (markerDefs.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _raceMarkers = {};
+        });
+      }
+      return finalRoutePoints.isNotEmpty;
+    }
+
+    try {
+      final markerList = await Future.wait(
+        markerDefs.map((entry) async {
+          final icon = await createCustomMarkerBitmap(
+            entry.label,
+            color: entry.index == 0 ? Colors.green : Colors.blue,
+          );
+          return Marker(
+            markerId: MarkerId('checkpoint_${entry.index}'),
+            position: entry.position,
+            infoWindow: InfoWindow(title: 'Checkpoint ${entry.label}'),
+            icon: icon,
+          );
+        }),
+      );
+      if (mounted) {
+        setState(() {
+          _raceMarkers = markerList.toSet();
+        });
+      }
+      _debugLog('_applyRaceData($source): markers ready=${markerList.length}');
+    } catch (e, st) {
+      _debugLog('_applyRaceData($source): marker generation failed: $e\n$st');
+    }
+
+    return finalRoutePoints.isNotEmpty || checkpoints.isNotEmpty;
+  }
+
+  Future<void> _loadUserColorAsync() async {
+    _debugLog('_loadUserColorAsync: start');
+    try {
+      final userProfile =
+          await _firestoreService.getUserProfile(_effectiveUserId);
+      if (userProfile != null && userProfile.containsKey('color')) {
+        final colorData = userProfile['color'];
+        Color? parsedColor;
+        if (colorData is int) {
+          parsedColor = Color(colorData);
+        } else if (colorData is String) {
+          final parsed = int.tryParse(colorData);
+          if (parsed != null) {
+            parsedColor = Color(parsed);
+          }
+        }
+        if (parsedColor != null && mounted) {
+          setState(() {
+            _userColor = parsedColor!;
+          });
+        }
+      }
+      _debugLog('_loadUserColorAsync: done');
+    } catch (e, st) {
+      _debugLog('_loadUserColorAsync: failed: $e\n$st');
+    }
+  }
+
   Future<void> _loadRaceDetails() async {
+    _debugLog('_loadRaceDetails: start');
     final stream = _firestoreService.getRaceStream(widget.raceId);
+    final raceFirstSnapshotFuture = stream.first;
     late Future<void> Function() recoverActiveSessionBinding;
 
     Future<void> attachEventListeners(String eventId) async {
+      _debugLog('attachEventListeners: eventId=$eventId');
       if (!mounted) return;
       setState(() => _currentEventId = eventId);
       await _loadPilotIdentityForEvent(eventId);
@@ -113,6 +343,16 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       try {
         final RaceEvent? event =
             await _firestoreService.getEvent(eventId, forceServer: true);
+        _debugLog(
+          'attachEventListeners: preload event from server -> '
+          '${event == null ? 'null' : 'id=${event.id}, trackId=${event.trackId}, sessions=${event.sessions.length}'}',
+        );
+        if (event != null && event.trackId != widget.raceId) {
+          _debugLog(
+            'attachEventListeners: WARNING track mismatch '
+            '(event.trackId=${event.trackId}, widget.raceId=${widget.raceId})',
+          );
+        }
         if (event != null) {
           RaceSession? preloadedSession;
           try {
@@ -122,35 +362,71 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
           } catch (_) {
             preloadedSession = null;
           }
+          _debugLog(
+            'attachEventListeners: preloaded active session -> ${_sessionDebug(preloadedSession)}',
+          );
           await _applySessionState(preloadedSession);
         }
-      } catch (_) {}
+      } catch (e, st) {
+        _debugLog('attachEventListeners: preload failed: $e\n$st');
+      }
 
       _statusSubscription?.cancel();
+      _debugLog('attachEventListeners: subscribed getEventActiveSessionStream');
       _statusSubscription = _firestoreService
           .getEventActiveSessionStream(eventId)
           .listen((session) async {
+        _debugLog(
+            'eventActiveSessionStream: update -> ${_sessionDebug(session)}');
         await _applySessionState(session);
         if (session == null) {
+          _debugLog(
+            'eventActiveSessionStream: session null, scheduling recoverActiveSessionBinding',
+          );
           unawaited(recoverActiveSessionBinding());
         }
       });
     }
 
     recoverActiveSessionBinding = () async {
+      _debugLog('recoverActiveSessionBinding: scheduled in 2s');
       await Future.delayed(const Duration(seconds: 2));
-      if (!mounted || _activeSession != null) return;
+      if (!mounted) {
+        _debugLog('recoverActiveSessionBinding: aborted (unmounted)');
+        return;
+      }
+      if (_activeSession != null) {
+        _debugLog(
+          'recoverActiveSessionBinding: aborted (already has active session ${_activeSession!.id})',
+        );
+        return;
+      }
 
       try {
+        _debugLog(
+            'recoverActiveSessionBinding: querying active event for track');
         final event = await _firestoreService.getActiveEventForTrack(
           widget.raceId,
           allowFallback: true,
           requireActiveSession: true,
           forceServer: true,
         );
-        if (!mounted || event == null) return;
+        if (!mounted) {
+          _debugLog('recoverActiveSessionBinding: unmounted after query');
+          return;
+        }
+        if (event == null) {
+          _debugLog('recoverActiveSessionBinding: no active event found');
+          return;
+        }
+        _debugLog(
+          'recoverActiveSessionBinding: got event id=${event.id}, sessions=${event.sessions.length}',
+        );
 
         if (_currentEventId != event.id) {
+          _debugLog(
+            'recoverActiveSessionBinding: switching event binding $_currentEventId -> ${event.id}',
+          );
           await attachEventListeners(event.id);
           return;
         }
@@ -158,173 +434,161 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         try {
           final session = event.sessions
               .firstWhere((s) => s.status == SessionStatus.active);
+          _debugLog(
+            'recoverActiveSessionBinding: applying active session -> ${_sessionDebug(session)}',
+          );
           await _applySessionState(session);
-        } catch (_) {}
-      } catch (_) {}
+        } catch (e) {
+          _debugLog(
+              'recoverActiveSessionBinding: event has no active session ($e)');
+        }
+      } catch (e, st) {
+        _debugLog('recoverActiveSessionBinding: failed: $e\n$st');
+      }
     };
 
     if (widget.eventId != null && widget.eventId!.isNotEmpty) {
+      _debugLog(
+        '_loadRaceDetails: using explicit widget.eventId=${widget.eventId}',
+      );
       await attachEventListeners(widget.eventId!);
       unawaited(recoverActiveSessionBinding());
     } else {
-      _firestoreService
-          .getActiveEventForTrack(
-        widget.raceId,
-        allowFallback: true,
-        requireActiveSession: false,
-      )
-          .then((event) {
+      () async {
+        _debugLog('_loadRaceDetails: resolving eventId by track');
+        final activeEvent = await _firestoreService.getActiveEventForTrack(
+          widget.raceId,
+          allowFallback: true,
+          requireActiveSession: true,
+          forceServer: true,
+        );
+        _debugLog(
+          '_loadRaceDetails: activeEvent(requireActiveSession=true) -> '
+          '${activeEvent?.id ?? 'null'}',
+        );
+        final event = activeEvent ??
+            await _firestoreService.getActiveEventForTrack(
+              widget.raceId,
+              allowFallback: true,
+              requireActiveSession: false,
+            );
+        _debugLog(
+          '_loadRaceDetails: selected event after fallback -> ${event?.id ?? 'null'}',
+        );
+        if (!mounted) return;
         if (event == null) {
-          _applySessionState(null);
+          _debugLog('_loadRaceDetails: no event found, applying null session');
+          await _applySessionState(null);
           return;
         }
-        attachEventListeners(event.id);
+        await attachEventListeners(event.id);
         unawaited(recoverActiveSessionBinding());
-      }).catchError((_) {});
+      }()
+          .catchError((e, st) {
+        _debugLog('_loadRaceDetails: resolve event failed: $e\n$st');
+      });
     }
 
-    final snapshot = await stream.first;
-
-    // Fetch user color
-    try {
-      final userProfile =
-          await _firestoreService.getUserProfile(_effectiveUserId);
-      if (userProfile != null && userProfile.containsKey('color')) {
-        final colorData = userProfile['color'];
-        if (colorData is int) {
-          _userColor = Color(colorData);
-        } else if (colorData is String) {
-          final parsed = int.tryParse(colorData);
-          if (parsed != null) {
-            _userColor = Color(parsed);
-          }
-        }
-      }
-    } catch (e) {
-      print('Error fetching user color: $e');
+    final snapshot = await raceFirstSnapshotFuture;
+    _debugLog(
+      '_loadRaceDetails: race stream first snapshot exists=${snapshot.exists}',
+    );
+    final snapData = snapshot.data();
+    if (snapData is Map) {
+      _debugLog(
+        '_loadRaceDetails: race snapshot keys=${Map<String, dynamic>.from(snapData).keys.toList()}',
+      );
+    } else {
+      _debugLog(
+        '_loadRaceDetails: race snapshot data type=${snapData.runtimeType}',
+      );
     }
 
-    if (snapshot.exists) {
-      final data = snapshot.data() as Map<String, dynamic>;
-      final checkpoints = data['checkpoints'] as List<dynamic>?;
+    // Non-critical: do not block race route/checkpoints load.
+    unawaited(_loadUserColorAsync());
 
-      if (checkpoints != null) {
-        final markers = <Marker>{};
-        final straightRoutePoints = <LatLng>[];
-        _checkpoints = checkpoints
-            .map((e) => Map<String, dynamic>.from(e as Map))
-            .toList();
+    bool raceApplied = false;
+    if (snapshot.exists && snapshot.data() is Map) {
+      raceApplied = await _applyRaceData(
+        Map<String, dynamic>.from(snapshot.data() as Map),
+        source: 'stream_first',
+      );
+    }
 
-        if (checkpoints.isNotEmpty) {
-          // Pass checkpoints to telemetry service for cloud function processing
-          _telemetryService.setCheckpoints(_checkpoints);
-
-          final firstPoint = checkpoints[0];
-          final fLat = (firstPoint['lat'] as num).toDouble();
-          final fLng = (firstPoint['lng'] as num).toDouble();
-          _startLocation = LatLng(fLat, fLng);
-
-          if (_mapController != null && mounted) {
-            _mapController!
-                .animateCamera(CameraUpdate.newLatLngZoom(_startLocation!, 16));
-            _isInitLocationSet = true;
-          }
-        }
-
-        // Build Markers
-        for (int i = 0; i < checkpoints.length; i++) {
-          final point = checkpoints[i];
-          final lat = (point['lat'] as num).toDouble();
-          final lng = (point['lng'] as num).toDouble();
-
-          // Skip drawing the last marker if it is identical to the first one (closed loop)
-          if (i == checkpoints.length - 1 && checkpoints.length > 1) {
-            final first = checkpoints[0];
-            final fLat = (first['lat'] as num).toDouble();
-            final fLng = (first['lng'] as num).toDouble();
-            if ((lat - fLat).abs() < 0.000001 &&
-                (lng - fLng).abs() < 0.000001) {
-              continue;
-            }
-          }
-
-          final position = LatLng(lat, lng);
-          final String label = String.fromCharCode(65 + i);
-
-          straightRoutePoints.add(position);
-
-          final icon = await createCustomMarkerBitmap(label,
-              color: i == 0 ? Colors.green : Colors.blue);
-
-          markers.add(
-            Marker(
-              markerId: MarkerId('checkpoint_$i'),
-              position: position,
-              infoWindow: InfoWindow(title: 'Checkpoint $label'),
-              icon: icon,
-            ),
+    if (!raceApplied) {
+      try {
+        _debugLog(
+          '_loadRaceDetails: race data incomplete from first snapshot, trying server fallback',
+        );
+        final serverRace =
+            await _firestoreService.getRace(widget.raceId, forceServer: true);
+        if (serverRace != null) {
+          raceApplied = await _applyRaceData(
+            serverRace,
+            source: 'server_fallback',
           );
+        } else {
+          _debugLog('_loadRaceDetails: server fallback returned null race');
         }
-
-        // Build Polylines
-        final polylines = <Polyline>{};
-        List<LatLng> finalRoutePoints = straightRoutePoints;
-
-        // Check if we have a detailed street route saved
-        final savedRoutePath = data['route_path'] as List<dynamic>?;
-        if (savedRoutePath != null && savedRoutePath.isNotEmpty) {
-          finalRoutePoints = savedRoutePath.map((p) {
-            return LatLng(
-                (p['lat'] as num).toDouble(), (p['lng'] as num).toDouble());
-          }).toList();
-        }
-
-        if (finalRoutePoints.length > 1) {
-          polylines.add(
-            Polyline(
-              polylineId: const PolylineId('race_route'),
-              points: finalRoutePoints,
-              color: Colors.blue,
-              width: 5,
-            ),
-          );
-        }
-
-        if (mounted) {
-          setState(() {
-            _raceMarkers = markers;
-            _polylines = polylines;
-            _routePath = finalRoutePoints;
-          });
-        }
-        await _maybeAutoStartSimulation();
+      } catch (e, st) {
+        _debugLog('_loadRaceDetails: server fallback failed: $e\n$st');
       }
+    }
+
+    if (!raceApplied) {
+      _debugLog('_loadRaceDetails: race data could not be resolved yet');
     }
   }
 
   Future<void> _applySessionState(RaceSession? session) async {
     if (!mounted) return;
+    _debugLog(
+      '_applySessionState: incoming=${_sessionDebug(session)}, '
+      'previous=${_sessionDebug(_activeSession)}, '
+      'autoSimulationMode=$_autoSimulationMode, '
+      'simulationConfigLoaded=$_simulationConfigLoaded, '
+      'localTimingMode=$_localTimingMode, '
+      'isSimulating=${_telemetryService.isSimulating}, '
+      'isRecording=${_telemetryService.isRecording}',
+    );
     final shouldRestartSimulation = session != null &&
         _telemetryService.isSimulating &&
         _telemetryService.currentSessionId != session.id;
     if (shouldRestartSimulation) {
-      await _telemetryService.stopSimulation();
+      _debugLog(
+        '_applySessionState: restarting simulation due session change '
+        '${_telemetryService.currentSessionId} -> ${session.id}',
+      );
+      await _stopSimulation(markPausedByUser: false);
       _autoStartedSimulationSessionId = null;
     }
 
     final previousSessionId = _activeSession?.id;
+    final sessionTimelines = session == null
+        ? const <Map<String, dynamic>>[]
+        : session.timelines
+            .map((timeline) => timeline.toMap())
+            .toList(growable: false);
+    final minLapSeconds = session?.minLapTimeSeconds ?? 0;
     setState(() {
       _activeSession = session;
       if (session != null) {
         if (previousSessionId != session.id) {
           _localLapStartMs = _resolveSafeSessionStartMs(session);
+          _simulationPausedByUser = false;
         }
         _telemetryService.setSessionId(session.id);
+        _telemetryService.setTimelines(sessionTimelines);
+        _telemetryService.setLocalTimingMinLapSeconds(minLapSeconds);
         if (_autoSimulationMode) {
           _telemetryService.enableSendDataToCloud = false;
         } else if (!_telemetryService.isSimulating) {
           _telemetryService.enableSendDataToCloud = true;
           if (!_telemetryService.isRecording) {
+            _debugLog(
+              '_applySessionState: startRecording(race=${widget.raceId}, '
+              'event=$_currentEventId, session=${session.id})',
+            );
             _telemetryService.startRecording(
               widget.raceId,
               _effectiveUserId,
@@ -337,18 +601,40 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       } else {
         _autoStartedSimulationSessionId = null;
         _localLapStartMs = null;
+        _simulationPausedByUser = false;
         _telemetryService.setSessionId(null);
+        _telemetryService.setTimelines(sessionTimelines);
+        _telemetryService.setLocalTimingMinLapSeconds(minLapSeconds);
         _telemetryService.enableSendDataToCloud = false;
         _sessionBackgroundColor = Colors.black;
       }
     });
+    _debugLog(
+      '_applySessionState: applied activeSession=${_activeSession?.id ?? 'null'}, '
+      'sendToCloud=${_telemetryService.enableSendDataToCloud}, '
+      'sessionIdInTelemetry=${_telemetryService.currentSessionId}',
+    );
     await _maybeAutoStartSimulation();
   }
 
   Future<void> _loadSimulationModeConfig() async {
     final email = FirebaseAuth.instance.currentUser?.email;
-    final config =
-        await _firestoreService.getSimulationRuntimeConfig(email: email);
+    _debugLog('_loadSimulationModeConfig: start, email=${email ?? 'null'}');
+    Map<String, dynamic> config;
+    try {
+      config = await _firestoreService.getSimulationRuntimeConfig(email: email);
+      _debugLog('_loadSimulationModeConfig: raw config=$config');
+    } catch (e, st) {
+      _debugLog('_loadSimulationModeConfig: failed to load config: $e\n$st');
+      if (!mounted) return;
+      // Fail safe: avoid keeping the UI in an indefinite loading state.
+      setState(() {
+        _autoSimulationMode = false;
+        _simulationConfigLoaded = true;
+        _simulationPausedByUser = false;
+      });
+      return;
+    }
     if (!mounted) return;
 
     final enabled = config['enabled'] == true;
@@ -360,27 +646,100 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     setState(() {
       _autoSimulationMode = enabled && autoStart;
       _simulationConfigLoaded = true;
+      if (!_autoSimulationMode) {
+        _simulationPausedByUser = false;
+      }
     });
+    _debugLog(
+      '_loadSimulationModeConfig: resolved autoSimulationMode=$_autoSimulationMode, '
+      'simulationConfigLoaded=$_simulationConfigLoaded, speedMps=$speedMps, '
+      'source=${config['source']}',
+    );
     _telemetryService.setSimulationSpeed(speedMps);
 
     if (!_autoSimulationMode && _telemetryService.isSimulating) {
-      await _telemetryService.stopSimulation();
+      _debugLog(
+        '_loadSimulationModeConfig: stopping current simulation because mode disabled',
+      );
+      await _stopSimulation(markPausedByUser: false);
     }
     await _maybeAutoStartSimulation();
   }
 
+  Future<void> _loadLocalTimingModeConfig() async {
+    final email = FirebaseAuth.instance.currentUser?.email;
+    _debugLog('_loadLocalTimingModeConfig: start, email=${email ?? 'null'}');
+    Map<String, dynamic> config;
+    try {
+      config =
+          await _firestoreService.getLocalTimingRuntimeConfig(email: email);
+      _debugLog('_loadLocalTimingModeConfig: raw config=$config');
+    } catch (e, st) {
+      _debugLog('_loadLocalTimingModeConfig: failed to load config: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _localTimingMode = false;
+        _localTimingConfigLoaded = true;
+      });
+      _telemetryService.setLocalTimingEnabled(false);
+      return;
+    }
+    if (!mounted) return;
+
+    final enabled = config['enabled'] == true;
+    setState(() {
+      _localTimingMode = enabled;
+      _localTimingConfigLoaded = true;
+    });
+    _telemetryService.setLocalTimingEnabled(enabled);
+
+    final minLapSeconds = _activeSession?.minLapTimeSeconds ?? 0;
+    _telemetryService.setLocalTimingMinLapSeconds(minLapSeconds);
+
+    _debugLog(
+      '_loadLocalTimingModeConfig: resolved localTimingMode=$_localTimingMode, '
+      'localTimingConfigLoaded=$_localTimingConfigLoaded, '
+      'source=${config['source']}',
+    );
+  }
+
   Future<void> _maybeAutoStartSimulation() async {
-    if (!_simulationConfigLoaded || !_autoSimulationMode) return;
-    if (_activeSession == null || _activeSession!.id.isEmpty) return;
-    if (_routePath.isEmpty) return;
+    if (!_simulationConfigLoaded || !_autoSimulationMode) {
+      _debugLog(
+        '_maybeAutoStartSimulation: skip (simulationConfigLoaded=$_simulationConfigLoaded, '
+        'autoSimulationMode=$_autoSimulationMode)',
+      );
+      return;
+    }
+    if (_simulationPausedByUser) {
+      _debugLog('_maybeAutoStartSimulation: skip (paused by user)');
+      return;
+    }
+    if (_activeSession == null || _activeSession!.id.isEmpty) {
+      _debugLog('_maybeAutoStartSimulation: skip (no active session)');
+      return;
+    }
+    if (_routePath.isEmpty) {
+      _debugLog('_maybeAutoStartSimulation: skip (routePath empty)');
+      return;
+    }
     if (_telemetryService.isSimulating &&
         _telemetryService.currentSessionId != _activeSession!.id) {
-      await _telemetryService.stopSimulation();
+      _debugLog(
+        '_maybeAutoStartSimulation: stop stale simulation '
+        '${_telemetryService.currentSessionId} -> ${_activeSession!.id}',
+      );
+      await _stopSimulation(markPausedByUser: false);
       _autoStartedSimulationSessionId = null;
     }
     try {
+      _debugLog(
+        '_maybeAutoStartSimulation: auto start for session=${_activeSession!.id}',
+      );
       await _startSimulation(auto: true);
-    } catch (_) {}
+    } catch (e, st) {
+      _debugLog('_maybeAutoStartSimulation: auto start failed: $e\n$st');
+    }
   }
 
   void _onMapCreated(GoogleMapController controller) {
@@ -420,6 +779,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   }
 
   Future<void> _loadPilotIdentityForEvent(String eventId) async {
+    _debugLog('_loadPilotIdentityForEvent: eventId=$eventId');
     try {
       final Competitor? competitor =
           await _firestoreService.getCompetitorByUid(eventId, _effectiveUserId);
@@ -429,7 +789,12 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         _pilotCarNumber = competitor?.number.trim();
         _pilotDriverName = competitor?.name.trim();
       });
-    } catch (_) {
+      _debugLog(
+        '_loadPilotIdentityForEvent: competitor='
+        '${competitor == null ? 'null' : 'id=${competitor.id}, number=${competitor.number}, name=${competitor.name}, uid=${competitor.uid}'}',
+      );
+    } catch (e, st) {
+      _debugLog('_loadPilotIdentityForEvent: failed: $e\n$st');
       if (!mounted) return;
       setState(() {
         _pilotCompetitorId = null;
@@ -526,11 +891,17 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   }
 
   Future<void> _startSimulation({bool auto = false}) async {
+    _debugLog(
+      '_startSimulation: auto=$auto, activeSession=${_activeSession?.id}, '
+      'routePoints=${_routePath.length}, isSimulating=${_telemetryService.isSimulating}, '
+      'currentSimSession=${_telemetryService.currentSessionId}',
+    );
     if (_activeSession == null || _activeSession!.id.isEmpty) {
       if (!auto && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('No active session to simulate')));
       }
+      _debugLog('_startSimulation: aborted (no active session)');
       return;
     }
     if (_routePath.isEmpty) {
@@ -538,17 +909,22 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('No route path available')));
       }
+      _debugLog('_startSimulation: aborted (route path empty)');
       return;
     }
     if (_telemetryService.isSimulating) {
       if (_telemetryService.currentSessionId == _activeSession!.id) {
+        _debugLog('_startSimulation: already simulating same session');
         return;
       }
-      await _telemetryService.stopSimulation();
+      await _stopSimulation(markPausedByUser: false);
       _autoStartedSimulationSessionId = null;
     }
     if (auto && _autoStartedSimulationSessionId == _activeSession!.id) return;
     _autoStartedSimulationSessionId = _activeSession!.id;
+    final timelines = _activeSession!.timelines
+        .map((timeline) => timeline.toMap())
+        .toList(growable: false);
     try {
       await _telemetryService.startSimulation(
         routePath: _routePath,
@@ -557,11 +933,59 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         userId: _effectiveUserId,
         sessionId: _activeSession!.id,
         eventId: _currentEventId,
+        timelines: timelines,
       );
+      if (mounted && _simulationPausedByUser) {
+        setState(() {
+          _simulationPausedByUser = false;
+        });
+      }
+      _debugLog('_startSimulation: started successfully');
     } catch (_) {
       _autoStartedSimulationSessionId = null;
+      _debugLog('_startSimulation: failed');
       rethrow;
     }
+  }
+
+  Future<void> _stopSimulation({required bool markPausedByUser}) async {
+    _debugLog(
+      '_stopSimulation: requested markPausedByUser=$markPausedByUser, '
+      'isSimulating=${_telemetryService.isSimulating}',
+    );
+    if (!_telemetryService.isSimulating) {
+      if (mounted && _simulationPausedByUser != markPausedByUser) {
+        setState(() {
+          _simulationPausedByUser = markPausedByUser;
+        });
+      }
+      _debugLog('_stopSimulation: no-op (not simulating)');
+      return;
+    }
+
+    await _telemetryService.stopSimulation();
+    _autoStartedSimulationSessionId = null;
+
+    // In simulation mode, pausing should not fall back to real GPS upload.
+    if (_autoSimulationMode) {
+      _telemetryService.enableSendDataToCloud = false;
+      if (_telemetryService.isRecording) {
+        await _telemetryService.stopRecording();
+        if (_activeSession != null) {
+          _telemetryService.setSessionId(_activeSession!.id);
+        }
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _simulationPausedByUser = markPausedByUser;
+      });
+    }
+    _debugLog(
+      '_stopSimulation: completed, pausedByUser=$_simulationPausedByUser, '
+      'sendToCloud=${_telemetryService.enableSendDataToCloud}',
+    );
   }
 
   Widget _buildModeToggle() {
@@ -788,6 +1212,179 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     );
   }
 
+  Widget _buildTimingContent({
+    required TelemetryService telemetry,
+    required String? sessionId,
+  }) {
+    if (_localTimingMode && telemetry.localTimingEnabled) {
+      final bestLapMs = telemetry.localBestLapMs;
+      final previousLapMs = telemetry.localPreviousLapMs;
+      final currentLapMs = telemetry.localCurrentLapMs;
+
+      final best = bestLapMs != null ? _formatLapTime(bestLapMs) : '--:--.---';
+      final previous =
+          previousLapMs != null ? _formatLapTime(previousLapMs) : '--:--.---';
+      final current =
+          currentLapMs != null ? _formatLapTime(currentLapMs) : '--:--.---';
+
+      if (_mode == LiveTimerMode.simple) {
+        return _buildSimpleMode(
+          best: best,
+          previous: previous,
+          current: current,
+        );
+      }
+
+      if (_mode == LiveTimerMode.classic) {
+        return _buildClassicMode(
+          currentLap: current,
+          telemetry: telemetry,
+        );
+      }
+
+      return _buildGaugeMode(
+        currentLap: current,
+        telemetry: telemetry,
+      );
+    }
+
+    final lapsStream = _firestoreService.getLaps(
+      widget.raceId,
+      _effectiveUserId,
+      sessionId: sessionId,
+      eventId: _currentEventId,
+    );
+    final passingsStream = _firestoreService.getPassingsStream(
+      widget.raceId,
+      sessionId: sessionId,
+      eventId: _currentEventId,
+      session: _activeSession,
+    );
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: lapsStream,
+      builder: (context, lapSnapshot) {
+        if (lapSnapshot.hasError) {
+          return Center(
+            child: Text(
+              'Error loading laps: ${lapSnapshot.error}',
+              style: const TextStyle(color: Colors.white70),
+              textAlign: TextAlign.center,
+            ),
+          );
+        }
+
+        final minLapMs = (_activeSession?.minLapTimeSeconds ?? 0) * 1000;
+        final safeSessionStartMs = _activeSession != null
+            ? _resolveSafeSessionStartMs(_activeSession!)
+            : null;
+
+        return StreamBuilder<List<PassingModel>>(
+          stream: passingsStream,
+          builder: (context, passingSnapshot) {
+            if (passingSnapshot.hasError) {
+              return Center(
+                child: Text(
+                  'Error loading passings: ${passingSnapshot.error}',
+                  style: const TextStyle(color: Colors.white70),
+                  textAlign: TextAlign.center,
+                ),
+              );
+            }
+
+            final passings = passingSnapshot.data ?? const <PassingModel>[];
+            final completedLapTimes = <int>[];
+            int? latestLapCloseTs;
+
+            for (final passing in passings) {
+              if (!_isCurrentPilotPassing(passing)) {
+                continue;
+              }
+              final flags = passing.flags.map((f) => f.toLowerCase()).toSet();
+              if (flags.contains('invalid') || flags.contains('deleted')) {
+                continue;
+              }
+
+              final lapMs = passing.lapTime?.round();
+              if (lapMs == null || lapMs <= 0) {
+                continue;
+              }
+              if (minLapMs > 0 && lapMs < minLapMs) {
+                continue;
+              }
+
+              final ts = passing.timestamp.millisecondsSinceEpoch;
+              if (safeSessionStartMs != null &&
+                  ts < safeSessionStartMs - 1000) {
+                continue;
+              }
+
+              if (latestLapCloseTs == null || ts > latestLapCloseTs) {
+                latestLapCloseTs = ts;
+              }
+              completedLapTimes.add(lapMs);
+            }
+
+            int? currentLapStartTs;
+            if (_activeSession != null) {
+              currentLapStartTs = latestLapCloseTs ?? safeSessionStartMs;
+            } else {
+              currentLapStartTs = latestLapCloseTs ?? _localLapStartMs;
+            }
+
+            if (currentLapStartTs != null &&
+                _localLapStartMs != currentLapStartTs) {
+              _localLapStartMs = currentLapStartTs;
+            }
+
+            int? bestLapMs;
+            int? previousLapMs;
+            if (completedLapTimes.isNotEmpty) {
+              previousLapMs = completedLapTimes.last;
+              bestLapMs = completedLapTimes.reduce((a, b) => a < b ? a : b);
+            }
+
+            int? currentLapMs;
+            if (currentLapStartTs != null) {
+              final nowMs = _uiNow.millisecondsSinceEpoch;
+              final diff = nowMs - currentLapStartTs;
+              currentLapMs = diff > 0 ? diff : 0;
+            }
+
+            final best =
+                bestLapMs != null ? _formatLapTime(bestLapMs) : '--:--.---';
+            final previous = previousLapMs != null
+                ? _formatLapTime(previousLapMs)
+                : '--:--.---';
+            final current = currentLapMs != null
+                ? _formatLapTime(currentLapMs)
+                : '--:--.---';
+
+            if (_mode == LiveTimerMode.simple) {
+              return _buildSimpleMode(
+                best: best,
+                previous: previous,
+                current: current,
+              );
+            }
+
+            if (_mode == LiveTimerMode.classic) {
+              return _buildClassicMode(
+                currentLap: current,
+                telemetry: telemetry,
+              );
+            }
+
+            return _buildGaugeMode(
+              currentLap: current,
+              telemetry: telemetry,
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider.value(
@@ -828,18 +1425,6 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
             }
 
             final sessionId = _activeSession?.id ?? telemetry.currentSessionId;
-            final lapsStream = _firestoreService.getLaps(
-              widget.raceId,
-              _effectiveUserId,
-              sessionId: sessionId,
-              eventId: _currentEventId,
-            );
-            final passingsStream = _firestoreService.getPassingsStream(
-              widget.raceId,
-              sessionId: sessionId,
-              eventId: _currentEventId,
-              session: _activeSession,
-            );
 
             final borderColor = _activeSession != null
                 ? _getFlagColor(_activeSession!.currentFlag)
@@ -887,138 +1472,9 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                       ),
                     ),
                   Expanded(
-                    child: StreamBuilder<QuerySnapshot>(
-                      stream: lapsStream,
-                      builder: (context, lapSnapshot) {
-                        if (lapSnapshot.hasError) {
-                          return Center(
-                            child: Text(
-                              'Error loading laps: ${lapSnapshot.error}',
-                              style: const TextStyle(color: Colors.white70),
-                              textAlign: TextAlign.center,
-                            ),
-                          );
-                        }
-
-                        final minLapMs =
-                            (_activeSession?.minLapTimeSeconds ?? 0) * 1000;
-                        final safeSessionStartMs = _activeSession != null
-                            ? _resolveSafeSessionStartMs(_activeSession!)
-                            : null;
-
-                        return StreamBuilder<List<PassingModel>>(
-                          stream: passingsStream,
-                          builder: (context, passingSnapshot) {
-                            if (passingSnapshot.hasError) {
-                              return Center(
-                                child: Text(
-                                  'Error loading passings: ${passingSnapshot.error}',
-                                  style: const TextStyle(color: Colors.white70),
-                                  textAlign: TextAlign.center,
-                                ),
-                              );
-                            }
-
-                            final passings =
-                                passingSnapshot.data ?? const <PassingModel>[];
-                            final completedLapTimes = <int>[];
-                            int? latestLapCloseTs;
-
-                            for (final passing in passings) {
-                              if (!_isCurrentPilotPassing(passing)) {
-                                continue;
-                              }
-                              final flags = passing.flags
-                                  .map((f) => f.toLowerCase())
-                                  .toSet();
-                              if (flags.contains('invalid') ||
-                                  flags.contains('deleted')) {
-                                continue;
-                              }
-
-                              final lapMs = passing.lapTime?.round();
-                              if (lapMs == null || lapMs <= 0) {
-                                continue;
-                              }
-                              if (minLapMs > 0 && lapMs < minLapMs) {
-                                continue;
-                              }
-
-                              final ts =
-                                  passing.timestamp.millisecondsSinceEpoch;
-                              if (safeSessionStartMs != null &&
-                                  ts < safeSessionStartMs - 1000) {
-                                continue;
-                              }
-
-                              if (latestLapCloseTs == null ||
-                                  ts > latestLapCloseTs) {
-                                latestLapCloseTs = ts;
-                              }
-                              completedLapTimes.add(lapMs);
-                            }
-
-                            int? currentLapStartTs;
-                            if (_activeSession != null) {
-                              currentLapStartTs =
-                                  latestLapCloseTs ?? safeSessionStartMs;
-                            } else {
-                              currentLapStartTs =
-                                  latestLapCloseTs ?? _localLapStartMs;
-                            }
-
-                            if (currentLapStartTs != null &&
-                                _localLapStartMs != currentLapStartTs) {
-                              _localLapStartMs = currentLapStartTs;
-                            }
-
-                            int? bestLapMs;
-                            int? previousLapMs;
-                            if (completedLapTimes.isNotEmpty) {
-                              previousLapMs = completedLapTimes.last;
-                              bestLapMs = completedLapTimes
-                                  .reduce((a, b) => a < b ? a : b);
-                            }
-
-                            int? currentLapMs;
-                            if (currentLapStartTs != null) {
-                              final nowMs = _uiNow.millisecondsSinceEpoch;
-                              final diff = nowMs - currentLapStartTs;
-                              currentLapMs = diff > 0 ? diff : 0;
-                            }
-
-                            final best = bestLapMs != null
-                                ? _formatLapTime(bestLapMs)
-                                : '--:--.---';
-                            final previous = previousLapMs != null
-                                ? _formatLapTime(previousLapMs)
-                                : '--:--.---';
-                            final current = currentLapMs != null
-                                ? _formatLapTime(currentLapMs)
-                                : '--:--.---';
-
-                            if (_mode == LiveTimerMode.simple) {
-                              return _buildSimpleMode(
-                                best: best,
-                                previous: previous,
-                                current: current,
-                              );
-                            }
-
-                            if (_mode == LiveTimerMode.classic) {
-                              return _buildClassicMode(
-                                currentLap: current,
-                                telemetry: telemetry,
-                              );
-                            }
-
-                            return _buildGaugeMode(
-                              currentLap: current,
-                              telemetry: telemetry,
-                            );
-                          },
-                        );
-                      },
+                    child: _buildTimingContent(
+                      telemetry: telemetry,
+                      sessionId: sessionId,
                     ),
                   ),
                   Container(
@@ -1026,6 +1482,34 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                     color: Colors.black,
                     child: Column(
                       children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.timer,
+                              color: telemetry.localTimingEnabled
+                                  ? Colors.amberAccent
+                                  : Colors.white54,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                telemetry.localTimingEnabled
+                                    ? 'Local timing ativo no dispositivo (Fase 1).'
+                                    : (_localTimingConfigLoaded
+                                        ? 'Local timing desativado para este usuario.'
+                                        : 'Loading local timing config...'),
+                                style: TextStyle(
+                                  color: telemetry.localTimingEnabled
+                                      ? Colors.amberAccent
+                                      : Colors.white70,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
                         Row(
                           children: [
                             const Icon(Icons.smart_toy,
@@ -1036,7 +1520,9 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                                 _telemetryService.isSimulating
                                     ? 'Simulation mode active.'
                                     : (_autoSimulationMode
-                                        ? 'Simulation mode enabled. Waiting for active session...'
+                                        ? (_simulationPausedByUser
+                                            ? 'Simulation paused by user. Press START to resume.'
+                                            : 'Simulation mode enabled. Waiting for active session...')
                                         : (_simulationConfigLoaded
                                             ? 'Simulation mode disabled for this user.'
                                             : 'Loading simulation config...')),
@@ -1068,6 +1554,73 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                                   '${_telemetryService.simulationSpeed.toStringAsFixed(1)} m/s',
                                   style:
                                       const TextStyle(color: Colors.white70)),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: _telemetryService.isSimulating
+                                      ? null
+                                      : () async {
+                                          try {
+                                            await _startSimulation(auto: false);
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                const SnackBar(
+                                                  content: Text(
+                                                      'Simulation started.'),
+                                                ),
+                                              );
+                                            }
+                                          } catch (e) {
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                      'Failed to start simulation: $e'),
+                                                ),
+                                              );
+                                            }
+                                          }
+                                        },
+                                  icon: const Icon(Icons.play_arrow),
+                                  label: const Text('START'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.green,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: !_telemetryService.isSimulating
+                                      ? null
+                                      : () async {
+                                          await _stopSimulation(
+                                              markPausedByUser: true);
+                                          if (mounted) {
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              const SnackBar(
+                                                content:
+                                                    Text('Simulation paused.'),
+                                              ),
+                                            );
+                                          }
+                                        },
+                                  icon: const Icon(Icons.stop),
+                                  label: const Text('STOP'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.red,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                ),
+                              ),
                             ],
                           ),
                         ],

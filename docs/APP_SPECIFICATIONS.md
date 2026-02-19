@@ -148,6 +148,9 @@ ConstruÃ­do com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestor
   - **Auto-sincronizaÃ§Ã£o de telemetria**: Detecta automaticamente eventos ativos e sincroniza dados
   - **Indicador visual de bandeiras**: Cor de fundo muda dinamicamente baseado na bandeira da sessÃ£o (Verde, Amarela, Vermelha, Quadriculada)
   - **SincronizaÃ§Ã£o automÃ¡tica de sessÃ£o**: Monitora sessÃ£o ativa via Firestore e atualiza `sessionId` automaticamente
+  - **Recuperacao de sessao ativa**: preload + rotina de recover para reduzir casos de tela presa em loading em links lentos (especialmente Android)
+  - **Simulacao com controle manual**: botoes `START/STOP` disponiveis no Live Timer, sem perder auto-start por configuracao
+  - **Timing local (feature flag)**: quando habilitado, `Best/Previous/Current` vem do calculo local do dispositivo
   - Cloud sync habilitado automaticamente quando evento ativo Ã© detectado
   - Carrega detalhes da corrida assincronamente
 
@@ -251,6 +254,7 @@ ConstruÃ­do com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestor
   - **Telemetria**: `updatePilotLocation()`, `sendTelemetryBatch()`, `getRaceLocations()` (Stream)
   - **SessÃµes/Voltas**: `getLaps()`, `getSessionLaps()`, `getHistorySessions()`, `getHistorySessionLaps()`
   - **Eventos**: `getActiveEventForTrack()`, `getEventActiveSessionStream()` (Stream)
+  - **Feature flags runtime**: `getSimulationRuntimeConfig()`, `getLocalTimingRuntimeConfig()`
   - **Competidores**: `getCompetitors()`, `getCompetitorByUid()`, `getCompetitorsStream()` (Stream)
   - **Passagens**: `getPassingsStream()` (Stream com filtragem por janela de tempo)
   - **Limpeza**: `clearRaceParticipants()`, `clearRaceParticipantsLaps()`, `archiveCurrentLaps()`
@@ -266,8 +270,11 @@ ConstruÃ­do com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestor
   - Gerenciamento de wakelock (tela ligada durante gravaÃ§Ã£o)
   - CÃ¡lculo de frequÃªncia (Hz)
   - GeraÃ§Ã£o de Session ID (formato: `dd-MM-yyyy HH:mm:ss`)
-  - DetecÃ§Ã£o de checkpoints e gerenciamento de voltas
-- **MÃ©todos principais**: `startRecording()`, `stopRecording()`, `setCheckpoints()`
+  - DetecÃ§Ã£o de checkpoints e gerenciamento de voltas (backend e local)
+  - Simulacao de rota com speed configuravel e sincronizacao por lote
+  - Motor de timing local com cruzamento de linha virtual (interpolacao + fallback por proximidade)
+  - Reconstrucao de linhas efetivas a partir de `checkpoints + timelines`
+- **MÃ©todos principais**: `startRecording()`, `stopRecording()`, `startSimulation()`, `stopSimulation()`, `setCheckpoints()`, `setTimelines()`, `setLocalTimingEnabled()`
 - **RecuperaÃ§Ã£o de erros**: Buffer repovoado com dados em caso de falha de sync
 
 ### LocalDatabaseService
@@ -308,7 +315,7 @@ Firebase Cloud Function (ingestTelemetry)
     |
     +---> CriaÃ§Ã£o de registros em races/{raceId}/participants/{uid}/laps
     |
-    +---> CriaÃ§Ã£o de registros em races/{raceId}/passings (apenas participant_uid)
+    +---> CriaÃ§Ã£o de registros em races/{raceId}/passings (participant_uid, session_id, split/sector/trap quando disponiveis)
     |
     +---> Pub/Sub para processamento assÃ­ncrono
     |
@@ -325,6 +332,11 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
     |
     +---> PassingsPanel: CÃ¡lculo automÃ¡tico de nÃºmero de voltas
 ```
+
+Observacao (Fase 1 local timing):
+- O Live Timer pode operar em caminho local (dispositivo) com feature flag.
+- Nesse caminho, o cronometro usa cruzamento de linhas virtuais no app para `best/previous/current`.
+- O backend continua recebendo telemetria quando o envio para cloud esta habilitado.
 
 ### Processamento em Background
 
@@ -349,12 +361,13 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
 - **Status da sessao**: indicador reflete bandeira (verde/amarela/vermelha/quadriculada).
 - **Borda por bandeira**: borda do Live Timer acompanha a bandeira da sessao.
 - **Nome da sessao**: exibido no AppBar; nome do evento em label discreto.
-- **Best/Previous/Current**: calculados na sessÃ£o ativa com base em laps (fallback passings); Best respeita tempo mÃ­nimo (Minimum Lap Time) e validade.
+- **Best/Previous/Current**: por padrao continuam vindo de passings/laps por sessao; com feature flag de timing local ativa, passam a ser calculados localmente no dispositivo.
 - **Current fluido**: cronometro atualizado em intervalos curtos para evitar saltos.
-- **SimulaÃ§Ã£o (modo desenvolvimento)**: sem botÃµes Start/Stop no Live Timer; quando habilitada para o usuÃ¡rio, inicia automaticamente com sessÃ£o ativa e exibe apenas label + controle de velocidade.
+- **Simulacao (modo desenvolvimento)**: inicia automaticamente quando habilitada para o usuario e ha sessao ativa, com botoes `START/STOP` para pausa e retomada manual.
 - **Retorno para Live Timer**: ao reabrir a tela, a sessÃ£o ativa Ã© prÃ©-carregada para reduzir tempo de espera.
-- **Sem START/FINISH**: removidos os botoes manuais de start/finish do Live Timer.
+- **Sem START/FINISH de corrida**: botoes manuais de controle de bandeira/sessao permanecem somente no admin; no piloto ha apenas controle de simulacao.
 - **Warmup (bandeira)**: bandeira roxa WARMUP exibida no status e nas cores do Live Timer.
+- **Indicador de modo local**: rodape informa quando o timing local esta ativo para o usuario.
 
 ### Telemetria (Piloto)
 - **Envio automatico em sessao ativa**: quando ha sessao ativa, GPS fica capturando mesmo fora do Live Timer.
@@ -366,12 +379,21 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
   - Global: `app_config/simulation` com `enabled_default`, `auto_start_default`, `default_speed_mps`.
   - Override por usuario: `simulation_testers/{email_normalizado}` com `enabled`, `auto_start`, `speed_mps`, `valid_from`, `valid_until`.
   - O app resolve configuracao por e-mail autenticado; se habilitado, o modo simulacao inicia automaticamente quando a sessao ativa.
+- **Config de timing local por usuario (Firestore)**:
+  - Global: `app_config/local_timing` com `enabled_default`.
+  - Override por usuario: `local_timing_testers/{email_normalizado}` com `enabled`, `valid_from`, `valid_until`.
+  - Quando habilitado, o app ativa calculo local de volta/setor em runtime.
+- **Cruzamento local estilo RaceChrono (Fase 1)**:
+  - Linhas virtuais sao geradas com largura padrao de 50 m.
+  - Cruzamento usa interpolacao geometrica de segmento com fallback por proximidade e gate direcional.
+  - `best_lap` e `optimal/current` consideram apenas voltas validas (tempo > 0 e acima do minimo da sessao).
 
 ### Admin - Timing / Results / Passings / Track Chart
 - **Results**: mostra resultado da sessao (treino/qualificacao por melhor tempo valido; corrida por numero de voltas).
 - **Best/Last/Total/Laps**: calculados por passings; Total = tempo entre primeira e ultima passagem.
 - **Best mostra numero da volta**: formato "tempo (volta)".
 - **Min lap time**: voltas abaixo do minimo sao invalidas para resultado.
+- **Passings enriquecido**: painel exibe `sector_time`, `split_time` e `trap_speed` quando disponiveis.
 - **Passings com cores/icone**:
   - Roxo = melhor volta geral, Verde = melhor volta pessoal.
   - Vermelho = violacao de tempo minimo.
@@ -393,6 +415,26 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
   â”œâ”€â”€ name: string
   â””â”€â”€ color: number (ARGB)
 
+/app_config/simulation
+  â”œâ”€â”€ enabled_default: bool
+  â”œâ”€â”€ auto_start_default: bool
+  â””â”€â”€ default_speed_mps: number
+
+/simulation_testers/{email_normalizado}
+  â”œâ”€â”€ enabled: bool
+  â”œâ”€â”€ auto_start: bool
+  â”œâ”€â”€ speed_mps: number
+  â”œâ”€â”€ valid_from: timestamp?
+  â””â”€â”€ valid_until: timestamp?
+
+/app_config/local_timing
+  â””â”€â”€ enabled_default: bool
+
+/local_timing_testers/{email_normalizado}
+  â”œâ”€â”€ enabled: bool
+  â”œâ”€â”€ valid_from: timestamp?
+  â””â”€â”€ valid_until: timestamp?
+
 /races/{raceId}
   â”œâ”€â”€ name: string
   â”œâ”€â”€ creator_id: string (uid)
@@ -409,7 +451,9 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
   â”‚   â”œâ”€â”€ session_id: string
   â”‚   â”œâ”€â”€ checkpoint_index: number (0 = linha de chegada)
   â”‚   â”œâ”€â”€ flags: array (best_lap, personal_best, invalid, etc.)
-  â”‚   â””â”€â”€ sector_time: number | null
+  â”‚   â”œâ”€â”€ sector_time: number | null
+  â”‚   â”œâ”€â”€ split_time: number | null
+  â”‚   â””â”€â”€ trap_speed: number | null
   â”‚
   â””â”€â”€ /participants/{uid}
       â”œâ”€â”€ uid: string
@@ -439,6 +483,7 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
 - Caminho: `races/{raceId}/participants/{uid}/sessions/{sessionId}/crossings/{crossingId}`
 - Espelho opcional por evento/sessao: `events/{eventId}/sessions/{sessionId}/participants/{uid}/crossings/{crossingId}`
 - Obrigatorios: `lap_number`, `checkpoint_index`, `crossed_at_ms`, `speed_mps`, `lat`, `lng`, `method`, `distance_to_checkpoint_m`, `confidence`, `created_at`
+- `method` aceito: `interpolated`, `nearest_point`, `line_interpolation`, `nearest_point_fallback` (dependendo do pipeline/backend ou modo local)
 - Opcionais/derivados: `sector_time_ms` (delta desde checkpoint anterior), `split_time_ms` (delta desde cp_0), `backfilled_from_passings` (quando reconstruido)
 
 ### laps (por sessao)
@@ -473,6 +518,17 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
   - `High/Low`: tabela com `low/high/avg/range` por volta usando `speed_stats` (ou fallback para `trap_speeds_mps`)
   - `Information`: painel consolidado com `best_lap`, `optimal_lap`, contagens de voltas validas/total e snapshot de crossings
 - Regra de validade na UI: referencia e resumo derivado usam somente voltas validas (`valid=true` e `total_lap_time_ms > 0`).
+
+### Local Timing (Fase 1, feature flag)
+- Config runtime:
+  - Global: `app_config/local_timing.enabled_default`
+  - Override: `local_timing_testers/{email_normalizado}`
+- Comportamento:
+  - Quando habilitado, o Live Timer usa `TelemetryService` para calcular `best/previous/current` localmente.
+  - O processamento usa linhas virtuais baseadas em `checkpoints` + `timelines` da sessao.
+  - Largura padrao de linha virtual: 50 m.
+  - Fechamento de volta respeita `min_lap_time_seconds` da sessao.
+- Objetivo da fase: reduzir latencia e permitir evolucao para operacao offline-first.
 
 ### Backfill legada -> sessao (job administrativo)
 - Function callable: `backfillSessionAnalytics`

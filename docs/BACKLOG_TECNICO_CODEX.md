@@ -12,11 +12,12 @@ Implementar um pipeline de telemetria que:
 
 ## Estado Atual (resumo)
 
-- `ingestTelemetry` grava voltas em `races/{raceId}/participants/{uid}/laps`.
-- Fechamento de volta ocorre em `cp_0` e grava `totalLapTime`.
-- `passings` hoje e focado no fechamento da volta (`cp_0`), com pouco enriquecimento para checkpoints intermediarios.
-- `processTelemetry` atualiza `participants.current` e envia dados para BigQuery.
-- A aba de configuracao de `Timelines` no admin ainda esta pendente.
+- `ingestTelemetry` grava estrutura analitica por sessao em `sessions/{sessionId}/state|crossings|laps|analysis`.
+- `passings` foi enriquecido para checkpoints intermediarios (`sector_time`, `split_time`, `trap_speed`), mantendo compatibilidade.
+- `Race Control`, `Passings`, `Results/Leaderboard` e `Timelines` operam com fonte por sessao.
+- `processTelemetry` continua atualizando `participants.current` e exportando dados com `sessionId` para BigQuery.
+- O app piloto possui modo de simulacao com auto-start por configuracao e controles manuais `START/STOP`.
+- Foi iniciada a trilha offline-first com `timing local` no dispositivo (Fase 1) protegido por feature flag.
 
 ## Mudancas de Arquitetura (alvo)
 
@@ -211,6 +212,26 @@ Aceite: mapa admin mostra linhas/traps configurados e facilita validacao visual.
 Arquivos: `test/*`  
 Aceite: fluxo de cronometragem/admin continua funcional com dados legados e novos.
 
+31. [x] `BT-031` Robustecer deteccao de sessao ativa no Live Timer (Android)  
+Arquivos: `lib/features/screens/pilot/active_race_screen.dart`, `lib/features/services/firestore_service.dart`  
+Aceite: preload + recover da sessao ativa, logs de diagnostico e fallback para reduzir estados presos em "loading".
+
+32. [x] `BT-032` Reintroduzir controle manual de simulacao (`START/STOP`) no Live Timer  
+Arquivos: `lib/features/screens/pilot/active_race_screen.dart`, `lib/features/services/telemetry_service.dart`  
+Aceite: simulacao continua com auto-start quando habilitada, mas o piloto pode pausar/retomar manualmente sem voltar para envio GPS real indevido.
+
+33. [x] `BT-033` Implementar cruzamento local estilo RaceChrono (Fase 1)  
+Arquivos: `lib/features/services/telemetry_service.dart`, `lib/features/screens/pilot/active_race_screen.dart`  
+Aceite: deteccao local de cruzamento por linha virtual com interpolacao + fallback por proximidade, calculo local de `best/previous/current` e filtro por `min_lap_time_seconds`.
+
+34. [x] `BT-034` Adicionar feature flag de timing local por usuario  
+Arquivos: `lib/features/services/firestore_service.dart`, `lib/features/screens/pilot/active_race_screen.dart`  
+Aceite: configuracao em `app_config/local_timing` com override em `local_timing_testers/{email}`, aplicando modo local em runtime sem rebuild.
+
+35. [ ] `BT-035` Fase 2 offline-first (persistencia local de resultados)  
+Arquivos: `lib/features/services/local_database_service.dart`, `lib/features/services/telemetry_service.dart`, `firebase/functions/index.js`  
+Aceite: `crossings/laps/summary` calculados localmente ficam persistidos offline e sincronizam de forma idempotente quando houver conectividade.
+
 ## Ordem Recomendada de Execucao
 
 1. Backend core: `BT-001` a `BT-012`  
@@ -218,6 +239,7 @@ Aceite: fluxo de cronometragem/admin continua funcional com dados legados e novo
 3. UI Lap Times (piloto): `BT-015` a `BT-018`  
 4. Migracao e hardening: `BT-019` a `BT-023`  
 5. Integracao Admin UI: `BT-024` a `BT-030`
+6. Offline-first incremental (RaceChrono-like): `BT-031` a `BT-035`
 
 ## Definition of Done (DoD)
 
@@ -227,6 +249,8 @@ Aceite: fluxo de cronometragem/admin continua funcional com dados legados e novo
 - Regras e indices atualizados sem regressao nas telas atuais.
 - Documentacao tecnica atualizada.
 - Fluxo admin (Race Control, Passings, Results e Timelines) funcional com a nova arquitetura.
+- Live Timer opera em modo local quando feature flag ativa, com latencia baixa e filtro de volta valida.
+- Simulacao respeita auto-start por admin e tambem controle manual do piloto (`START/STOP`).
 
 ## Instrucoes Especificas por Tarefa (Codex 5.1-Max)
 
@@ -384,3 +408,28 @@ Use este formato em cada execucao:
 - Objetivo: testes de regressao admin.
 - Passos: cobrir fluxo de bandeiras, passings, resultados e troca de sessao.
 - Validacao: executar testes admin no Flutter e validar cenarios manuais principais.
+
+### BT-031
+- Objetivo: robustecer deteccao de sessao ativa no Live Timer (Android/web).
+- Passos: preload de evento/sessao ativa via servidor, stream de sessao ativa, rotina de recovery e logs detalhados para diagnostico de binding.
+- Validacao: `rg -n "recoverActiveSessionBinding|attachEventListeners|_applySessionState|_debugLog" lib/features/screens/pilot/active_race_screen.dart`.
+
+### BT-032
+- Objetivo: permitir pausa e retomada manual da simulacao sem perder auto-start.
+- Passos: manter auto-start quando habilitado, adicionar botoes `START/STOP`, e impedir fallback para envio real quando pausar simulacao.
+- Validacao: `rg -n "_startSimulation|_stopSimulation|simulationPausedByUser|START|STOP" lib/features/screens/pilot/active_race_screen.dart`.
+
+### BT-033
+- Objetivo: implementar cronometragem local com cruzamento por linha (Fase 1).
+- Passos: construir linhas virtuais a partir de checkpoints/timelines, detectar cruzamento com interpolacao, fallback por proximidade e calcular voltas locais com `min_lap_time_seconds`.
+- Validacao: `rg -n "_buildTimingLines|_interpolateLineCrossing|_processLocalTimingPoint|localBestLapMs|localCurrentLapMs" lib/features/services/telemetry_service.dart`.
+
+### BT-034
+- Objetivo: adicionar feature flag runtime para timing local.
+- Passos: ler config global e override por usuario no Firestore, aplicar flag no `TelemetryService` e alternar fonte de tempos no Live Timer.
+- Validacao: `rg -n "getLocalTimingRuntimeConfig|setLocalTimingEnabled|_loadLocalTimingModeConfig|_buildTimingContent" lib/features/services/firestore_service.dart lib/features/screens/pilot/active_race_screen.dart`.
+
+### BT-035
+- Objetivo: fase 2 offline-first (sincronizacao posterior de analiticos locais).
+- Passos: persistir `crossings/laps/summary` locais offline, sincronizar idempotente com backend e resolver conflitos por `sessionId+lap_number+checkpoint`.
+- Validacao: (pendente) definir contrato de sync e testes de reconexao/intermitencia.

@@ -195,6 +195,96 @@ function asFiniteNumber(value, fallback = null) {
   return parsed;
 }
 
+function sanitizeLocalLapClosures(rawClosures) {
+  if (!Array.isArray(rawClosures)) return [];
+
+  return rawClosures
+    .map((entry, idx) => {
+      if (!entry || typeof entry !== 'object') return null;
+
+      const lapNumber = asFiniteNumber(entry.lap_number, null);
+      const sfCrossedAtMs = asFiniteNumber(entry.sf_crossed_at_ms, null);
+      const postSfPointRaw =
+        entry.post_sf_point && typeof entry.post_sf_point === 'object'
+          ? entry.post_sf_point
+          : null;
+
+      if (!postSfPointRaw) return null;
+
+      const postSfTimestampMs = asFiniteNumber(postSfPointRaw.timestamp, null);
+      const postSfLat = asFiniteNumber(postSfPointRaw.lat, null);
+      const postSfLng = asFiniteNumber(postSfPointRaw.lng, null);
+      if (
+        lapNumber === null ||
+        sfCrossedAtMs === null ||
+        postSfTimestampMs === null ||
+        postSfLat === null ||
+        postSfLng === null
+      ) {
+        return null;
+      }
+
+      const sfCrossingRaw =
+        entry.sf_crossing && typeof entry.sf_crossing === 'object'
+          ? entry.sf_crossing
+          : {};
+      const closureIdRaw = entry.closure_id;
+      const closureId =
+        typeof closureIdRaw === 'string' && closureIdRaw.trim()
+          ? closureIdRaw.trim()
+          : `auto_${Math.trunc(lapNumber)}_${Math.trunc(sfCrossedAtMs)}_${Math.trunc(postSfTimestampMs)}_${idx}`;
+
+      return {
+        closure_id: closureId,
+        lap_number: Math.max(1, Math.trunc(lapNumber)),
+        next_lap_number: Math.max(
+          1,
+          Math.trunc(asFiniteNumber(entry.next_lap_number, lapNumber + 1)),
+        ),
+        lap_time_ms: asFiniteNumber(entry.lap_time_ms, null),
+        lap_valid: entry.lap_valid !== false,
+        lap_start_ms: asFiniteNumber(entry.lap_start_ms, null),
+        lap_end_ms: asFiniteNumber(entry.lap_end_ms, sfCrossedAtMs),
+        sf_crossed_at_ms: Math.trunc(sfCrossedAtMs),
+        sf_checkpoint_index: Math.trunc(
+          asFiniteNumber(entry.sf_checkpoint_index, -1),
+        ),
+        local_timing_min_lap_ms: asFiniteNumber(entry.local_timing_min_lap_ms, null),
+        captured_at_ms: asFiniteNumber(entry.captured_at_ms, postSfTimestampMs),
+        sf_crossing: {
+          lat: asFiniteNumber(sfCrossingRaw.lat, null),
+          lng: asFiniteNumber(sfCrossingRaw.lng, null),
+          speed: asFiniteNumber(sfCrossingRaw.speed, null),
+          heading: asFiniteNumber(sfCrossingRaw.heading, null),
+          altitude: asFiniteNumber(sfCrossingRaw.altitude, null),
+          timestamp: asFiniteNumber(sfCrossingRaw.timestamp, null),
+          method:
+            typeof sfCrossingRaw.method === 'string'
+              ? sfCrossingRaw.method
+              : 'local_sf_crossing',
+          distance_to_checkpoint_m: asFiniteNumber(
+            sfCrossingRaw.distance_to_checkpoint_m,
+            null,
+          ),
+          confidence: asFiniteNumber(sfCrossingRaw.confidence, null),
+        },
+        post_sf_point: {
+          lat: postSfLat,
+          lng: postSfLng,
+          speed: asFiniteNumber(postSfPointRaw.speed, null),
+          heading: asFiniteNumber(postSfPointRaw.heading, null),
+          altitude: asFiniteNumber(postSfPointRaw.altitude, null),
+          timestamp: Math.trunc(postSfTimestampMs),
+          source:
+            typeof postSfPointRaw.source === 'string'
+              ? postSfPointRaw.source
+              : 'gps',
+        },
+      };
+    })
+    .filter(Boolean);
+}
+
 async function commitSetOperations(db, operations, chunkSize = 400) {
   if (!Array.isArray(operations) || !operations.length) return;
   for (let i = 0; i < operations.length; i += chunkSize) {
@@ -237,14 +327,24 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
     raceId,
     eventId: inputEventId,
     uid,
-    points,
+    points: rawPoints,
     checkpoints,
     timelines,
     sessionId: inputSessionId,
     session,
     minLapTimeSeconds,
+    localLapClosures: rawLocalLapClosures,
   } = data;
 
+  if (rawPoints != null && !Array.isArray(rawPoints)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Points must be an array.');
+  }
+  if (rawLocalLapClosures != null && !Array.isArray(rawLocalLapClosures)) {
+    throw new functions.https.HttpsError('invalid-argument', 'localLapClosures must be an array.');
+  }
+
+  const points = Array.isArray(rawPoints) ? rawPoints : [];
+  const localLapClosures = sanitizeLocalLapClosures(rawLocalLapClosures);
   const sessionId = inputSessionId || session || null;
   let eventId = inputEventId || null;
   const minLapMs = (minLapTimeSeconds || DEFAULT_MIN_LAP_TIME_SECONDS) * 1000;
@@ -252,11 +352,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   if (!raceId || !uid) {
     throw new functions.https.HttpsError('invalid-argument', 'raceId and uid are required.');
   }
-  if (!points || !Array.isArray(points)) {
-    throw new functions.https.HttpsError('invalid-argument', 'Points must be an array.');
-  }
-  if (!points.length) {
-    return { success: true, count: 0 };
+  if (!points.length && !localLapClosures.length) {
+    return { success: true, count: 0, localLapClosures: 0 };
   }
 
   const db = admin.firestore();
@@ -282,7 +379,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   console.log(
     `Received ${points.length} points for race ${raceId} from user ${uid} ` +
       `(event=${eventId || 'n/a'}, session=${sessionId || 'legacy'}, ` +
-      `checkpoints=${effectiveCheckpoints.length}, timelines=${Array.isArray(timelines) ? timelines.length : 0})`,
+      `checkpoints=${effectiveCheckpoints.length}, timelines=${Array.isArray(timelines) ? timelines.length : 0}, ` +
+      `localLapClosures=${localLapClosures.length})`,
   );
 
   // Legacy race-scoped refs (kept during migration).
@@ -306,12 +404,37 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   const eventStateRef = eventSessionParticipantRef ? eventSessionParticipantRef.collection('state').doc('current') : null;
   const eventSummaryRef = eventSessionRef ? eventSessionRef.collection('analysis').doc('summary') : null;
   const eventPassingsRef = eventSessionRef ? eventSessionRef.collection('passings') : null;
+  const eventLocalLapClosuresRef = eventSessionRef ? eventSessionRef.collection('local_lap_closures') : null;
+  const legacyLocalLapClosuresRef = db.collection('races').doc(raceId).collection('local_lap_closures');
 
   const passingsRefs = [legacyPassingsRef, eventPassingsRef].filter(Boolean);
   const crossingsRefs = [legacyCrossingsRef, eventCrossingsRef].filter(Boolean);
   const sessionLapsRefs = [legacySessionLapsRef, eventSessionLapsRef].filter(Boolean);
   const summaryRefs = [legacySummaryRef, eventSummaryRef].filter(Boolean);
   const stateRefs = [legacyStateRef, eventStateRef].filter(Boolean);
+  const localLapClosureRefs = [legacyLocalLapClosuresRef, eventLocalLapClosuresRef].filter(Boolean);
+
+  if (localLapClosures.length && localLapClosureRefs.length) {
+    const writeOps = [];
+    for (const closure of localLapClosures) {
+      const payload = {
+        ...closure,
+        participant_uid: uid,
+        session_id: sessionId || null,
+        event_id: eventId || null,
+        race_id: raceId,
+        received_at: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      for (const ref of localLapClosureRefs) {
+        writeOps.push({
+          ref: ref.doc(closure.closure_id),
+          data: payload,
+          options: { merge: true },
+        });
+      }
+    }
+    await commitSetOperations(db, writeOps);
+  }
 
   let state = null;
   if (eventStateRef) {
@@ -762,6 +885,14 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
     console.error('Error in ingestTelemetry algorithm:', e);
   }
 
+  if (!points.length) {
+    return {
+      success: true,
+      count: 0,
+      localLapClosures: localLapClosures.length,
+    };
+  }
+
   // Publish to Pub/Sub for async processing / BigQuery
   const messagePayload = {
     raceId,
@@ -771,6 +902,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
     checkpoints: effectiveCheckpoints,
     timelines: Array.isArray(timelines) ? timelines : null,
     points,
+    localLapClosuresCount: localLapClosures.length,
     ingestedAt: Date.now(),
     userEmail: context.auth.token.email || null,
   };

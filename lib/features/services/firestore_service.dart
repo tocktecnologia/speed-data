@@ -742,7 +742,8 @@ class FirestoreService {
       List<Map<String, dynamic>>? checkpoints,
       String? sessionId,
       {String? eventId,
-      List<Map<String, dynamic>>? timelines}) async {
+      List<Map<String, dynamic>>? timelines,
+      List<Map<String, dynamic>>? localLapClosures}) async {
     try {
       final callable =
           FirebaseFunctions.instance.httpsCallable('ingestTelemetry');
@@ -754,6 +755,7 @@ class FirestoreService {
         'checkpoints': checkpoints,
         'timelines': timelines,
         'session': sessionId,
+        'localLapClosures': localLapClosures,
       });
     } catch (e) {
       print('Error sending telemetry batch: $e');

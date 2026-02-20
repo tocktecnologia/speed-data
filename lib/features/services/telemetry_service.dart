@@ -58,6 +58,10 @@ class TelemetryService extends ChangeNotifier {
   final List<int> _localCompletedLapTimesMs = [];
   int? _localBestLapMs;
   int? _localPreviousLapMs;
+  _PendingLocalLapClosure? _pendingLapClosureAfterSf;
+  final List<Map<String, dynamic>> _pendingLocalLapClosures = [];
+  bool _syncInProgress = false;
+  bool _simulationSyncInProgress = false;
 
   int get localCurrentLapNumber => _localCurrentLapNumber;
   int? get localLapStartMs => _localLapStartMs;
@@ -164,6 +168,7 @@ class TelemetryService extends ChangeNotifier {
     if (clearPrevPoint) {
       _localTimingPreviousPoint = null;
     }
+    _pendingLapClosureAfterSf = null;
   }
 
   void _rebuildLocalTimingGeometry() {
@@ -425,17 +430,123 @@ class TelemetryService extends ChangeNotifier {
     return tooSoon || outOfOrder;
   }
 
+  void _queuePendingLapClosureAfterSf({
+    required int closedLapNumber,
+    required int nextLapNumber,
+    required int lapStartMs,
+    required int sfCrossedAtMs,
+    required int lapTimeMs,
+    required bool lapValid,
+    required int finishCheckpointIndex,
+    required _LocalTimingPoint sfCrossing,
+  }) {
+    _pendingLapClosureAfterSf = _PendingLocalLapClosure(
+      closedLapNumber: closedLapNumber,
+      nextLapNumber: nextLapNumber,
+      lapStartMs: lapStartMs,
+      sfCrossedAtMs: sfCrossedAtMs,
+      lapTimeMs: lapTimeMs,
+      lapValid: lapValid,
+      finishCheckpointIndex: finishCheckpointIndex,
+      sfCrossing: sfCrossing,
+    );
+  }
+
+  bool _capturePostSfPointIfNeeded(_LocalTimingPoint currentPoint) {
+    final pending = _pendingLapClosureAfterSf;
+    if (pending == null) return false;
+    if (currentPoint.timestamp <= pending.sfCrossedAtMs) return false;
+
+    final pointSource = _isSimulating ? 'simulation' : 'gps';
+    final closureId =
+        '${_currentSessionId ?? 'no_session'}_${pending.closedLapNumber}_${pending.sfCrossedAtMs}_${currentPoint.timestamp}';
+
+    _pendingLocalLapClosures.add({
+      'closure_id': closureId,
+      'race_id': _currentRaceId,
+      'event_id': _currentEventId,
+      'session_id': _currentSessionId,
+      'participant_uid': _currentUserId,
+      'lap_number': pending.closedLapNumber,
+      'next_lap_number': pending.nextLapNumber,
+      'lap_time_ms': pending.lapTimeMs,
+      'lap_valid': pending.lapValid,
+      'lap_start_ms': pending.lapStartMs,
+      'lap_end_ms': pending.sfCrossedAtMs,
+      'sf_crossed_at_ms': pending.sfCrossedAtMs,
+      'sf_checkpoint_index': pending.finishCheckpointIndex,
+      'local_timing_min_lap_ms': _localTimingMinLapMs,
+      'captured_at_ms': DateTime.now().millisecondsSinceEpoch,
+      'sf_crossing': {
+        'lat': pending.sfCrossing.lat,
+        'lng': pending.sfCrossing.lng,
+        'speed': pending.sfCrossing.speed,
+        'heading': pending.sfCrossing.heading,
+        'altitude': pending.sfCrossing.altitude,
+        'timestamp': pending.sfCrossing.timestamp,
+        'method': pending.sfCrossing.method,
+        'distance_to_checkpoint_m': pending.sfCrossing.distanceToCheckpointM,
+        'confidence': pending.sfCrossing.confidence,
+      },
+      'post_sf_point': {
+        'lat': currentPoint.lat,
+        'lng': currentPoint.lng,
+        'speed': currentPoint.speed,
+        'heading': currentPoint.heading,
+        'altitude': currentPoint.altitude,
+        'timestamp': currentPoint.timestamp,
+        'source': pointSource,
+      },
+    });
+
+    _localCurrentLapNumber = pending.nextLapNumber;
+    _localLapStartMs = currentPoint.timestamp;
+    _localLastCheckpointIndex = 0;
+    _localLastCrossedAtMs = currentPoint.timestamp;
+    _localCheckpointTimes = {0: currentPoint.timestamp};
+    _localCheckpointSpeeds = {0: currentPoint.speed};
+
+    _pendingLapClosureAfterSf = null;
+    _triggerAsyncLapClosureSync();
+    return true;
+  }
+
+  void _triggerAsyncLapClosureSync() {
+    if (_pendingLocalLapClosures.isEmpty) return;
+    if (_isSimulating) {
+      if (_simulationSyncInProgress) return;
+      unawaited(_syncSimulationData());
+      return;
+    }
+    if (!_enableSendDataToCloud || _syncInProgress) return;
+    unawaited(_syncData());
+  }
+
   void _processLocalTimingPoint(_LocalTimingPoint currentPoint) {
     if (!_localTimingEnabled) return;
+    final startedLapFromPostSf = _capturePostSfPointIfNeeded(currentPoint);
     if (_localTimingLines.length < 2) {
       _localTimingPreviousPoint = currentPoint;
+      if (startedLapFromPostSf) {
+        notifyListeners();
+      }
       return;
     }
 
     final previous = _localTimingPreviousPoint;
     _localTimingPreviousPoint = currentPoint;
-    if (previous == null) return;
-    if (currentPoint.timestamp <= previous.timestamp) return;
+    if (previous == null) {
+      if (startedLapFromPostSf) {
+        notifyListeners();
+      }
+      return;
+    }
+    if (currentPoint.timestamp <= previous.timestamp) {
+      if (startedLapFromPostSf) {
+        notifyListeners();
+      }
+      return;
+    }
 
     final candidates = <_LocalTimingCandidate>[];
 
@@ -532,7 +643,12 @@ class TelemetryService extends ChangeNotifier {
       );
     }
 
-    if (candidates.isEmpty) return;
+    if (candidates.isEmpty) {
+      if (startedLapFromPostSf) {
+        notifyListeners();
+      }
+      return;
+    }
     candidates.sort((a, b) {
       if (a.crossing.timestamp != b.crossing.timestamp) {
         return a.crossing.timestamp.compareTo(b.crossing.timestamp);
@@ -560,32 +676,38 @@ class TelemetryService extends ChangeNotifier {
     if (rawCheckpointIndex == _localFinishCheckpointIndex &&
         _localLapStartMs != null &&
         !openingOnSharedLine) {
+      final closedLapNumber = _localCurrentLapNumber;
       final lapEnd = crossing.timestamp;
       final lapTime = lapEnd - _localLapStartMs!;
-      if (lapTime > 0 && lapTime >= _localTimingMinLapMs) {
-        _localCompletedLapTimesMs.add(lapTime);
+      final lapValid = lapTime > 0 && lapTime >= _localTimingMinLapMs;
+      if (lapTime > 0) {
         _localPreviousLapMs = lapTime;
+      }
+      if (lapValid) {
+        _localCompletedLapTimesMs.add(lapTime);
         if (_localBestLapMs == null || lapTime < _localBestLapMs!) {
           _localBestLapMs = lapTime;
         }
       }
 
-      final nextLap = _localCurrentLapNumber + 1;
-      if (_localStartFinishSamePoint) {
-        _localCurrentLapNumber = nextLap;
-        _localLapStartMs = lapEnd;
-        _localLastCheckpointIndex = 0;
-        _localLastCrossedAtMs = lapEnd;
-        _localCheckpointTimes = {0: lapEnd};
-        _localCheckpointSpeeds = {0: crossing.speed};
-      } else {
-        _localCurrentLapNumber = nextLap;
-        _localLapStartMs = null;
-        _localLastCheckpointIndex = _localFinishCheckpointIndex;
-        _localLastCrossedAtMs = lapEnd;
-        _localCheckpointTimes = {};
-        _localCheckpointSpeeds = {};
-      }
+      final nextLap = closedLapNumber + 1;
+      _queuePendingLapClosureAfterSf(
+        closedLapNumber: closedLapNumber,
+        nextLapNumber: nextLap,
+        lapStartMs: _localLapStartMs!,
+        sfCrossedAtMs: lapEnd,
+        lapTimeMs: lapTime,
+        lapValid: lapValid,
+        finishCheckpointIndex: _localFinishCheckpointIndex,
+        sfCrossing: crossing,
+      );
+
+      _localCurrentLapNumber = nextLap;
+      _localLapStartMs = null;
+      _localLastCheckpointIndex = _localFinishCheckpointIndex;
+      _localLastCrossedAtMs = lapEnd;
+      _localCheckpointTimes = {};
+      _localCheckpointSpeeds = {};
     }
 
     notifyListeners();
@@ -877,12 +999,18 @@ class TelemetryService extends ChangeNotifier {
   }
 
   Future<void> _syncSimulationData() async {
-    if (_simulationBuffer.isEmpty) return;
+    if (_simulationSyncInProgress) return;
     if (_currentRaceId == null || _currentUserId == null) return;
     if (_currentSessionId == null || _currentSessionId!.isEmpty) return;
+    if (_simulationBuffer.isEmpty && _pendingLocalLapClosures.isEmpty) return;
+
+    _simulationSyncInProgress = true;
 
     final batch = List<Map<String, dynamic>>.from(_simulationBuffer);
+    final lapClosuresBatch =
+        List<Map<String, dynamic>>.from(_pendingLocalLapClosures);
     _simulationBuffer.clear();
+    _pendingLocalLapClosures.clear();
 
     try {
       await _firestoreService.sendTelemetryBatch(
@@ -893,9 +1021,17 @@ class TelemetryService extends ChangeNotifier {
         _currentSessionId!,
         eventId: _currentEventId,
         timelines: _simulationTimelines,
+        localLapClosures: lapClosuresBatch,
       );
     } catch (e) {
-      _simulationBuffer.insertAll(0, batch);
+      if (batch.isNotEmpty) {
+        _simulationBuffer.insertAll(0, batch);
+      }
+      if (lapClosuresBatch.isNotEmpty) {
+        _pendingLocalLapClosures.insertAll(0, lapClosuresBatch);
+      }
+    } finally {
+      _simulationSyncInProgress = false;
     }
   }
 
@@ -933,16 +1069,26 @@ class TelemetryService extends ChangeNotifier {
   }
 
   Future<void> _syncData() async {
+    if (_syncInProgress) return;
     if (_currentRaceId == null || _currentUserId == null) return;
-    if (_buffer.isEmpty) return;
+    if (_buffer.isEmpty && _pendingLocalLapClosures.isEmpty) return;
+
+    _syncInProgress = true;
 
     // Snapshot buffer and clear main buffer to allow new writes
     final batch = List<Map<String, dynamic>>.from(_buffer);
+    final lapClosuresBatch = _enableSendDataToCloud
+        ? List<Map<String, dynamic>>.from(_pendingLocalLapClosures)
+        : const <Map<String, dynamic>>[];
     _buffer.clear();
+    if (_enableSendDataToCloud) {
+      _pendingLocalLapClosures.clear();
+    }
 
     try {
       // 1. Send Batch to Cloud Function
-      if (_enableSendDataToCloud) {
+      if (_enableSendDataToCloud &&
+          (batch.isNotEmpty || lapClosuresBatch.isNotEmpty)) {
         await _firestoreService.sendTelemetryBatch(
           _currentRaceId!,
           _currentUserId!,
@@ -951,6 +1097,7 @@ class TelemetryService extends ChangeNotifier {
           _currentSessionId!,
           eventId: _currentEventId,
           timelines: _timelines,
+          localLapClosures: lapClosuresBatch,
         );
       }
 
@@ -965,7 +1112,14 @@ class TelemetryService extends ChangeNotifier {
       }
       // On failure, restore data to the buffer (prepend to keep order roughly,
       // though strictly strictly prepending a block maintains order relative to new data)
-      _buffer.insertAll(0, batch);
+      if (batch.isNotEmpty) {
+        _buffer.insertAll(0, batch);
+      }
+      if (lapClosuresBatch.isNotEmpty) {
+        _pendingLocalLapClosures.insertAll(0, lapClosuresBatch);
+      }
+    } finally {
+      _syncInProgress = false;
     }
   }
 }
@@ -1042,5 +1196,27 @@ class _LocalTimingCandidate {
     required this.rawCheckpointIndex,
     required this.checkpointIndex,
     required this.openingOnSharedLine,
+  });
+}
+
+class _PendingLocalLapClosure {
+  final int closedLapNumber;
+  final int nextLapNumber;
+  final int lapStartMs;
+  final int sfCrossedAtMs;
+  final int lapTimeMs;
+  final bool lapValid;
+  final int finishCheckpointIndex;
+  final _LocalTimingPoint sfCrossing;
+
+  const _PendingLocalLapClosure({
+    required this.closedLapNumber,
+    required this.nextLapNumber,
+    required this.lapStartMs,
+    required this.sfCrossedAtMs,
+    required this.lapTimeMs,
+    required this.lapValid,
+    required this.finishCheckpointIndex,
+    required this.sfCrossing,
   });
 }

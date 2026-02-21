@@ -1,14 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/lap_analysis_model.dart';
 import 'package:speed_data/features/screens/pilot/widgets/lap_times_formatters.dart';
+import 'package:speed_data/features/screens/pilot/widgets/lap_times_types.dart';
 
 class LapTimesSplitsTable extends StatelessWidget {
   final List<LapAnalysisModel> laps;
+  final LapAnalysisModel? comparisonLap;
+  final String? selectedLapId;
+  final LapTimesResultMode resultMode;
+  final ValueChanged<LapAnalysisModel>? onSelectLap;
   final int minLapTimeMs;
 
   const LapTimesSplitsTable({
     super.key,
     required this.laps,
+    this.comparisonLap,
+    this.selectedLapId,
+    this.resultMode = LapTimesResultMode.absolute,
+    this.onSelectLap,
     this.minLapTimeMs = 0,
   });
 
@@ -20,7 +29,8 @@ class LapTimesSplitsTable extends StatelessWidget {
 
     final sorted = List<LapAnalysisModel>.from(laps)
       ..sort((a, b) => b.number.compareTo(a.number));
-    final reference = selectReferenceLap(sorted, minLapTimeMs: minLapTimeMs);
+    final reference =
+        comparisonLap ?? selectReferenceLap(sorted, minLapTimeMs: minLapTimeMs);
     final maxSplitCount = maxListLength(
         sorted.map((lap) => lap.splitsMs).toList(growable: false));
     final scheme = Theme.of(context).colorScheme;
@@ -38,10 +48,27 @@ class LapTimesSplitsTable extends StatelessWidget {
           rows: [
             for (final lap in sorted)
               DataRow(
+                onSelectChanged:
+                    onSelectLap == null ? null : (_) => onSelectLap!(lap),
                 color: WidgetStatePropertyAll(
-                  isLapValid(lap, minLapTimeMs: minLapTimeMs)
-                      ? Colors.transparent
-                      : scheme.error.withValues(alpha: 0.08),
+                  () {
+                    final isValid = isLapValid(lap, minLapTimeMs: minLapTimeMs);
+                    final isComparison =
+                        reference != null && reference.id == lap.id;
+                    final isSelected =
+                        selectedLapId != null && selectedLapId == lap.id;
+                    Color color = Colors.transparent;
+                    if (!isValid) {
+                      color = scheme.error.withValues(alpha: 0.08);
+                    }
+                    if (isComparison) {
+                      color = Colors.blue.withValues(alpha: 0.10);
+                    }
+                    if (isSelected) {
+                      color = scheme.primaryContainer.withValues(alpha: 0.16);
+                    }
+                    return color;
+                  }(),
                 ),
                 cells: [
                   DataCell(
@@ -55,16 +82,37 @@ class LapTimesSplitsTable extends StatelessWidget {
                       ),
                     ),
                   ),
-                  DataCell(Text(formatDurationMs(lap.totalLapTimeMs))),
+                  DataCell(
+                    Text(
+                      resultMode == LapTimesResultMode.absolute
+                          ? formatDurationMs(lap.totalLapTimeMs)
+                          : formatDeltaDurationMs(reference == null
+                              ? null
+                              : lap.totalLapTimeMs - reference.totalLapTimeMs),
+                    ),
+                  ),
                   for (int i = 0; i < maxSplitCount; i++)
                     DataCell(
                       Text(
-                        i < lap.splitsMs.length
-                            ? formatDurationMs(lap.splitsMs[i])
-                            : '-',
+                        () {
+                          final current =
+                              i < lap.splitsMs.length ? lap.splitsMs[i] : null;
+                          if (resultMode == LapTimesResultMode.absolute) {
+                            return formatDurationMs(current);
+                          }
+                          final ref =
+                              reference != null && i < reference.splitsMs.length
+                                  ? reference.splitsMs[i]
+                                  : null;
+                          return formatDeltaDurationMs(
+                            current != null && ref != null
+                                ? current - ref
+                                : null,
+                          );
+                        }(),
                         style: TextStyle(
-                          color: _splitDeltaColor(
-                            scheme: scheme,
+                          color: durationDeltaColor(
+                            scheme,
                             currentValue: i < lap.splitsMs.length
                                 ? lap.splitsMs[i]
                                 : null,
@@ -82,22 +130,5 @@ class LapTimesSplitsTable extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  Color _splitDeltaColor({
-    required ColorScheme scheme,
-    required int? currentValue,
-    required int? referenceValue,
-  }) {
-    if (currentValue == null || referenceValue == null) {
-      return scheme.onSurface;
-    }
-    if (currentValue <= 0 || referenceValue <= 0) {
-      return scheme.onSurfaceVariant;
-    }
-    if (currentValue <= referenceValue) {
-      return Colors.green.shade400;
-    }
-    return Colors.red.shade400;
   }
 }

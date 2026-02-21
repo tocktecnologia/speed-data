@@ -4,16 +4,25 @@ import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/lap_analysis_model.dart';
 import 'package:speed_data/features/models/session_analysis_summary_model.dart';
 import 'package:speed_data/features/screens/pilot/widgets/lap_times_formatters.dart';
+import 'package:speed_data/features/screens/pilot/widgets/lap_times_types.dart';
 
 class LapTimesSectorsTable extends StatelessWidget {
   final List<LapAnalysisModel> laps;
   final SessionAnalysisSummaryModel? summary;
+  final LapAnalysisModel? comparisonLap;
+  final String? selectedLapId;
+  final LapTimesResultMode resultMode;
+  final ValueChanged<LapAnalysisModel>? onSelectLap;
   final int minLapTimeMs;
 
   const LapTimesSectorsTable({
     super.key,
     required this.laps,
     this.summary,
+    this.comparisonLap,
+    this.selectedLapId,
+    this.resultMode = LapTimesResultMode.absolute,
+    this.onSelectLap,
     this.minLapTimeMs = 0,
   });
 
@@ -25,7 +34,7 @@ class LapTimesSectorsTable extends StatelessWidget {
 
     final sortedLaps = List<LapAnalysisModel>.from(laps)
       ..sort((a, b) => b.number.compareTo(a.number));
-    final referenceLap =
+    final referenceLap = comparisonLap ??
         selectReferenceLap(sortedLaps, minLapTimeMs: minLapTimeMs);
     final optimalSectors = deriveOptimalSectors(
       sortedLaps,
@@ -74,13 +83,38 @@ class LapTimesSectorsTable extends StatelessWidget {
                     cells: [
                       const DataCell(Text('OPT',
                           style: TextStyle(fontWeight: FontWeight.bold))),
-                      DataCell(Text(formatDurationMs(optimalTotal))),
+                      DataCell(
+                        Text(
+                          resultMode == LapTimesResultMode.absolute
+                              ? formatDurationMs(optimalTotal)
+                              : formatDeltaDurationMs(
+                                  referenceLap == null
+                                      ? null
+                                      : (optimalTotal -
+                                          referenceLap.totalLapTimeMs),
+                                ),
+                        ),
+                      ),
                       for (int i = 0; i < sectorCount; i++)
                         DataCell(
                           Text(
-                            i < optimalSectors.length
-                                ? formatDurationMs(optimalSectors[i])
-                                : '-',
+                            () {
+                              final value = i < optimalSectors.length
+                                  ? optimalSectors[i]
+                                  : null;
+                              if (resultMode == LapTimesResultMode.absolute) {
+                                return formatDurationMs(value);
+                              }
+                              final refValue = referenceLap != null &&
+                                      i < referenceLap.sectorsMs.length
+                                  ? referenceLap.sectorsMs[i]
+                                  : null;
+                              return formatDeltaDurationMs(
+                                value != null && refValue != null
+                                    ? value - refValue
+                                    : null,
+                              );
+                            }(),
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                         ),
@@ -110,37 +144,62 @@ class LapTimesSectorsTable extends StatelessWidget {
   }) {
     final scheme = Theme.of(context).colorScheme;
     final lapIsValid = isLapValid(lap, minLapTimeMs: minLapTimeMs);
-    final rowColor = lapIsValid
-        ? Colors.transparent
-        : Theme.of(context).colorScheme.error.withValues(alpha: 0.08);
+    final isComparison = referenceLap != null && referenceLap.id == lap.id;
+    final isSelected = selectedLapId != null && selectedLapId == lap.id;
+    Color rowColor = Colors.transparent;
+    if (!lapIsValid) {
+      rowColor = Theme.of(context).colorScheme.error.withValues(alpha: 0.08);
+    }
+    if (isComparison) {
+      rowColor = Colors.blue.withValues(alpha: 0.10);
+    }
+    if (isSelected) {
+      rowColor = scheme.primaryContainer.withValues(alpha: 0.16);
+    }
 
     return DataRow(
+      onSelectChanged: onSelectLap == null ? null : (_) => onSelectLap!(lap),
       color: WidgetStatePropertyAll(rowColor),
       cells: [
         DataCell(
           Text(
             'L${lap.number}${lapIsValid ? '' : ' (INV)'}',
             style: TextStyle(
-              fontWeight: FontWeight.w600,
+              fontWeight: isComparison ? FontWeight.w700 : FontWeight.w600,
               color: lapIsValid ? null : scheme.error,
             ),
           ),
         ),
         DataCell(
           Text(
-            formatDurationMs(lap.totalLapTimeMs),
+            resultMode == LapTimesResultMode.absolute
+                ? formatDurationMs(lap.totalLapTimeMs)
+                : formatDeltaDurationMs(referenceLap == null
+                    ? null
+                    : lap.totalLapTimeMs - referenceLap.totalLapTimeMs),
             style: TextStyle(color: lapIsValid ? null : scheme.error),
           ),
         ),
         for (int i = 0; i < sectorCount; i++)
           DataCell(
             Text(
-              i < lap.sectorsMs.length
-                  ? formatDurationMs(lap.sectorsMs[i])
-                  : '-',
+              () {
+                final value =
+                    i < lap.sectorsMs.length ? lap.sectorsMs[i] : null;
+                if (resultMode == LapTimesResultMode.absolute) {
+                  return formatDurationMs(value);
+                }
+                final refValue =
+                    referenceLap != null && i < referenceLap.sectorsMs.length
+                        ? referenceLap.sectorsMs[i]
+                        : null;
+                return formatDeltaDurationMs(
+                  value != null && refValue != null ? value - refValue : null,
+                );
+              }(),
               style: TextStyle(
-                color: _sectorDeltaColor(
-                  scheme: scheme,
+                color: durationDeltaColor(
+                  scheme,
                   currentValue:
                       i < lap.sectorsMs.length ? lap.sectorsMs[i] : null,
                   referenceValue:
@@ -153,22 +212,5 @@ class LapTimesSectorsTable extends StatelessWidget {
           ),
       ],
     );
-  }
-
-  Color? _sectorDeltaColor({
-    required ColorScheme scheme,
-    required int? currentValue,
-    required int? referenceValue,
-  }) {
-    if (currentValue == null || referenceValue == null) {
-      return scheme.onSurface;
-    }
-    if (currentValue <= 0 || referenceValue <= 0) {
-      return scheme.onSurfaceVariant;
-    }
-    if (currentValue <= referenceValue) {
-      return Colors.green.shade400;
-    }
-    return Colors.red.shade400;
   }
 }

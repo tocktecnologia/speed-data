@@ -1097,6 +1097,55 @@ class FirestoreService {
     });
   }
 
+  Future<void> setSessionLapValidity({
+    required String raceId,
+    required String uid,
+    required String sessionId,
+    required String lapId,
+    required bool valid,
+    String? eventId,
+  }) async {
+    final payload = <String, dynamic>{
+      'valid': valid,
+      'invalid_reasons': valid ? <String>[] : <String>['manual_invalid'],
+      'manual_override': true,
+      'manual_override_at': FieldValue.serverTimestamp(),
+      'manual_override_source': 'pilot_lap_times',
+    };
+
+    final writes = <Future<void>>[];
+
+    final eventParticipant =
+        _eventSessionParticipantRef(eventId, sessionId, uid);
+    if (eventParticipant != null) {
+      writes.add(
+        eventParticipant
+            .collection('laps')
+            .doc(lapId)
+            .set(payload, SetOptions(merge: true)),
+      );
+    }
+
+    writes.add(
+      _raceParticipantRef(raceId, uid)
+          .collection('sessions')
+          .doc(sessionId)
+          .collection('laps')
+          .doc(lapId)
+          .set(payload, SetOptions(merge: true)),
+    );
+
+    // Legacy compatibility path.
+    writes.add(
+      _raceParticipantRef(raceId, uid)
+          .collection('laps')
+          .doc(lapId)
+          .set(payload, SetOptions(merge: true)),
+    );
+
+    await Future.wait(writes);
+  }
+
   Stream<QuerySnapshot> getHistorySessions(String raceId, String uid) {
     return _db
         .collection('races')

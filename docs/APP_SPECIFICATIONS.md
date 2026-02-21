@@ -368,6 +368,9 @@ Observacao (Fases 1 e 2 local timing/offline-first):
 - **Proxima sessao**: mostra horario previsto de inicio (HH:mm).
 - **Practice tracks bloqueadas**: quando ha sessao ativa para o usuario, a lista de pistas de treino fica desabilitada e com aviso explicativo.
 - **Eventos (area nova)**: tela de eventos para piloto com "My events" e "Other events" e cronograma por evento em ordem cronologica.
+- **Lap Times por sessao (eventos)**: no fluxo `Eventos -> Sessao`, o app abre Lap Times direto na sessao selecionada.
+- **Sessao fixa no fluxo de eventos**: nesse contexto o seletor de sessao fica travado e mostra apenas o nome da sessao (sem opcao `Legacy (no session)`).
+- **Layout mobile compacto em Lap Times**: filtros ocupam menos espaco e ficam recolhiveis por padrao para priorizar a tabela de voltas.
 
 ### Piloto - Live Timer
 - **Tres modos**: Simple (Best/Previous/Current), Classic (Current + Track Chart), Gauge (Gauge + Current).
@@ -424,6 +427,7 @@ Observacao (Fases 1 e 2 local timing/offline-first):
 - **Track Chart admin**: posicoes atualizam direto (sem interpolacao) para evitar bolinha fora da pista.
 - **Warmup (bandeira)**: nova bandeira roxa no controle de corrida; ao acionar, inicia a sessao se estiver agendada e registra `flag_warmup` nas passagens.
 - **STOP vs FINISH**: FINISH nao encerra sessao; STOP encerra sessao e interrompe coleta/envio de GPS dos competidores.
+- **Lap Times (admin)**: no Race Control, o admin pode abrir Lap Times da sessao selecionada e escolher qualquer participante para visualizar os dados da sessao.
 
 ---
 
@@ -545,14 +549,26 @@ Observacao (Fases 1 e 2 local timing/offline-first):
 - Dataset `telemetry.raw_points` recebe cada ponto com `raceId`, `uid`, `sessionId` e campos brutos de GPS (lat, lng, speed, heading, altitude, timestamp).
 - Futuras tabelas podem consumir `laps` e `crossings` para analises agregadas sem impactar o fluxo online.
 
-### Lap Times (UI do piloto)
-- Tela: `lib/features/screens/pilot/lap_times_screen.dart`
+### Lap Times (UI piloto/admin)
+- Tela base: `lib/features/screens/pilot/lap_times_screen.dart`
+- Acesso (piloto):
+  - Dashboard: `Stats -> Lap Times (dados por sessao)`.
+  - Eventos: `Eventos -> selecionar evento -> selecionar sessao` (abre direto com sessao fixa).
+- Acesso (admin):
+  - Race Control: acao `Lap Times (All participants)` abre lista de participantes da sessao.
+  - Tela de apoio: `lib/features/screens/admin/admin_session_lap_times_screen.dart`.
 - Modos implementados:
   - `Sectors`: tabela por volta com linha `OPT`, comparacao por cor contra volta de referencia (melhor valida)
   - `Splits`: tabela por checkpoint acumulado (`splits_ms`) com comparacao por cor
   - `Trap Speeds`: tabela de velocidades por trap (`trap_speeds_mps`) com comparacao por referencia
   - `High/Low`: tabela com `low/high/avg/range` por volta usando `speed_stats` (ou fallback para `trap_speeds_mps`)
   - `Information`: painel consolidado com `best_lap`, `optimal_lap`, contagens de voltas validas/total e snapshot de crossings
+- Contexto de sessao:
+  - Em contexto de evento/sessao a tela bloqueia fallback legado (sem `Legacy`) para evitar mistura de fontes.
+  - Sessao pode ser travada por parametro (`lockSessionSelection`) e exibida como label fixa.
+- UX mobile:
+  - Em telas estreitas, os filtros ficam em painel recolhivel (`Filters`) por padrao.
+  - Header e controles usam paddings compactos para ampliar a area util da tabela.
 - Regra de validade na UI: referencia e resumo derivado usam somente voltas validas (`valid=true` e `total_lap_time_ms > 0`).
 
 ### Local Timing (Fase 1 + Fase 2 offline-first)

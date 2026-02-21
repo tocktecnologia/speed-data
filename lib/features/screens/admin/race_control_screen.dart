@@ -9,11 +9,10 @@ import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/screens/admin/admin_map_view.dart';
 import 'package:speed_data/features/screens/admin/widgets/passings_panel.dart';
 import 'package:speed_data/features/screens/admin/widgets/leaderboard_panel.dart';
-import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
+import 'package:speed_data/features/screens/admin/admin_session_lap_times_screen.dart';
 import 'package:speed_data/features/screens/admin/create_event_screen.dart';
 import 'package:speed_data/features/screens/admin/event_registration_screen.dart';
 import 'package:speed_data/features/screens/admin/session_settings_screen.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/theme/speed_data_theme.dart';
 import 'package:flutter/services.dart';
 
@@ -495,6 +494,26 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                     ],
                   ),
                   actions: [
+                    IconButton(
+                      tooltip: displaySession == null
+                          ? 'Select a session to open Lap Times'
+                          : 'Lap Times (All participants)',
+                      onPressed: displaySession == null
+                          ? null
+                          : () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) =>
+                                      AdminSessionLapTimesScreen(
+                                    event: eventData,
+                                    session: displaySession!,
+                                  ),
+                                ),
+                              );
+                            },
+                      icon: const Icon(Icons.timer),
+                    ),
                     PopupMenuButton<String>(
                       icon: const Icon(Icons.settings),
                       tooltip: 'Settings',

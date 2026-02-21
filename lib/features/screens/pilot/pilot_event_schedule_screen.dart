@@ -1,6 +1,8 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
+import 'package:speed_data/features/screens/pilot/lap_times_screen.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 
 class PilotEventScheduleScreen extends StatelessWidget {
@@ -8,10 +10,10 @@ class PilotEventScheduleScreen extends StatelessWidget {
   final String eventName;
 
   const PilotEventScheduleScreen({
-    Key? key,
     required this.eventId,
     required this.eventName,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -57,14 +59,14 @@ class PilotEventScheduleScreen extends StatelessWidget {
                   session.name.isNotEmpty ? session.name : session.type.name;
 
               return ListTile(
-                title: Text('$timeStr • $title',
+                title: Text('$timeStr - $title',
                     style: const TextStyle(fontWeight: FontWeight.bold)),
                 subtitle: Text(groupName),
                 trailing: Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.15),
+                    color: statusColor.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: statusColor),
                   ),
@@ -74,6 +76,32 @@ class PilotEventScheduleScreen extends StatelessWidget {
                         color: statusColor, fontWeight: FontWeight.bold),
                   ),
                 ),
+                onTap: () {
+                  final user = FirebaseAuth.instance.currentUser;
+                  if (user == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Usuario nao autenticado.')),
+                    );
+                    return;
+                  }
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => LapTimesScreen(
+                        raceId: event.trackId,
+                        userId: user.uid,
+                        raceName: event.name,
+                        eventId: event.id,
+                        initialSessionId: session.id,
+                        fixedSessionLabel: title,
+                        lockSessionSelection: true,
+                        sessionIdsStreamOverride:
+                            Stream<List<String>>.value(<String>[session.id]),
+                      ),
+                    ),
+                  );
+                },
               );
             },
           );

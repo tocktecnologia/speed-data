@@ -41,8 +41,8 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   bool _autoSimulationMode = false;
   bool _simulationConfigLoaded = false;
   bool _simulationPausedByUser = false;
-  bool _localTimingMode = false;
-  bool _localTimingConfigLoaded = false;
+  bool _localTimingMode = true;
+  bool _localTimingConfigLoaded = true;
   GoogleMapController? _mapController;
   final FirestoreService _firestoreService = FirestoreService();
   late TelemetryService _telemetryService;
@@ -667,39 +667,21 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   }
 
   Future<void> _loadLocalTimingModeConfig() async {
-    final email = FirebaseAuth.instance.currentUser?.email;
-    _debugLog('_loadLocalTimingModeConfig: start, email=${email ?? 'null'}');
-    Map<String, dynamic> config;
-    try {
-      config =
-          await _firestoreService.getLocalTimingRuntimeConfig(email: email);
-      _debugLog('_loadLocalTimingModeConfig: raw config=$config');
-    } catch (e, st) {
-      _debugLog('_loadLocalTimingModeConfig: failed to load config: $e\n$st');
-      if (!mounted) return;
-      setState(() {
-        _localTimingMode = false;
-        _localTimingConfigLoaded = true;
-      });
-      _telemetryService.setLocalTimingEnabled(false);
-      return;
-    }
+    _debugLog('_loadLocalTimingModeConfig: local timing forced enabled');
     if (!mounted) return;
 
-    final enabled = config['enabled'] == true;
     setState(() {
-      _localTimingMode = enabled;
+      _localTimingMode = true;
       _localTimingConfigLoaded = true;
     });
-    _telemetryService.setLocalTimingEnabled(enabled);
+    _telemetryService.setLocalTimingEnabled(true);
 
     final minLapSeconds = _activeSession?.minLapTimeSeconds ?? 0;
     _telemetryService.setLocalTimingMinLapSeconds(minLapSeconds);
 
     _debugLog(
       '_loadLocalTimingModeConfig: resolved localTimingMode=$_localTimingMode, '
-      'localTimingConfigLoaded=$_localTimingConfigLoaded, '
-      'source=${config['source']}',
+      'localTimingConfigLoaded=$_localTimingConfigLoaded',
     );
   }
 

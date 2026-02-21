@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
@@ -5,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
+import 'package:speed_data/features/services/local_database_service.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 class TelemetryService extends ChangeNotifier {
@@ -13,6 +15,7 @@ class TelemetryService extends ChangeNotifier {
   factory TelemetryService() => instance;
 
   final FirestoreService _firestoreService = FirestoreService();
+  final LocalDatabaseService _localDatabaseService = LocalDatabaseService();
 
   StreamSubscription<Position>? _positionStreamSubscription;
   Timer? _syncTimer;
@@ -20,6 +23,9 @@ class TelemetryService extends ChangeNotifier {
   static const double _checkpointDistanceToleranceM = 40.0;
   static const int _dedupWindowMs = 400;
   static const double _defaultTrapWidthM = 50.0;
+  static const int _defaultMinLapSeconds = 15;
+  static const double _startFinishRearmDistanceM = 60.0;
+  static const int _startFinishRearmMinMs = 1500;
 
   bool _enableSendDataToCloud =
       false; // Default to false, wait for active session
@@ -40,10 +46,10 @@ class TelemetryService extends ChangeNotifier {
     }
   }
 
-  bool _localTimingEnabled = false;
+  bool _localTimingEnabled = true;
   bool get localTimingEnabled => _localTimingEnabled;
 
-  int _localTimingMinLapMs = 0;
+  int _localTimingMinLapMs = _defaultMinLapSeconds * 1000;
 
   List<_LocalTimingLine> _localTimingLines = const [];
   _LocalTimingPoint? _localTimingPreviousPoint;
@@ -53,6 +59,8 @@ class TelemetryService extends ChangeNotifier {
   int? _localLapStartMs;
   int _localLastCheckpointIndex = -1;
   int? _localLastCrossedAtMs;
+  bool _awaitingStartFinishRearm = false;
+  int? _lastStartFinishCrossedAtMs;
   Map<int, int> _localCheckpointTimes = {};
   Map<int, double> _localCheckpointSpeeds = {};
   final List<int> _localCompletedLapTimesMs = [];
@@ -118,12 +126,13 @@ class TelemetryService extends ChangeNotifier {
   List<Map<String, dynamic>>? _checkpoints;
   List<Map<String, dynamic>>? _timelines;
 
-  // Buffer for telemetry points (volatile memory)
+  // Fallback buffer used only if local persistence fails.
   final List<Map<String, dynamic>> _buffer = [];
 
   // Configuration
   static const int _syncIntervalSeconds = 5;
   static const int _samplingIntervalMs = 50;
+  static const int _syncBatchSize = 300;
   // Frequency Tracking
   double _currentFrequency = 0.0;
   double get currentFrequency => _currentFrequency;
@@ -147,7 +156,26 @@ class TelemetryService extends ChangeNotifier {
   }
 
   void setLocalTimingMinLapSeconds(int seconds) {
-    _localTimingMinLapMs = math.max(0, seconds) * 1000;
+    final effectiveSeconds = seconds > 0 ? seconds : _defaultMinLapSeconds;
+    final nextMinLapMs = effectiveSeconds * 1000;
+    if (_localTimingMinLapMs == nextMinLapMs) return;
+    _localTimingMinLapMs = nextMinLapMs;
+    _recomputeLocalLapStats();
+    notifyListeners();
+  }
+
+  void _recomputeLocalLapStats() {
+    final validLapTimes = _localCompletedLapTimesMs
+        .where((lapTimeMs) => lapTimeMs >= _localTimingMinLapMs)
+        .toList(growable: false);
+    if (validLapTimes.isEmpty) {
+      _localBestLapMs = null;
+      _localPreviousLapMs = null;
+      return;
+    }
+
+    _localBestLapMs = validLapTimes.reduce((a, b) => a < b ? a : b);
+    _localPreviousLapMs = validLapTimes.last;
   }
 
   void _resetLocalTimingState({
@@ -158,6 +186,8 @@ class TelemetryService extends ChangeNotifier {
     _localLapStartMs = null;
     _localLastCheckpointIndex = -1;
     _localLastCrossedAtMs = null;
+    _awaitingStartFinishRearm = false;
+    _lastStartFinishCrossedAtMs = null;
     _localCheckpointTimes = {};
     _localCheckpointSpeeds = {};
     if (clearHistory) {
@@ -452,6 +482,168 @@ class TelemetryService extends ChangeNotifier {
     );
   }
 
+  String _closureIdFromPayload(Map<String, dynamic> payload) {
+    return '${payload['closure_id'] ?? ''}'.trim();
+  }
+
+  String _closureSessionIdFromPayload(Map<String, dynamic> payload) {
+    return '${payload['session_id'] ?? ''}'.trim();
+  }
+
+  String? _closureEventIdFromPayload(Map<String, dynamic> payload) {
+    final eventId = '${payload['event_id'] ?? ''}'.trim();
+    return eventId.isEmpty ? null : eventId;
+  }
+
+  int _closureSortTimestampMs(Map<String, dynamic> payload) {
+    final raw = payload['sf_crossed_at_ms'] ?? payload['captured_at_ms'];
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw) ?? 0;
+    return 0;
+  }
+
+  void _addPendingLocalLapClosure(Map<String, dynamic> payload) {
+    final closureId = _closureIdFromPayload(payload);
+    if (closureId.isEmpty) return;
+    final alreadyExists = _pendingLocalLapClosures
+        .any((entry) => _closureIdFromPayload(entry) == closureId);
+    if (alreadyExists) return;
+    _pendingLocalLapClosures.add(payload);
+  }
+
+  void _removePendingLocalLapClosuresByIds(Set<String> closureIds) {
+    if (closureIds.isEmpty) return;
+    _pendingLocalLapClosures.removeWhere(
+      (payload) => closureIds.contains(_closureIdFromPayload(payload)),
+    );
+  }
+
+  Future<void> _persistLapClosureLocally(
+      Map<String, dynamic> closurePayload) async {
+    final closureId = _closureIdFromPayload(closurePayload);
+    if (closureId.isEmpty) {
+      return;
+    }
+
+    try {
+      await _localDatabaseService.insertLapClosure({
+        'raceId': closurePayload['race_id'],
+        'eventId': closurePayload['event_id'],
+        'uid': closurePayload['participant_uid'],
+        'session': closurePayload['session_id'],
+        'closureId': closureId,
+        'payloadJson': jsonEncode(closurePayload),
+        'sfCrossedAtMs': _closureSortTimestampMs(closurePayload),
+        'capturedAtMs': closurePayload['captured_at_ms'],
+      });
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error persisting local lap closure locally: $e');
+      }
+      _addPendingLocalLapClosure(closurePayload);
+    } finally {
+      _triggerAsyncLapClosureSync();
+    }
+  }
+
+  Future<List<_QueuedLapClosure>> _collectQueuedLapClosures({
+    required String raceId,
+    required String uid,
+    int limit = 500,
+  }) async {
+    final resultById = <String, _QueuedLapClosure>{};
+
+    final localRows = await _localDatabaseService.getUnsyncedLapClosures(
+      raceId: raceId,
+      uid: uid,
+      limit: limit,
+    );
+    for (final row in localRows) {
+      final payloadRaw = row['payloadJson'];
+      if (payloadRaw is! String || payloadRaw.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(payloadRaw);
+        if (decoded is! Map) continue;
+        final payload = Map<String, dynamic>.from(decoded);
+        final closureIdFromRow = '${row['closureId'] ?? ''}'.trim();
+        if (_closureIdFromPayload(payload).isEmpty &&
+            closureIdFromRow.isNotEmpty) {
+          payload['closure_id'] = closureIdFromRow;
+        }
+        final sessionFromRow = '${row['session'] ?? ''}'.trim();
+        if (_closureSessionIdFromPayload(payload).isEmpty &&
+            sessionFromRow.isNotEmpty) {
+          payload['session_id'] = sessionFromRow;
+        }
+
+        final closureId = _closureIdFromPayload(payload);
+        final sessionId = _closureSessionIdFromPayload(payload);
+        if (closureId.isEmpty || sessionId.isEmpty) continue;
+
+        resultById[closureId] = _QueuedLapClosure(
+          localId: row['id'] is int ? row['id'] as int : null,
+          closureId: closureId,
+          sessionId: sessionId,
+          eventId: _closureEventIdFromPayload(payload),
+          sortTimestampMs: _closureSortTimestampMs(payload),
+          payload: payload,
+        );
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error decoding local lap closure payload: $e');
+        }
+      }
+    }
+
+    for (final pending in _pendingLocalLapClosures) {
+      final closureId = _closureIdFromPayload(pending);
+      final sessionId = _closureSessionIdFromPayload(pending);
+      if (closureId.isEmpty || sessionId.isEmpty) continue;
+      resultById.putIfAbsent(
+        closureId,
+        () => _QueuedLapClosure(
+          localId: null,
+          closureId: closureId,
+          sessionId: sessionId,
+          eventId: _closureEventIdFromPayload(pending),
+          sortTimestampMs: _closureSortTimestampMs(pending),
+          payload: pending,
+        ),
+      );
+    }
+
+    final merged = resultById.values.toList(growable: false)
+      ..sort((a, b) {
+        if (a.sortTimestampMs != b.sortTimestampMs) {
+          return a.sortTimestampMs.compareTo(b.sortTimestampMs);
+        }
+        return a.closureId.compareTo(b.closureId);
+      });
+    return merged;
+  }
+
+  Future<void> _ackLapClosuresAsSynced(List<_QueuedLapClosure> closures) async {
+    if (closures.isEmpty) return;
+    final localIds = closures
+        .map((closure) => closure.localId)
+        .whereType<int>()
+        .toList(growable: false);
+    final closureIds = closures
+        .map((closure) => closure.closureId)
+        .where((id) => id.isNotEmpty)
+        .toSet();
+
+    if (localIds.isNotEmpty) {
+      await _localDatabaseService.markLapClosuresAsSynced(localIds);
+    }
+    if (closureIds.isNotEmpty) {
+      await _localDatabaseService.markLapClosuresAsSyncedByClosureIds(
+          closureIds.toList(growable: false));
+      _removePendingLocalLapClosuresByIds(closureIds);
+    }
+  }
+
   bool _capturePostSfPointIfNeeded(_LocalTimingPoint currentPoint) {
     final pending = _pendingLapClosureAfterSf;
     if (pending == null) return false;
@@ -461,7 +653,7 @@ class TelemetryService extends ChangeNotifier {
     final closureId =
         '${_currentSessionId ?? 'no_session'}_${pending.closedLapNumber}_${pending.sfCrossedAtMs}_${currentPoint.timestamp}';
 
-    _pendingLocalLapClosures.add({
+    final closurePayload = <String, dynamic>{
       'closure_id': closureId,
       'race_id': _currentRaceId,
       'event_id': _currentEventId,
@@ -497,7 +689,8 @@ class TelemetryService extends ChangeNotifier {
         'timestamp': currentPoint.timestamp,
         'source': pointSource,
       },
-    });
+    };
+    unawaited(_persistLapClosureLocally(closurePayload));
 
     _localCurrentLapNumber = pending.nextLapNumber;
     _localLapStartMs = currentPoint.timestamp;
@@ -507,12 +700,38 @@ class TelemetryService extends ChangeNotifier {
     _localCheckpointSpeeds = {0: currentPoint.speed};
 
     _pendingLapClosureAfterSf = null;
-    _triggerAsyncLapClosureSync();
     return true;
   }
 
+  void _updateStartFinishRearm(_LocalTimingPoint currentPoint) {
+    if (!_awaitingStartFinishRearm) return;
+    if (_localTimingLines.isEmpty ||
+        _localFinishCheckpointIndex < 0 ||
+        _localFinishCheckpointIndex >= _localTimingLines.length) {
+      _awaitingStartFinishRearm = false;
+      _lastStartFinishCrossedAtMs = null;
+      return;
+    }
+
+    final finishCenter = _localTimingLines[_localFinishCheckpointIndex].center;
+    final distanceToFinishM = Geolocator.distanceBetween(
+      finishCenter.latitude,
+      finishCenter.longitude,
+      currentPoint.lat,
+      currentPoint.lng,
+    );
+    final timeSinceLastFinishMs = _lastStartFinishCrossedAtMs == null
+        ? _startFinishRearmMinMs
+        : (currentPoint.timestamp - _lastStartFinishCrossedAtMs!);
+
+    if (distanceToFinishM >= _startFinishRearmDistanceM &&
+        timeSinceLastFinishMs >= _startFinishRearmMinMs) {
+      _awaitingStartFinishRearm = false;
+      _lastStartFinishCrossedAtMs = null;
+    }
+  }
+
   void _triggerAsyncLapClosureSync() {
-    if (_pendingLocalLapClosures.isEmpty) return;
     if (_isSimulating) {
       if (_simulationSyncInProgress) return;
       unawaited(_syncSimulationData());
@@ -548,6 +767,8 @@ class TelemetryService extends ChangeNotifier {
       return;
     }
 
+    _updateStartFinishRearm(currentPoint);
+
     final candidates = <_LocalTimingCandidate>[];
 
     for (final line in _localTimingLines) {
@@ -565,6 +786,10 @@ class TelemetryService extends ChangeNotifier {
         if (_localLapStartMs != null && rawCheckpointIndex == 0) {
           continue;
         }
+      }
+      if (rawCheckpointIndex == _localFinishCheckpointIndex &&
+          _awaitingStartFinishRearm) {
+        continue;
       }
 
       _LocalTimingPoint? crossing =
@@ -668,6 +893,10 @@ class TelemetryService extends ChangeNotifier {
     _localLastCrossedAtMs = crossing.timestamp;
     _localCheckpointTimes[checkpointIndex] = crossing.timestamp;
     _localCheckpointSpeeds[checkpointIndex] = crossing.speed;
+    if (rawCheckpointIndex == _localFinishCheckpointIndex) {
+      _awaitingStartFinishRearm = true;
+      _lastStartFinishCrossedAtMs = crossing.timestamp;
+    }
 
     if (checkpointIndex == 0 && _localLapStartMs == null) {
       _localLapStartMs = crossing.timestamp;
@@ -680,14 +909,9 @@ class TelemetryService extends ChangeNotifier {
       final lapEnd = crossing.timestamp;
       final lapTime = lapEnd - _localLapStartMs!;
       final lapValid = lapTime > 0 && lapTime >= _localTimingMinLapMs;
-      if (lapTime > 0) {
-        _localPreviousLapMs = lapTime;
-      }
       if (lapValid) {
         _localCompletedLapTimesMs.add(lapTime);
-        if (_localBestLapMs == null || lapTime < _localBestLapMs!) {
-          _localBestLapMs = lapTime;
-        }
+        _recomputeLocalLapStats();
       }
 
       final nextLap = closedLapNumber + 1;
@@ -844,8 +1068,6 @@ class TelemetryService extends ChangeNotifier {
     _currentEventId = eventId;
     _currentUserId = userId;
     _isRecording = true;
-    _buffer.clear(); // Start fresh
-    _buffer.clear();
     _resetLocalTimingState(clearHistory: true, clearPrevPoint: true);
     notifyListeners();
 
@@ -884,13 +1106,13 @@ class TelemetryService extends ChangeNotifier {
             .listen((Position position) {
       _currentPosition = position;
       notifyListeners();
-      _handleLocationUpdate(position);
+      unawaited(_handleLocationUpdate(position));
     });
 
     // Start Sync Timer
     _syncTimer =
         Timer.periodic(const Duration(seconds: _syncIntervalSeconds), (timer) {
-      _syncData();
+      unawaited(_syncData());
     });
 
     // Start Frequency Timer
@@ -921,7 +1143,6 @@ class TelemetryService extends ChangeNotifier {
     _currentEventId = null;
     _currentUserId = null;
     _currentSessionId = null;
-    _buffer.clear();
     _timelines = null;
   }
 
@@ -956,7 +1177,57 @@ class TelemetryService extends ChangeNotifier {
       ),
     );
 
-    _buffer.add(point);
+    await _persistPointLocally(point);
+  }
+
+  Future<void> _persistPointLocally(Map<String, dynamic> point) async {
+    try {
+      await _localDatabaseService.insertPoint({
+        'raceId': point['raceId'],
+        'eventId': point['eventId'],
+        'uid': point['uid'],
+        'session': point['session'],
+        'lat': point['lat'],
+        'lng': point['lng'],
+        'speed': point['speed'],
+        'heading': point['heading'],
+        'altitude': point['altitude'],
+        'timestamp': point['timestamp'],
+      });
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error persisting telemetry point locally: $e');
+      }
+      // Keep a volatile fallback so we do not lose data if local DB write fails.
+      _buffer.add(point);
+    }
+  }
+
+  Future<void> _flushFallbackBufferToLocalDb() async {
+    if (_buffer.isEmpty) return;
+    final pending = List<Map<String, dynamic>>.from(_buffer);
+    _buffer.clear();
+    for (final point in pending) {
+      await _persistPointLocally(point);
+    }
+  }
+
+  List<Map<String, dynamic>> _toTelemetryPayload(
+      List<Map<String, dynamic>> rows) {
+    return rows
+        .map((row) => <String, dynamic>{
+              'raceId': row['raceId'],
+              'eventId': row['eventId'],
+              'uid': row['uid'],
+              'session': row['session'],
+              'lat': row['lat'],
+              'lng': row['lng'],
+              'speed': row['speed'],
+              'heading': row['heading'],
+              'altitude': row['altitude'],
+              'timestamp': row['timestamp'],
+            })
+        .toList(growable: false);
   }
 
   void _simulateTick(double dt) {
@@ -1001,34 +1272,61 @@ class TelemetryService extends ChangeNotifier {
   Future<void> _syncSimulationData() async {
     if (_simulationSyncInProgress) return;
     if (_currentRaceId == null || _currentUserId == null) return;
-    if (_currentSessionId == null || _currentSessionId!.isEmpty) return;
-    if (_simulationBuffer.isEmpty && _pendingLocalLapClosures.isEmpty) return;
+    final currentSessionId = _currentSessionId;
+    if (currentSessionId == null || currentSessionId.isEmpty) return;
 
     _simulationSyncInProgress = true;
 
-    final batch = List<Map<String, dynamic>>.from(_simulationBuffer);
-    final lapClosuresBatch =
-        List<Map<String, dynamic>>.from(_pendingLocalLapClosures);
-    _simulationBuffer.clear();
-    _pendingLocalLapClosures.clear();
+    List<Map<String, dynamic>> batch = const [];
+    List<_QueuedLapClosure> selectedClosures = const [];
 
     try {
+      final queuedClosuresAll = await _collectQueuedLapClosures(
+        raceId: _currentRaceId!,
+        uid: _currentUserId!,
+        limit: _syncBatchSize * 3,
+      );
+
+      selectedClosures = queuedClosuresAll
+          .where((closure) => closure.sessionId == currentSessionId)
+          .take(_syncBatchSize)
+          .toList(growable: false);
+
+      if (_simulationBuffer.isEmpty && selectedClosures.isEmpty) {
+        return;
+      }
+
+      batch = List<Map<String, dynamic>>.from(_simulationBuffer);
+      _simulationBuffer.clear();
+      final lapClosuresBatch = selectedClosures
+          .map((closure) => closure.payload)
+          .toList(growable: false);
+      final batchEventId = batch.isNotEmpty
+          ? (batch.first['eventId'] as String?)
+          : (selectedClosures.isNotEmpty
+              ? selectedClosures.first.eventId
+              : _currentEventId);
+
       await _firestoreService.sendTelemetryBatch(
         _currentRaceId!,
         _currentUserId!,
         batch,
         _simulationCheckpoints,
-        _currentSessionId!,
-        eventId: _currentEventId,
+        currentSessionId,
+        eventId: batchEventId,
         timelines: _simulationTimelines,
         localLapClosures: lapClosuresBatch,
       );
+
+      await _ackLapClosuresAsSynced(selectedClosures);
     } catch (e) {
       if (batch.isNotEmpty) {
         _simulationBuffer.insertAll(0, batch);
       }
-      if (lapClosuresBatch.isNotEmpty) {
-        _pendingLocalLapClosures.insertAll(0, lapClosuresBatch);
+      for (final closure in selectedClosures) {
+        if (closure.localId == null) {
+          _addPendingLocalLapClosure(closure.payload);
+        }
       }
     } finally {
       _simulationSyncInProgress = false;
@@ -1071,57 +1369,145 @@ class TelemetryService extends ChangeNotifier {
   Future<void> _syncData() async {
     if (_syncInProgress) return;
     if (_currentRaceId == null || _currentUserId == null) return;
-    if (_buffer.isEmpty && _pendingLocalLapClosures.isEmpty) return;
 
     _syncInProgress = true;
-
-    // Snapshot buffer and clear main buffer to allow new writes
-    final batch = List<Map<String, dynamic>>.from(_buffer);
-    final lapClosuresBatch = _enableSendDataToCloud
-        ? List<Map<String, dynamic>>.from(_pendingLocalLapClosures)
-        : const <Map<String, dynamic>>[];
-    _buffer.clear();
-    if (_enableSendDataToCloud) {
-      _pendingLocalLapClosures.clear();
-    }
+    List<Map<String, dynamic>> batch = const [];
+    List<int> unsyncedIds = const [];
+    List<_QueuedLapClosure> selectedClosures = const [];
 
     try {
-      // 1. Send Batch to Cloud Function
-      if (_enableSendDataToCloud &&
-          (batch.isNotEmpty || lapClosuresBatch.isNotEmpty)) {
-        await _firestoreService.sendTelemetryBatch(
-          _currentRaceId!,
-          _currentUserId!,
-          batch,
-          _checkpoints,
-          _currentSessionId!,
-          eventId: _currentEventId,
-          timelines: _timelines,
-          localLapClosures: lapClosuresBatch,
-        );
+      await _flushFallbackBufferToLocalDb();
+
+      final unsyncedRowsAll = await _localDatabaseService.getUnsyncedPoints(
+        raceId: _currentRaceId!,
+        uid: _currentUserId!,
+        limit: _syncBatchSize * 3,
+      );
+      final queuedClosuresAll = await _collectQueuedLapClosures(
+        raceId: _currentRaceId!,
+        uid: _currentUserId!,
+        limit: _syncBatchSize * 3,
+      );
+
+      if (!_enableSendDataToCloud) {
+        _currentFrequency = 0.0;
+        return;
       }
 
+      final currentSessionId = _currentSessionId;
+      List<Map<String, dynamic>> selectedRows = [];
+
+      if (currentSessionId != null && currentSessionId.isNotEmpty) {
+        selectedRows = unsyncedRowsAll
+            .where((row) => '${row['session'] ?? ''}' == currentSessionId)
+            .take(_syncBatchSize)
+            .toList(growable: false);
+      }
+
+      if (selectedRows.isEmpty && unsyncedRowsAll.isNotEmpty) {
+        final fallbackSessionId =
+            '${unsyncedRowsAll.first['session'] ?? ''}'.trim();
+        selectedRows = unsyncedRowsAll
+            .where((row) =>
+                fallbackSessionId.isEmpty ||
+                '${row['session'] ?? ''}' == fallbackSessionId)
+            .take(_syncBatchSize)
+            .toList(growable: false);
+      }
+
+      unsyncedIds =
+          selectedRows.map((row) => row['id']).whereType<int>().toList();
+      batch = _toTelemetryPayload(selectedRows);
+
+      String targetSessionId =
+          batch.isNotEmpty ? '${batch.first['session'] ?? ''}'.trim() : '';
+      if (targetSessionId.isEmpty &&
+          currentSessionId != null &&
+          currentSessionId.isNotEmpty &&
+          queuedClosuresAll
+              .any((closure) => closure.sessionId == currentSessionId)) {
+        targetSessionId = currentSessionId;
+      }
+      if (targetSessionId.isEmpty && queuedClosuresAll.isNotEmpty) {
+        targetSessionId = queuedClosuresAll.first.sessionId;
+      }
+
+      if (targetSessionId.isEmpty) {
+        _currentFrequency = 0.0;
+        return;
+      }
+
+      selectedClosures = queuedClosuresAll
+          .where((closure) => closure.sessionId == targetSessionId)
+          .take(_syncBatchSize)
+          .toList(growable: false);
+      final lapClosuresBatch = selectedClosures
+          .map((closure) => closure.payload)
+          .toList(growable: false);
+
+      if (batch.isEmpty && lapClosuresBatch.isEmpty) {
+        _currentFrequency = 0.0;
+        return;
+      }
+
+      final isCurrentSessionBatch =
+          currentSessionId != null && targetSessionId == currentSessionId;
+      final batchEventId = batch.isNotEmpty
+          ? (batch.first['eventId'] as String?)
+          : (selectedClosures.isNotEmpty
+              ? selectedClosures.first.eventId
+              : _currentEventId);
+
+      await _firestoreService.sendTelemetryBatch(
+        _currentRaceId!,
+        _currentUserId!,
+        batch,
+        isCurrentSessionBatch ? _checkpoints : null,
+        targetSessionId,
+        eventId: batchEventId,
+        timelines: isCurrentSessionBatch ? _timelines : null,
+        localLapClosures: lapClosuresBatch,
+      );
+
+      await _localDatabaseService.markAsSynced(unsyncedIds);
+      await _ackLapClosuresAsSynced(selectedClosures);
       _currentFrequency = batch.length.toDouble() / _syncIntervalSeconds;
 
       if (kDebugMode) {
-        print('Synced telemetry batch: ${batch.length} points');
+        print(
+            'Synced telemetry batch from local store: points=${batch.length}, closures=${selectedClosures.length}');
       }
     } catch (e) {
       if (kDebugMode) {
         print('Error syncing telemetry batch: $e');
       }
-      // On failure, restore data to the buffer (prepend to keep order roughly,
-      // though strictly strictly prepending a block maintains order relative to new data)
-      if (batch.isNotEmpty) {
-        _buffer.insertAll(0, batch);
-      }
-      if (lapClosuresBatch.isNotEmpty) {
-        _pendingLocalLapClosures.insertAll(0, lapClosuresBatch);
+      for (final closure in selectedClosures) {
+        if (closure.localId == null) {
+          _addPendingLocalLapClosure(closure.payload);
+        }
       }
     } finally {
       _syncInProgress = false;
     }
   }
+}
+
+class _QueuedLapClosure {
+  final int? localId;
+  final String closureId;
+  final String sessionId;
+  final String? eventId;
+  final int sortTimestampMs;
+  final Map<String, dynamic> payload;
+
+  const _QueuedLapClosure({
+    required this.localId,
+    required this.closureId,
+    required this.sessionId,
+    required this.eventId,
+    required this.sortTimestampMs,
+    required this.payload,
+  });
 }
 
 class _Vec2 {

@@ -1158,6 +1158,105 @@ class FirestoreService {
     if (count > 0) await batch.commit();
   }
 
+  Future<void> _deleteQuery(Query query, {int batchSize = 350}) async {
+    while (true) {
+      final snapshot = await query.limit(batchSize).get();
+      if (snapshot.docs.isEmpty) break;
+
+      final batch = _db.batch();
+      for (final doc in snapshot.docs) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+
+      if (snapshot.docs.length < batchSize) break;
+    }
+  }
+
+  Future<void> _deleteDocumentIfExists(DocumentReference doc) async {
+    final snap = await doc.get();
+    if (!snap.exists) return;
+    await doc.delete();
+  }
+
+  Future<void> clearSessionRuntimeData({
+    required String raceId,
+    required String sessionId,
+    String? eventId,
+  }) async {
+    try {
+      final callable =
+          FirebaseFunctions.instance.httpsCallable('clearSessionRuntimeData');
+      await callable.call({
+        'raceId': raceId,
+        'sessionId': sessionId,
+        'eventId': eventId,
+      });
+      return;
+    } catch (e) {
+      // Fallback for local/dev flows where callable may be unavailable.
+      _debugLog('clearSessionRuntimeData callable failed, fallback local: $e');
+    }
+
+    final useEventPath = eventId != null && eventId.isNotEmpty;
+
+    if (useEventPath) {
+      final eventSessionRef = _db
+          .collection('events')
+          .doc(eventId)
+          .collection('sessions')
+          .doc(sessionId);
+
+      final eventParticipantsSnap =
+          await eventSessionRef.collection('participants').get();
+      for (final participantDoc in eventParticipantsSnap.docs) {
+        await _deleteCollection(participantDoc.reference.collection('laps'));
+        await _deleteCollection(
+            participantDoc.reference.collection('crossings'));
+        await _deleteCollection(
+            participantDoc.reference.collection('analysis'));
+        await _deleteCollection(participantDoc.reference.collection('state'));
+        await participantDoc.reference.delete();
+      }
+
+      await _deleteCollection(eventSessionRef.collection('passings'));
+      await _deleteCollection(eventSessionRef.collection('local_lap_closures'));
+      await _deleteCollection(eventSessionRef.collection('analysis'));
+    }
+
+    // Legacy passings path
+    final racePassingsQuery = _db
+        .collection('races')
+        .doc(raceId)
+        .collection('passings')
+        .where('session_id', isEqualTo: sessionId);
+    await _deleteQuery(racePassingsQuery);
+
+    // Legacy local closures path
+    final raceClosuresQuery = _db
+        .collection('races')
+        .doc(raceId)
+        .collection('local_lap_closures')
+        .where('session_id', isEqualTo: sessionId);
+    await _deleteQuery(raceClosuresQuery);
+
+    // Legacy participant scoped session data
+    final raceParticipantsSnap = await _db
+        .collection('races')
+        .doc(raceId)
+        .collection('participants')
+        .get();
+    for (final participantDoc in raceParticipantsSnap.docs) {
+      final sessionRef =
+          participantDoc.reference.collection('sessions').doc(sessionId);
+      await _deleteCollection(sessionRef.collection('laps'));
+      await _deleteCollection(sessionRef.collection('crossings'));
+      await _deleteCollection(sessionRef.collection('analysis'));
+      await _deleteCollection(sessionRef.collection('state'));
+      await _deleteDocumentIfExists(sessionRef);
+    }
+  }
+
   // --- Passings ---
 
   Future<void> addPassing(

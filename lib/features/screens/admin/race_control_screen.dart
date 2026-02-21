@@ -31,6 +31,7 @@ class _RaceControlScreenState extends State<RaceControlScreen>
   final FirestoreService _firestoreService = FirestoreService();
   late TabController _tabController;
   String? _selectedSessionId;
+  bool _isClearingSessionData = false;
 
   @override
   void initState() {
@@ -102,6 +103,102 @@ class _RaceControlScreenState extends State<RaceControlScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Session finalized.')),
       );
+    }
+  }
+
+  RaceSession _buildInitialSessionState(RaceSession session) {
+    return RaceSession(
+      id: session.id,
+      type: session.type,
+      status: SessionStatus.scheduled,
+      currentFlag: RaceFlag.green,
+      scheduledTime: session.scheduledTime,
+      durationMinutes: session.durationMinutes,
+      totalLaps: session.totalLaps,
+      groupId: session.groupId,
+      name: session.name,
+      shortName: session.shortName,
+      startMethod: session.startMethod,
+      startOnFirstPassing: session.startOnFirstPassing,
+      minLapTimeSeconds: session.minLapTimeSeconds,
+      redFlagStopsClock: session.redFlagStopsClock,
+      redFlagDeletesPassings: session.redFlagDeletesPassings,
+      finishMode: session.finishMode,
+      qualificationCriteria: session.qualificationCriteria,
+      qualificationValue: session.qualificationValue,
+      actualStartTime: null,
+      actualEndTime: null,
+      timelines: session.timelines,
+    );
+  }
+
+  Future<void> _confirmAndClearSessionData(
+      RaceSession? session, RaceEvent currentEvent) async {
+    if (_isClearingSessionData) return;
+    if (session == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No session selected.')),
+        );
+      }
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Session Data'),
+        content: Text(
+          'This will remove all passings and lap analytics for "${session.name.isNotEmpty ? session.name : session.type.name.toUpperCase()}" and reset the session to initial state. Continue?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Clear Session'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _isClearingSessionData = true;
+    });
+
+    try {
+      await _firestoreService.clearSessionRuntimeData(
+        raceId: currentEvent.trackId,
+        sessionId: session.id,
+        eventId: currentEvent.id,
+      );
+      await _updateSessionStatus(
+          _buildInitialSessionState(session), currentEvent);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Session data cleared and session reset.'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error clearing session data: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isClearingSessionData = false;
+        });
+      }
     }
   }
 
@@ -558,6 +655,15 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                                       Icons.stop,
                                       Colors.grey.shade800,
                                       () => _confirmAndStopSession(
+                                          displaySession, eventData),
+                                      isOutlined: true),
+                                  _buildActionButton(
+                                      _isClearingSessionData
+                                          ? 'CLEARING...'
+                                          : 'CLEAR SESSION',
+                                      Icons.delete_sweep,
+                                      Colors.redAccent,
+                                      () => _confirmAndClearSessionData(
                                           displaySession, eventData),
                                       isOutlined: true),
                                 ],

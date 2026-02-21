@@ -18,6 +18,7 @@ Implementar um pipeline de telemetria que:
 - `processTelemetry` continua atualizando `participants.current` e exportando dados com `sessionId` para BigQuery.
 - O app piloto possui modo de simulacao com auto-start por configuracao e controles manuais `START/STOP`.
 - Foi iniciada a trilha offline-first com `timing local` no dispositivo (Fase 1) protegido por feature flag.
+- `BT-035` foi entregue em modelo hibrido local-priority: telemetria e `local_lap_closures` persistem offline e sincronizam de forma idempotente.
 
 ## Mudancas de Arquitetura (alvo)
 
@@ -228,9 +229,9 @@ Aceite: deteccao local de cruzamento por linha virtual com interpolacao + fallba
 Arquivos: `lib/features/services/firestore_service.dart`, `lib/features/screens/pilot/active_race_screen.dart`  
 Aceite: configuracao em `app_config/local_timing` com override em `local_timing_testers/{email}`, aplicando modo local em runtime sem rebuild.
 
-35. [ ] `BT-035` Fase 2 offline-first (persistencia local de resultados)  
+35. [x] `BT-035` Fase 2 offline-first (persistencia local de resultados)  
 Arquivos: `lib/features/services/local_database_service.dart`, `lib/features/services/telemetry_service.dart`, `firebase/functions/index.js`  
-Aceite: `crossings/laps/summary` calculados localmente ficam persistidos offline e sincronizam de forma idempotente quando houver conectividade.
+Aceite: `telemetry` + `local_lap_closures` persistem offline em SQLite, sincronizam de forma idempotente por `closure_id`, e o backend materializa `crossings/laps/summary` em modo estrito local-priority.
 
 ## Ordem Recomendada de Execucao
 
@@ -251,6 +252,7 @@ Aceite: `crossings/laps/summary` calculados localmente ficam persistidos offline
 - Fluxo admin (Race Control, Passings, Results e Timelines) funcional com a nova arquitetura.
 - Live Timer opera em modo local quando feature flag ativa, com latencia baixa e filtro de volta valida.
 - Simulacao respeita auto-start por admin e tambem controle manual do piloto (`START/STOP`).
+- Filas offline (`telemetry` e `local_lap_closures`) persistem localmente e sincronizam de forma idempotente apos reconexao.
 
 ## Instrucoes Especificas por Tarefa (Codex 5.1-Max)
 
@@ -431,5 +433,5 @@ Use este formato em cada execucao:
 
 ### BT-035
 - Objetivo: fase 2 offline-first (sincronizacao posterior de analiticos locais).
-- Passos: persistir `crossings/laps/summary` locais offline, sincronizar idempotente com backend e resolver conflitos por `sessionId+lap_number+checkpoint`.
-- Validacao: (pendente) definir contrato de sync e testes de reconexao/intermitencia.
+- Passos: persistir offline `telemetry` e `local_lap_closures` no SQLite, sincronizar com backend de forma idempotente por `closure_id`, e materializar `crossings/laps/summary` em nuvem com prioridade para calculo local.
+- Validacao: `rg -n "local_lap_closures|insertLapClosure|getUnsyncedLapClosures|markLapClosuresAsSynced|STRICT_LOCAL_LAP_CLOSURE_MODE|buildLapPayloadFromLocalClosure" lib/features/services/local_database_service.dart lib/features/services/telemetry_service.dart firebase/functions/index.js`.

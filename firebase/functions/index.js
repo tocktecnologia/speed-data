@@ -25,6 +25,10 @@ const DEDUP_WINDOW_MS = DEFAULT_DEDUP_WINDOW_MS; // ignore checkpoint repeats in
 const CHECKPOINT_DISTANCE_TOLERANCE_M = 40;
 const TRAP_WIDTH_M = DEFAULT_TRAP_WIDTH_M;
 const STATE_STALE_RESET_MS = 6 * 60 * 60 * 1000;
+const START_FINISH_REARM_DISTANCE_M = 60;
+const START_FINISH_REARM_MIN_MS = 1500;
+// Strict mode: lap close/open in cloud must come from app local closures only.
+const STRICT_LOCAL_LAP_CLOSURE_MODE = true;
 
 function getDistanceMeters(lat1, lon1, lat2, lon2) {
   const R = 6371e3; // metres
@@ -318,6 +322,154 @@ async function resolveMinLapTimeSeconds(db, eventId, sessionId, fallbackSeconds)
   }
 }
 
+async function assertAdminAccess(db, auth) {
+  if (!auth || !auth.uid) {
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'Authentication is required.',
+    );
+  }
+
+  const tokenRole = (auth.token.role || '').toString().trim().toLowerCase();
+  const tokenAdmin =
+    auth.token.admin === true || tokenRole === 'admin' || tokenRole === 'root';
+  if (tokenAdmin) return;
+
+  const userDoc = await db.collection('users').doc(auth.uid).get();
+  const userData = userDoc.exists ? userDoc.data() || {} : {};
+  const docRole = (userData.role || '').toString().trim().toLowerCase();
+  const docAdmin = docRole === 'admin' || docRole === 'root';
+  if (!docAdmin) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'Only administrators can clear session data.',
+    );
+  }
+}
+
+function buildLapPayloadFromLocalClosure(
+  closure,
+  {
+    minLapMs = DEFAULT_MIN_LAP_TIME_SECONDS * 1000,
+    minLapTimeSeconds = DEFAULT_MIN_LAP_TIME_SECONDS,
+  } = {},
+) {
+  if (!closure || typeof closure !== 'object') return null;
+
+  const lapNumber = asFiniteNumber(closure.lap_number, null);
+  const lapEndMs = asFiniteNumber(
+    closure.lap_end_ms,
+    asFiniteNumber(closure.sf_crossed_at_ms, null),
+  );
+  let lapStartMs = asFiniteNumber(closure.lap_start_ms, null);
+  let lapTimeMs = asFiniteNumber(closure.lap_time_ms, null);
+
+  if (!Number.isFinite(lapEndMs) || !Number.isFinite(lapNumber)) {
+    return null;
+  }
+
+  if (!Number.isFinite(lapStartMs) && Number.isFinite(lapTimeMs) && lapTimeMs > 0) {
+    lapStartMs = lapEndMs - lapTimeMs;
+  }
+  if (!Number.isFinite(lapTimeMs) && Number.isFinite(lapStartMs) && lapEndMs > lapStartMs) {
+    lapTimeMs = lapEndMs - lapStartMs;
+  }
+  if (!Number.isFinite(lapStartMs) || !Number.isFinite(lapTimeMs) || lapTimeMs <= 0) {
+    return null;
+  }
+
+  const closureMinLapMs = asFiniteNumber(closure.local_timing_min_lap_ms, null);
+  const effectiveMinLapMs =
+    Number.isFinite(closureMinLapMs) && closureMinLapMs > 0 ? closureMinLapMs : minLapMs;
+  const effectiveMinLapSeconds = Math.max(
+    1,
+    Math.trunc(effectiveMinLapMs / 1000) || minLapTimeSeconds,
+  );
+  const closureValid = closure.lap_valid !== false;
+  const valid = closureValid && lapTimeMs >= effectiveMinLapMs;
+  const invalidReasons = [];
+  if (lapTimeMs < effectiveMinLapMs) {
+    invalidReasons.push(`min_lap_time_seconds_${effectiveMinLapSeconds}`);
+  }
+  if (!closureValid) {
+    invalidReasons.push('local_closure_invalid');
+  }
+
+  const sfSpeed = asFiniteNumber(
+    closure.sf_crossing && typeof closure.sf_crossing === 'object'
+      ? closure.sf_crossing.speed
+      : null,
+    null,
+  );
+  const trapSpeedsMps = Number.isFinite(sfSpeed) ? [sfSpeed] : [];
+  const speedStats = trapSpeedsMps.length
+    ? {
+      min_mps: trapSpeedsMps[0],
+      max_mps: trapSpeedsMps[0],
+      avg_mps: trapSpeedsMps[0],
+    }
+    : null;
+
+  return {
+    number: Math.max(1, Math.trunc(lapNumber)),
+    lap_start_ms: Math.trunc(lapStartMs),
+    lap_end_ms: Math.trunc(lapEndMs),
+    total_lap_time_ms: Math.trunc(lapTimeMs),
+    splits_ms: [],
+    sectors_ms: [],
+    trap_speeds_mps: trapSpeedsMps,
+    speed_stats: speedStats,
+    valid,
+    invalid_reasons: [...new Set(invalidReasons)],
+    source: 'local_closure',
+    closure_id:
+      typeof closure.closure_id === 'string' && closure.closure_id.trim()
+        ? closure.closure_id.trim()
+        : null,
+    captured_at_ms: asFiniteNumber(closure.captured_at_ms, null),
+  };
+}
+
+async function rebuildSessionSummaryFromLapDocs(summaryRefs, preferredLapsRef) {
+  if (!preferredLapsRef || !summaryRefs.length) return;
+  const lapsSnap = await preferredLapsRef.get();
+  const rebuiltLaps = lapsSnap.docs
+    .map((doc) => {
+      const data = doc.data() || {};
+      const lapNumberFromDocId =
+        typeof doc.id === 'string' && doc.id.startsWith('lap_')
+          ? asFiniteNumber(doc.id.replace('lap_', ''), null)
+          : null;
+      return {
+        ...data,
+        number: Math.trunc(
+          asFiniteNumber(data.number, lapNumberFromDocId !== null ? lapNumberFromDocId : 0),
+        ),
+        total_lap_time_ms: asFiniteNumber(data.total_lap_time_ms, null),
+        valid: data.valid === true,
+      };
+    })
+    .filter(
+      (lap) =>
+        Number.isFinite(lap.number) &&
+        Number.isFinite(lap.total_lap_time_ms) &&
+        lap.total_lap_time_ms > 0,
+    );
+
+  const summaryPayload = {
+    ...buildSessionSummaryFromLaps(rebuiltLaps),
+    updated_at: admin.firestore.FieldValue.serverTimestamp(),
+    source: 'hybrid_local_priority',
+  };
+
+  const summaryWrites = summaryRefs.map((ref) => ({
+    ref,
+    data: summaryPayload,
+    options: { merge: true },
+  }));
+  await commitSetOperations(admin.firestore(), summaryWrites);
+}
+
 exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be logged in to send telemetry.');
@@ -455,6 +607,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
       lap_start_ms: null,
       last_checkpoint_index: -1,
       last_crossed_at_ms: null,
+      awaiting_sf_rearm: false,
+      last_sf_crossed_at_ms: null,
       checkpoint_times: {},
       checkpoint_speeds: {},
       last_point: null,
@@ -480,6 +634,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
         lap_start_ms: null,
         last_checkpoint_index: -1,
         last_crossed_at_ms: null,
+        awaiting_sf_rearm: false,
+        last_sf_crossed_at_ms: null,
         checkpoint_times: {},
         checkpoint_speeds: {},
         last_point: null,
@@ -488,7 +644,183 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
     }
   }
 
+  state.lap_number = Math.max(1, Math.trunc(asFiniteNumber(state.lap_number, 1) || 1));
+  state.last_checkpoint_index = Math.trunc(
+    asFiniteNumber(state.last_checkpoint_index, -1) || -1,
+  );
+  state.lap_start_ms = asFiniteNumber(state.lap_start_ms, null);
+  state.last_crossed_at_ms = asFiniteNumber(state.last_crossed_at_ms, null);
+  state.awaiting_sf_rearm = state.awaiting_sf_rearm === true;
+  state.last_sf_crossed_at_ms = asFiniteNumber(state.last_sf_crossed_at_ms, null);
+  state.checkpoint_times =
+    state.checkpoint_times && typeof state.checkpoint_times === 'object'
+      ? state.checkpoint_times
+      : {};
+  state.checkpoint_speeds =
+    state.checkpoint_speeds && typeof state.checkpoint_speeds === 'object'
+      ? state.checkpoint_speeds
+      : {};
+
   try {
+    const hasLocalClosures = localLapClosures.length > 0;
+
+    if (hasLocalClosures) {
+      const preferredLapsRef = eventSessionLapsRef || legacySessionLapsRef || null;
+      const fallbackFinishCheckpointIndex =
+        Array.isArray(effectiveCheckpoints) && effectiveCheckpoints.length > 1
+          ? effectiveCheckpoints.length - 1
+          : 0;
+      const sortedClosures = [...localLapClosures].sort((a, b) => {
+        const aTs = asFiniteNumber(a.sf_crossed_at_ms, 0);
+        const bTs = asFiniteNumber(b.sf_crossed_at_ms, 0);
+        return aTs - bTs;
+      });
+      const materializedOps = [];
+
+      for (const closure of sortedClosures) {
+        const closureId =
+          typeof closure.closure_id === 'string' && closure.closure_id.trim()
+            ? closure.closure_id.trim()
+            : null;
+        if (!closureId) continue;
+
+        const lapPayloadBase = buildLapPayloadFromLocalClosure(closure, {
+          minLapMs,
+          minLapTimeSeconds,
+        });
+        if (!lapPayloadBase) continue;
+
+        const lapNumber = lapPayloadBase.number;
+        const nextLapNumber = Math.max(
+          1,
+          Math.trunc(asFiniteNumber(closure.next_lap_number, lapNumber + 1)),
+        );
+        const lapDocId = `lap_${lapNumber}`;
+        const lapPayload = {
+          ...lapPayloadBase,
+          created_at: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        for (const ref of sessionLapsRefs) {
+          materializedOps.push({
+            ref: ref.doc(lapDocId),
+            data: lapPayload,
+            options: { merge: true },
+          });
+        }
+        materializedOps.push({
+          ref: legacyLapsRef.doc(lapDocId),
+          data: {
+            ...lapPayload,
+            session_id: sessionId || null,
+            event_id: eventId || null,
+          },
+          options: { merge: true },
+        });
+
+        const sfCrossing =
+          closure.sf_crossing && typeof closure.sf_crossing === 'object'
+            ? closure.sf_crossing
+            : {};
+        const postSfPoint =
+          closure.post_sf_point && typeof closure.post_sf_point === 'object'
+            ? closure.post_sf_point
+            : {};
+        const sfCrossedAtMs = Math.trunc(
+          asFiniteNumber(closure.sf_crossed_at_ms, lapPayload.lap_end_ms),
+        );
+        const sfCheckpointIndexRaw = asFiniteNumber(
+          closure.sf_checkpoint_index,
+          fallbackFinishCheckpointIndex,
+        );
+        const sfCheckpointIndex = Number.isFinite(sfCheckpointIndexRaw)
+          ? Math.max(0, Math.trunc(sfCheckpointIndexRaw))
+          : fallbackFinishCheckpointIndex;
+
+        const closingPassingPayload = {
+          participant_uid: uid,
+          lap_number: lapNumber,
+          lap_time: lapPayload.total_lap_time_ms,
+          timestamp: admin.firestore.Timestamp.fromMillis(sfCrossedAtMs),
+          session_id: sessionId || null,
+          event_id: eventId || null,
+          race_id: raceId,
+          checkpoint_index: sfCheckpointIndex,
+          flags: ['local_closure'],
+          sector_time: null,
+          split_time: lapPayload.total_lap_time_ms,
+          trap_speed: asFiniteNumber(sfCrossing.speed, null),
+          valid: lapPayload.valid,
+          lat: asFiniteNumber(sfCrossing.lat, asFiniteNumber(postSfPoint.lat, null)),
+          lng: asFiniteNumber(sfCrossing.lng, asFiniteNumber(postSfPoint.lng, null)),
+          source: 'local_closure',
+          closure_id: closureId,
+        };
+        for (const ref of passingsRefs) {
+          materializedOps.push({
+            ref: ref.doc(`lc_${closureId}_sf`),
+            data: closingPassingPayload,
+            options: { merge: true },
+          });
+        }
+
+        const postSfTimestampMs = asFiniteNumber(postSfPoint.timestamp, null);
+        if (Number.isFinite(postSfTimestampMs)) {
+          const openPassingPayload = {
+            participant_uid: uid,
+            lap_number: nextLapNumber,
+            lap_time: null,
+            timestamp: admin.firestore.Timestamp.fromMillis(
+              Math.trunc(postSfTimestampMs),
+            ),
+            session_id: sessionId || null,
+            event_id: eventId || null,
+            race_id: raceId,
+            checkpoint_index: 0,
+            flags: ['auto_open', 'local_closure'],
+            sector_time: null,
+            split_time: 0,
+            trap_speed: asFiniteNumber(postSfPoint.speed, null),
+            lat: asFiniteNumber(postSfPoint.lat, null),
+            lng: asFiniteNumber(postSfPoint.lng, null),
+            source: 'local_closure',
+            closure_id: closureId,
+          };
+          for (const ref of passingsRefs) {
+            materializedOps.push({
+              ref: ref.doc(`lc_${closureId}_open`),
+              data: openPassingPayload,
+              options: { merge: true },
+            });
+          }
+
+          state.lap_number = nextLapNumber;
+          state.lap_start_ms = Math.trunc(postSfTimestampMs);
+          state.last_checkpoint_index = 0;
+          state.last_crossed_at_ms = Math.trunc(postSfTimestampMs);
+          state.checkpoint_times = { 0: Math.trunc(postSfTimestampMs) };
+          state.checkpoint_speeds = {
+            0: asFiniteNumber(postSfPoint.speed, asFiniteNumber(sfCrossing.speed, 0)) || 0,
+          };
+          state.awaiting_sf_rearm = true;
+          state.last_sf_crossed_at_ms = sfCrossedAtMs;
+        }
+      }
+
+      await commitSetOperations(db, materializedOps);
+
+      if (stateRefs.length) {
+        const stateOps = stateRefs.map((ref) => ({
+          ref,
+          data: state,
+          options: { merge: true },
+        }));
+        await commitSetOperations(db, stateOps);
+      }
+
+      await rebuildSessionSummaryFromLapDocs(summaryRefs, preferredLapsRef);
+    }
+
     if (Array.isArray(effectiveCheckpoints) && effectiveCheckpoints.length > 1) {
       const checkpointCount = effectiveCheckpoints.length;
       const finishCheckpointIndex = checkpointCount - 1;
@@ -520,6 +852,8 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
       state.last_checkpoint_index = Math.trunc(asFiniteNumber(state.last_checkpoint_index, -1) || -1);
       state.lap_start_ms = asFiniteNumber(state.lap_start_ms, null);
       state.last_crossed_at_ms = asFiniteNumber(state.last_crossed_at_ms, null);
+      state.awaiting_sf_rearm = state.awaiting_sf_rearm === true;
+      state.last_sf_crossed_at_ms = asFiniteNumber(state.last_sf_crossed_at_ms, null);
       state.checkpoint_times =
         state.checkpoint_times && typeof state.checkpoint_times === 'object'
           ? state.checkpoint_times
@@ -572,6 +906,32 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
           continue;
         }
 
+        if (state.awaiting_sf_rearm) {
+          const finishCheckpoint = effectiveCheckpoints[finishCheckpointIndex];
+          if (
+            finishCheckpoint &&
+            Number.isFinite(pointB.lat) &&
+            Number.isFinite(pointB.lng)
+          ) {
+            const distanceToFinishM = getDistanceMeters(
+              finishCheckpoint.lat,
+              finishCheckpoint.lng,
+              pointB.lat,
+              pointB.lng,
+            );
+            const timeSinceFinishMs = Number.isFinite(state.last_sf_crossed_at_ms)
+              ? pointB.timestamp - state.last_sf_crossed_at_ms
+              : START_FINISH_REARM_MIN_MS;
+            if (
+              distanceToFinishM >= START_FINISH_REARM_DISTANCE_M &&
+              timeSinceFinishMs >= START_FINISH_REARM_MIN_MS
+            ) {
+              state.awaiting_sf_rearm = false;
+              state.last_sf_crossed_at_ms = null;
+            }
+          }
+        }
+
         const crossingCandidates = [];
         for (const line of checkpointLines) {
           if (!line) continue;
@@ -588,6 +948,14 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
             if (state.lap_start_ms && rawCheckpointIndex === 0) {
               continue;
             }
+          }
+          if (rawCheckpointIndex === finishCheckpointIndex && state.awaiting_sf_rearm) {
+            continue;
+          }
+
+          if (STRICT_LOCAL_LAP_CLOSURE_MODE && rawCheckpointIndex === finishCheckpointIndex) {
+            // Strict mode: never close/open laps from raw points in cloud.
+            continue;
           }
 
           let crossingCandidate = interpolateLineCrossing(line, pointA, pointB);
@@ -750,6 +1118,10 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
         state.checkpoint_speeds = state.checkpoint_speeds || {};
         state.checkpoint_times[checkpointIndex] = crossing.timestamp;
         state.checkpoint_speeds[checkpointIndex] = crossing.speed;
+        if (rawCheckpointIndex === finishCheckpointIndex) {
+          state.awaiting_sf_rearm = true;
+          state.last_sf_crossed_at_ms = crossing.timestamp;
+        }
 
         if (checkpointIndex === 0 && !state.lap_start_ms) {
           state.lap_start_ms = crossing.timestamp;
@@ -1016,6 +1388,105 @@ exports.processTelemetry = functions.pubsub.topic(TOPIC_NAME).onPublish(async (m
   }
 
   await Promise.all(tasks);
+});
+
+exports.clearSessionRuntimeData = functions.https.onCall(async (data, context) => {
+  const db = admin.firestore();
+  await assertAdminAccess(db, context.auth);
+
+  const raceId = (data.raceId || '').toString().trim();
+  const sessionId = (data.sessionId || '').toString().trim();
+  const eventId = (data.eventId || '').toString().trim() || null;
+
+  if (!raceId || !sessionId) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'raceId and sessionId are required.',
+    );
+  }
+
+  let deletedDocs = 0;
+
+  async function deleteCollectionAndCount(collectionRef) {
+    while (true) {
+      const snapshot = await collectionRef.limit(350).get();
+      if (snapshot.empty) break;
+      const batch = db.batch();
+      for (const doc of snapshot.docs) {
+        batch.delete(doc.ref);
+      }
+      await batch.commit();
+      deletedDocs += snapshot.size;
+      if (snapshot.size < 350) break;
+    }
+  }
+
+  async function deleteQueryAndCount(query) {
+    while (true) {
+      const snapshot = await query.limit(350).get();
+      if (snapshot.empty) break;
+      const batch = db.batch();
+      for (const doc of snapshot.docs) {
+        batch.delete(doc.ref);
+      }
+      await batch.commit();
+      deletedDocs += snapshot.size;
+      if (snapshot.size < 350) break;
+    }
+  }
+
+  if (eventId) {
+    const eventSessionRef = db
+      .collection('events')
+      .doc(eventId)
+      .collection('sessions')
+      .doc(sessionId);
+
+    const eventParticipantsSnap = await eventSessionRef.collection('participants').get();
+    for (const participantDoc of eventParticipantsSnap.docs) {
+      await deleteCollectionAndCount(participantDoc.ref.collection('laps'));
+      await deleteCollectionAndCount(participantDoc.ref.collection('crossings'));
+      await deleteCollectionAndCount(participantDoc.ref.collection('analysis'));
+      await deleteCollectionAndCount(participantDoc.ref.collection('state'));
+      await participantDoc.ref.delete();
+      deletedDocs += 1;
+    }
+
+    await deleteCollectionAndCount(eventSessionRef.collection('passings'));
+    await deleteCollectionAndCount(eventSessionRef.collection('local_lap_closures'));
+    await deleteCollectionAndCount(eventSessionRef.collection('analysis'));
+  }
+
+  const raceRef = db.collection('races').doc(raceId);
+
+  await deleteQueryAndCount(
+    raceRef.collection('passings').where('session_id', '==', sessionId),
+  );
+  await deleteQueryAndCount(
+    raceRef.collection('local_lap_closures').where('session_id', '==', sessionId),
+  );
+
+  const raceParticipantsSnap = await raceRef.collection('participants').get();
+  for (const participantDoc of raceParticipantsSnap.docs) {
+    const sessionRef = participantDoc.ref.collection('sessions').doc(sessionId);
+    await deleteCollectionAndCount(sessionRef.collection('laps'));
+    await deleteCollectionAndCount(sessionRef.collection('crossings'));
+    await deleteCollectionAndCount(sessionRef.collection('analysis'));
+    await deleteCollectionAndCount(sessionRef.collection('state'));
+    const sessionSnap = await sessionRef.get();
+    if (sessionSnap.exists) {
+      await sessionRef.delete();
+      deletedDocs += 1;
+    }
+  }
+
+  return {
+    success: true,
+    raceId,
+    sessionId,
+    eventId,
+    deletedDocs,
+  };
 });
 
 exports.backfillSessionAnalytics = functions.https.onCall(async (data, context) => {

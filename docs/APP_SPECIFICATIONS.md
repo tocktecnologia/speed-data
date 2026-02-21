@@ -150,7 +150,7 @@ ConstruÃ­do com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestor
   - **SincronizaÃ§Ã£o automÃ¡tica de sessÃ£o**: Monitora sessÃ£o ativa via Firestore e atualiza `sessionId` automaticamente
   - **Recuperacao de sessao ativa**: preload + rotina de recover para reduzir casos de tela presa em loading em links lentos (especialmente Android)
   - **Simulacao com controle manual**: botoes `START/STOP` disponiveis no Live Timer, sem perder auto-start por configuracao
-  - **Timing local (feature flag)**: quando habilitado, `Best/Previous/Current` vem do calculo local do dispositivo
+  - **Timing local**: `Best/Previous/Current` vem do calculo local do dispositivo (ativo por padrao no piloto)
   - Cloud sync habilitado automaticamente quando evento ativo Ã© detectado
   - Carrega detalhes da corrida assincronamente
 
@@ -266,25 +266,34 @@ ConstruÃ­do com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestor
 - **Responsabilidade**: Coleta e sincronizaÃ§Ã£o de dados GPS
 - **Funcionalidades**:
   - Stream GPS via `geolocator` (intervalo de 50ms)
-  - Buffer em memÃ³ria com sync periÃ³dico (a cada 5 segundos)
+  - Persistencia local offline-first em SQLite para `telemetry` e `local_lap_closures`
+  - Sync por lote a cada 5s a partir das filas locais (nao apenas buffer em memoria)
+  - Sincronizacao idempotente de closures por `closure_id`
   - Gerenciamento de wakelock (tela ligada durante gravaÃ§Ã£o)
   - CÃ¡lculo de frequÃªncia (Hz)
   - GeraÃ§Ã£o de Session ID (formato: `dd-MM-yyyy HH:mm:ss`)
-  - DetecÃ§Ã£o de checkpoints e gerenciamento de voltas (backend e local)
+  - DetecÃ§Ã£o de checkpoints e gerenciamento de voltas local
   - Simulacao de rota com speed configuravel e sincronizacao por lote
   - Motor de timing local com cruzamento de linha virtual (interpolacao + fallback por proximidade)
   - Reconstrucao de linhas efetivas a partir de `checkpoints + timelines`
+  - Reenvio automatico de filas pendentes apos reconexao/reabertura do app
 - **MÃ©todos principais**: `startRecording()`, `stopRecording()`, `startSimulation()`, `stopSimulation()`, `setCheckpoints()`, `setTimelines()`, `setLocalTimingEnabled()`
-- **RecuperaÃ§Ã£o de erros**: Buffer repovoado com dados em caso de falha de sync
+- **RecuperaÃ§Ã£o de erros**: filas locais permanecem pendentes e sao reenviadas em tentativas futuras
 
 ### LocalDatabaseService
 
 - **Arquivo**: `lib/features/services/local_database_service.dart`
-- **Responsabilidade**: Cache SQLite offline para telemetria
+- **Responsabilidade**: Cache SQLite offline para telemetria e fechamento local de voltas
 - **PadrÃ£o**: Singleton
 - **Database**: `speed_data_telemetry.db`
-- **Tabela**: `telemetry` (id, raceId, uid, lat, lng, speed, heading, timestamp, synced)
-- **MÃ©todos**: `insertPoint()`, `getUnsyncedPoints()`, `markAsSynced()`, `clearSynced()`
+- **Tabelas**:
+  - `telemetry` (id, raceId, eventId, uid, session, lat, lng, speed, heading, altitude, timestamp, synced)
+  - `local_lap_closures` (id, raceId, eventId, uid, session, closureId, payloadJson, sfCrossedAtMs, capturedAtMs, synced)
+- **Indices**:
+  - `idx_telemetry_sync` para leitura de pontos pendentes por sessao
+  - `idx_local_lap_closure_unique` (UNIQUE em `closureId`) para idempotencia local
+  - `idx_local_lap_closure_sync` para leitura eficiente da fila de closures
+- **MÃ©todos**: `insertPoint()`, `getUnsyncedPoints()`, `markAsSynced()`, `insertLapClosure()`, `getUnsyncedLapClosures()`, `markLapClosuresAsSynced()`, `markLapClosuresAsSyncedByClosureIds()`, `clearSynced()`
 
 ### RouteService
 
@@ -300,22 +309,25 @@ ConstruÃ­do com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestor
 GPS Hardware (Geolocator, 50ms)
     |
     v
-TelemetryService - Buffer em memÃ³ria (List)
+TelemetryService - calculo local + filas locais
     |
     v
-Timer periÃ³dico (5 segundos)
+SQLite (telemetry + local_lap_closures)
     |
     v
-FirestoreService.sendTelemetryBatch()
+Timer periÃ³dico (5 segundos) / tentativa sob demanda
+    |
+    v
+FirestoreService.sendTelemetryBatch(points + localLapClosures)
     |
     v
 Firebase Cloud Function (ingestTelemetry)
     |
-    +---> DetecÃ§Ã£o de checkpoints e cÃ¡lculo de voltas
+    +---> Materializa laps a partir de localLapClosures (source=local_closure)
     |
-    +---> CriaÃ§Ã£o de registros em races/{raceId}/participants/{uid}/laps
+    +---> Modo estrito: nao fecha/abre volta via pontos brutos no start/finish
     |
-    +---> CriaÃ§Ã£o de registros em races/{raceId}/passings (participant_uid, session_id, split/sector/trap quando disponiveis)
+    +---> Escrita em passings/crossings/laps/summary por sessao
     |
     +---> Pub/Sub para processamento assÃ­ncrono
     |
@@ -333,10 +345,11 @@ UI StreamBuilders (atualizaÃ§Ã£o automÃ¡tica)
     +---> PassingsPanel: CÃ¡lculo automÃ¡tico de nÃºmero de voltas
 ```
 
-Observacao (Fase 1 local timing):
-- O Live Timer pode operar em caminho local (dispositivo) com feature flag.
-- Nesse caminho, o cronometro usa cruzamento de linhas virtuais no app para `best/previous/current`.
-- O backend continua recebendo telemetria quando o envio para cloud esta habilitado.
+Observacao (Fases 1 e 2 local timing/offline-first):
+- O Live Timer opera em caminho local no dispositivo (habilitado por padrao na tela do piloto).
+- O cronometro usa cruzamento de linhas virtuais no app para `best/previous/current`.
+- Fechamentos locais de volta (`localLapClosures`) ficam persistidos no SQLite e sincronizam depois.
+- O backend prioriza o calculo local (strict mode) para evitar volta fantasma no start/finish.
 
 ### Processamento em Background
 
@@ -361,7 +374,7 @@ Observacao (Fase 1 local timing):
 - **Status da sessao**: indicador reflete bandeira (verde/amarela/vermelha/quadriculada).
 - **Borda por bandeira**: borda do Live Timer acompanha a bandeira da sessao.
 - **Nome da sessao**: exibido no AppBar; nome do evento em label discreto.
-- **Best/Previous/Current**: por padrao continuam vindo de passings/laps por sessao; com feature flag de timing local ativa, passam a ser calculados localmente no dispositivo.
+- **Best/Previous/Current**: calculados localmente no dispositivo (modo local ativo por padrao na tela do piloto).
 - **Current fluido**: cronometro atualizado em intervalos curtos para evitar saltos.
 - **Simulacao (modo desenvolvimento)**: inicia automaticamente quando habilitada para o usuario e ha sessao ativa, com botoes `START/STOP` para pausa e retomada manual.
 - **Retorno para Live Timer**: ao reabrir a tela, a sessÃ£o ativa Ã© prÃ©-carregada para reduzir tempo de espera.
@@ -382,11 +395,18 @@ Observacao (Fase 1 local timing):
 - **Config de timing local por usuario (Firestore)**:
   - Global: `app_config/local_timing` com `enabled_default`.
   - Override por usuario: `local_timing_testers/{email_normalizado}` com `enabled`, `valid_from`, `valid_until`.
-  - Quando habilitado, o app ativa calculo local de volta/setor em runtime.
+  - Mantido por compatibilidade administrativa; no piloto atual o calculo local esta ativo por padrao.
 - **Cruzamento local estilo RaceChrono (Fase 1)**:
   - Linhas virtuais sao geradas com largura padrao de 50 m.
   - Cruzamento usa interpolacao geometrica de segmento com fallback por proximidade e gate direcional.
   - `best_lap` e `optimal/current` consideram apenas voltas validas (tempo > 0 e acima do minimo da sessao).
+- **Offline-first (Fase 2)**:
+  - Pontos GPS e `local_lap_closures` sao persistidos primeiro no SQLite.
+  - O sync envia lotes por sessao e marca como sincronizado somente apos sucesso.
+  - Reabertura do app continua sincronizando pendencias antigas automaticamente.
+- **Nuvem em modo estrito local-priority**:
+  - `ingestTelemetry` materializa laps com base em `localLapClosures`.
+  - Fechamento/abertura de volta por ponto bruto em start/finish fica bloqueado para evitar volta fantasma.
 
 ### Admin - Timing / Results / Passings / Track Chart
 - **Results**: mostra resultado da sessao (treino/qualificacao por melhor tempo valido; corrida por numero de voltas).
@@ -442,6 +462,15 @@ Observacao (Fase 1 local timing):
   â”œâ”€â”€ status: "open" | "closed"
   â”œâ”€â”€ checkpoints: [{lat, lng}, ...]
   â”œâ”€â”€ route_path: [{lat, lng}, ...]
+  â”‚
+  â”œâ”€â”€ /local_lap_closures/{closureId}
+  â”‚   â”œâ”€â”€ closure_id: string
+  â”‚   â”œâ”€â”€ participant_uid: string
+  â”‚   â”œâ”€â”€ session_id: string
+  â”‚   â”œâ”€â”€ lap_number: number
+  â”‚   â”œâ”€â”€ sf_crossed_at_ms: number
+  â”‚   â”œâ”€â”€ post_sf_point: map
+  â”‚   â””â”€â”€ source: "local_timing_app"
   â”‚
   â”œâ”€â”€ /passings/{passingId}
   â”‚   â”œâ”€â”€ participant_uid: string (uid do competidor)
@@ -505,6 +534,13 @@ Observacao (Fase 1 local timing):
 - Campos de posicao atual (merge): `current.lat`, `current.lng`, `current.speed`, `current.heading`, `current.altitude`, `current.timestamp`, `current.last_updated`
 - Uso: evita duplicidade de checkpoints, permite calcular setor/split incremental e abre nova volta ao detectar `cp_0`.
 
+### local_lap_closures (fila local sincronizada)
+- Origem: app piloto (`TelemetryService`) apos detectar fechamento de volta local.
+- Envio: no payload de `ingestTelemetry` como `localLapClosures`.
+- Persistencia local no app: SQLite `local_lap_closures` com `closureId` unico (idempotencia).
+- Persistencia em nuvem (auditoria): `races/{raceId}/local_lap_closures/{closureId}` e, quando aplicavel, `events/{eventId}/sessions/{sessionId}/local_lap_closures/{closureId}`.
+- Campos chave: `closure_id`, `session_id`, `lap_number`, `lap_time_ms`, `sf_crossed_at_ms`, `sf_crossing`, `post_sf_point`, `local_timing_min_lap_ms`.
+
 ### BigQuery
 - Dataset `telemetry.raw_points` recebe cada ponto com `raceId`, `uid`, `sessionId` e campos brutos de GPS (lat, lng, speed, heading, altitude, timestamp).
 - Futuras tabelas podem consumir `laps` e `crossings` para analises agregadas sem impactar o fluxo online.
@@ -519,16 +555,19 @@ Observacao (Fase 1 local timing):
   - `Information`: painel consolidado com `best_lap`, `optimal_lap`, contagens de voltas validas/total e snapshot de crossings
 - Regra de validade na UI: referencia e resumo derivado usam somente voltas validas (`valid=true` e `total_lap_time_ms > 0`).
 
-### Local Timing (Fase 1, feature flag)
+### Local Timing (Fase 1 + Fase 2 offline-first)
 - Config runtime:
   - Global: `app_config/local_timing.enabled_default`
   - Override: `local_timing_testers/{email_normalizado}`
 - Comportamento:
-  - Quando habilitado, o Live Timer usa `TelemetryService` para calcular `best/previous/current` localmente.
+  - O Live Timer usa `TelemetryService` para calcular `best/previous/current` localmente.
+  - Na implementacao atual do piloto, o modo local esta forçado como ativo por padrao.
   - O processamento usa linhas virtuais baseadas em `checkpoints` + `timelines` da sessao.
   - Largura padrao de linha virtual: 50 m.
   - Fechamento de volta respeita `min_lap_time_seconds` da sessao.
-- Objetivo da fase: reduzir latencia e permitir evolucao para operacao offline-first.
+  - Fase 2: fechamento de volta local entra em fila SQLite (`local_lap_closures`) e sincroniza de forma idempotente.
+  - Backend em strict mode: fechamento/abertura de volta no start/finish nao e feito por ponto bruto, apenas por `localLapClosures`.
+- Objetivo da fase: reduzir latencia e permitir operacao robusta sem conectividade.
 
 ### Backfill legada -> sessao (job administrativo)
 - Function callable: `backfillSessionAnalytics`

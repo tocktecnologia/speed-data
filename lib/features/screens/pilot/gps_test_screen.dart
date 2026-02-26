@@ -95,48 +95,49 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
     }
   }
 
-
   Future<void> _loadRaceDetails() async {
     // Auto-discover event for this track
     _firestoreService
         .getActiveEventForTrack(
-          widget.raceId,
-          allowFallback: false,
-          requireActiveSession: true,
-        )
+      widget.raceId,
+      allowFallback: false,
+      requireActiveSession: true,
+    )
         .then((event) async {
       if (event != null && mounted) {
         setState(() => _currentEventId = event.id);
-        
+
         // Fetch driver name from competitor data (NOW that we have eventId)
         try {
-          final competitor = await _firestoreService.getCompetitorByUid(event.id, widget.userId);
+          final competitor = await _firestoreService.getCompetitorByUid(
+              event.id, widget.userId);
           if (competitor != null) {
-            final fullName = '${competitor.firstName} ${competitor.lastName}'.trim();
+            final fullName =
+                '${competitor.firstName} ${competitor.lastName}'.trim();
             if (mounted) {
               setState(() {
                 _driverName = fullName.isNotEmpty ? fullName : 'Unknown Driver';
               });
             }
-          } else {
-          }
-        } catch (e) {
-        }
-        
+          } else {}
+        } catch (e) {}
+
         // Listen to active session
         _statusSubscription?.cancel();
-        _statusSubscription = _firestoreService.getEventActiveSessionStream(event.id).listen((session) {
+        _statusSubscription = _firestoreService
+            .getEventActiveSessionStream(event.id)
+            .listen((session) {
           if (mounted) {
             setState(() {
-               if (session != null) {
-                  // Sync telemetry with active session
-                  _currentSessionId = session.id;
-                  
-                  // Update UI Color
-                  _sessionBackgroundColor = _getFlagColor(session.currentFlag);
-               } else {
-                  _sessionBackgroundColor = Colors.black;
-               }
+              if (session != null) {
+                // Sync telemetry with active session
+                _currentSessionId = session.id;
+
+                // Update UI Color
+                _sessionBackgroundColor = _getFlagColor(session.currentFlag);
+              } else {
+                _sessionBackgroundColor = Colors.black;
+              }
             });
           }
         });
@@ -644,10 +645,10 @@ class _GpsTestScreenState extends State<GpsTestScreen> {
       // 1. Send Batch to Cloud Function
       if (_enableSendDataToCloud) {
         await _firestoreService.sendTelemetryBatch(
-          widget.raceId, 
+          widget.raceId,
           widget.userId,
-          batch, 
-          _checkpoints, 
+          batch,
+          _checkpoints,
           _currentSessionId,
         );
       }

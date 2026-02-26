@@ -986,7 +986,7 @@ class TelemetryService extends ChangeNotifier {
 
     _simulationBuffer.clear();
     simulationOverride = true;
-    enableSendDataToCloud = false;
+    enableSendDataToCloud = true;
 
     _simulationSyncTimer =
         Timer.periodic(const Duration(seconds: _simSyncIntervalSeconds), (_) {

@@ -498,7 +498,24 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   const points = Array.isArray(rawPoints) ? rawPoints : [];
   const localLapClosures = sanitizeLocalLapClosures(rawLocalLapClosures);
   const sessionId = inputSessionId || session || null;
-  let eventId = inputEventId || null;
+  const eventIdFromPoints =
+    points
+      .map((point) => {
+        if (!point || typeof point !== 'object') return null;
+        const raw = point.eventId || point.event_id;
+        return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+      })
+      .find((value) => value) || null;
+  const eventIdFromRawClosures = Array.isArray(rawLocalLapClosures)
+    ? rawLocalLapClosures
+        .map((closure) => {
+          if (!closure || typeof closure !== 'object') return null;
+          const raw = closure.event_id || closure.eventId;
+          return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+        })
+        .find((value) => value) || null
+    : null;
+  let eventId = inputEventId || eventIdFromPoints || eventIdFromRawClosures || null;
   const minLapMs = (minLapTimeSeconds || DEFAULT_MIN_LAP_TIME_SECONDS) * 1000;
 
   if (!raceId || !uid) {
@@ -565,6 +582,76 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
   const summaryRefs = [legacySummaryRef, eventSummaryRef].filter(Boolean);
   const stateRefs = [legacyStateRef, eventStateRef].filter(Boolean);
   const localLapClosureRefs = [legacyLocalLapClosuresRef, eventLocalLapClosuresRef].filter(Boolean);
+
+  const buildRealtimePayloadFromPoint = (rawPoint) => {
+    if (!rawPoint || typeof rawPoint !== 'object') return null;
+    const lat = asFiniteNumber(rawPoint.lat, null);
+    const lng = asFiniteNumber(rawPoint.lng, null);
+    const timestampMs = asFiniteNumber(rawPoint.timestamp, null);
+    if (lat === null || lng === null || timestampMs === null) return null;
+
+    return {
+      lat,
+      lng,
+      speed: asFiniteNumber(rawPoint.speed, 0) || 0,
+      heading: asFiniteNumber(rawPoint.heading, 0) || 0,
+      altitude: asFiniteNumber(rawPoint.altitude, 0) || 0,
+      timestamp: Math.trunc(timestampMs),
+      ingested_at: Date.now(),
+      last_updated: admin.firestore.FieldValue.serverTimestamp(),
+    };
+  };
+
+  const upsertRealtimeParticipantSnapshot = async (rawPoint) => {
+    const realtime = buildRealtimePayloadFromPoint(rawPoint);
+    if (!realtime) return;
+
+    const tasks = [
+      legacyParticipantRef.set(
+        {
+          current: realtime,
+          last_updated: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      ),
+    ];
+
+    if (legacyStateRef) {
+      tasks.push(
+        legacyStateRef.set(
+          {
+            current: realtime,
+          },
+          { merge: true },
+        ),
+      );
+    }
+
+    if (eventSessionParticipantRef) {
+      tasks.push(
+        eventSessionParticipantRef.set(
+          {
+            current: realtime,
+            last_updated: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        ),
+      );
+    }
+
+    if (eventStateRef) {
+      tasks.push(
+        eventStateRef.set(
+          {
+            current: realtime,
+          },
+          { merge: true },
+        ),
+      );
+    }
+
+    await Promise.all(tasks);
+  };
 
   if (localLapClosures.length && localLapClosureRefs.length) {
     const writeOps = [];
@@ -1255,6 +1342,44 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
     }
   } catch (e) {
     console.error('Error in ingestTelemetry algorithm:', e);
+  }
+
+  let realtimePointForSnapshot = null;
+  if (points.length) {
+    realtimePointForSnapshot = points[points.length - 1];
+  } else if (localLapClosures.length) {
+    const latestClosurePoint = [...localLapClosures]
+      .map((closure) => {
+        const postSfPoint =
+          closure && closure.post_sf_point && typeof closure.post_sf_point === 'object'
+            ? closure.post_sf_point
+            : null;
+        if (!postSfPoint) return null;
+        return {
+          lat: asFiniteNumber(postSfPoint.lat, null),
+          lng: asFiniteNumber(postSfPoint.lng, null),
+          speed: asFiniteNumber(postSfPoint.speed, null),
+          heading: asFiniteNumber(postSfPoint.heading, null),
+          altitude: asFiniteNumber(postSfPoint.altitude, null),
+          timestamp: asFiniteNumber(
+            postSfPoint.timestamp,
+            asFiniteNumber(closure.sf_crossed_at_ms, null),
+          ),
+        };
+      })
+      .filter((point) => point && Number.isFinite(point.timestamp))
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .pop();
+
+    realtimePointForSnapshot = latestClosurePoint || null;
+  }
+
+  if (realtimePointForSnapshot) {
+    try {
+      await upsertRealtimeParticipantSnapshot(realtimePointForSnapshot);
+    } catch (realtimeError) {
+      console.warn('Failed to upsert realtime participant snapshot:', realtimeError);
+    }
   }
 
   if (!points.length) {

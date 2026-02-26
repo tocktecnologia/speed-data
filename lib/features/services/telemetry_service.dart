@@ -986,7 +986,7 @@ class TelemetryService extends ChangeNotifier {
 
     _simulationBuffer.clear();
     simulationOverride = true;
-    enableSendDataToCloud = false;
+    enableSendDataToCloud = true;
 
     _simulationSyncTimer =
         Timer.periodic(const Duration(seconds: _simSyncIntervalSeconds), (_) {
@@ -1475,7 +1475,7 @@ class TelemetryService extends ChangeNotifier {
 
       if (kDebugMode) {
         print(
-            'Synced telemetry batch from local store: points=${batch.length}, closures=${selectedClosures.length}');
+            'Synced telemetry batch from local store: points=${batch.length}, closures=${selectedClosures.length}, currentFrequency=$_currentFrequency');
       }
     } catch (e) {
       if (kDebugMode) {

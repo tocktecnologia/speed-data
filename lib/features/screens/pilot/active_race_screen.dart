@@ -1489,6 +1489,33 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                                 ),
                               ),
                             ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: _getGpsColor(
+                                            _telemetryService.currentFrequency)
+                                        .withAlpha(50),
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                      color: _getGpsColor(
+                                          _telemetryService.currentFrequency),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    "${_telemetryService.currentFrequency} Hz",
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: _getGpsColor(
+                                          _telemetryService.currentFrequency),
+                                    ),
+                                  ),
+                                )
+                              ],
+                            )
                           ],
                         ),
                         const SizedBox(height: 6),
@@ -1675,7 +1702,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     } else if (hz < 1.0) {
       return Colors.orange;
     } else if (hz < 1.8) {
-      return Colors.green;
+      return Colors.lightGreen;
     } else {
       return Colors.greenAccent;
     }

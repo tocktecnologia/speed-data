@@ -199,6 +199,44 @@ function asFiniteNumber(value, fallback = null) {
   return parsed;
 }
 
+function sanitizeCheckpointMetricMap(rawMap, { roundValue = false } = {}) {
+  const normalized = {};
+  if (!rawMap || typeof rawMap !== 'object') return normalized;
+
+  const assignMetric = (rawIndex, rawValue) => {
+    const checkpointIndex = asFiniteNumber(rawIndex, null);
+    const metric = asFiniteNumber(rawValue, null);
+    if (
+      checkpointIndex === null ||
+      checkpointIndex < 0 ||
+      metric === null ||
+      metric < 0
+    ) {
+      return;
+    }
+    const checkpointKey = Math.trunc(checkpointIndex);
+    const normalizedValue = roundValue ? Math.trunc(metric) : metric;
+    normalized[checkpointKey] = normalizedValue;
+  };
+
+  if (Array.isArray(rawMap)) {
+    for (const entry of rawMap) {
+      if (!entry || typeof entry !== 'object') continue;
+      assignMetric(
+        entry.checkpoint_index ?? entry.checkpointIndex ?? entry.index,
+        entry.value ?? entry.metric ?? entry.time ?? entry.speed,
+      );
+    }
+    return normalized;
+  }
+
+  for (const [rawKey, rawValue] of Object.entries(rawMap)) {
+    assignMetric(rawKey, rawValue);
+  }
+
+  return normalized;
+}
+
 function sanitizeLocalLapClosures(rawClosures) {
   if (!Array.isArray(rawClosures)) return [];
 
@@ -232,6 +270,11 @@ function sanitizeLocalLapClosures(rawClosures) {
         entry.sf_crossing && typeof entry.sf_crossing === 'object'
           ? entry.sf_crossing
           : {};
+      const checkpointTimes = sanitizeCheckpointMetricMap(
+        entry.checkpoint_times,
+        { roundValue: true },
+      );
+      const checkpointSpeeds = sanitizeCheckpointMetricMap(entry.checkpoint_speeds);
       const closureIdRaw = entry.closure_id;
       const closureId =
         typeof closureIdRaw === 'string' && closureIdRaw.trim()
@@ -255,6 +298,8 @@ function sanitizeLocalLapClosures(rawClosures) {
         ),
         local_timing_min_lap_ms: asFiniteNumber(entry.local_timing_min_lap_ms, null),
         captured_at_ms: asFiniteNumber(entry.captured_at_ms, postSfTimestampMs),
+        checkpoint_times: checkpointTimes,
+        checkpoint_speeds: checkpointSpeeds,
         sf_crossing: {
           lat: asFiniteNumber(sfCrossingRaw.lat, null),
           lng: asFiniteNumber(sfCrossingRaw.lng, null),
@@ -401,22 +446,104 @@ function buildLapPayloadFromLocalClosure(
       : null,
     null,
   );
-  const trapSpeedsMps = Number.isFinite(sfSpeed) ? [sfSpeed] : [];
-  const speedStats = trapSpeedsMps.length
-    ? {
-      min_mps: trapSpeedsMps[0],
-      max_mps: trapSpeedsMps[0],
-      avg_mps: trapSpeedsMps[0],
+  const sfCheckpointIndex = Math.trunc(
+    asFiniteNumber(closure.sf_checkpoint_index, -1),
+  );
+  const checkpointTimesRaw = sanitizeCheckpointMetricMap(
+    closure.checkpoint_times,
+    { roundValue: true },
+  );
+  const checkpointSpeedsRaw = sanitizeCheckpointMetricMap(closure.checkpoint_speeds);
+  const hasClosureCheckpointTimes = Object.keys(checkpointTimesRaw).length > 0;
+  const checkpointTimes = {};
+  for (const [rawIndex, rawTs] of Object.entries(checkpointTimesRaw)) {
+    const checkpointIndex = asFiniteNumber(rawIndex, null);
+    const checkpointTs = asFiniteNumber(rawTs, null);
+    if (checkpointIndex === null || checkpointTs === null) continue;
+    if (checkpointTs < lapStartMs || checkpointTs > lapEndMs) continue;
+    checkpointTimes[Math.trunc(checkpointIndex)] = Math.trunc(checkpointTs);
+  }
+  if (hasClosureCheckpointTimes) {
+    checkpointTimes[0] = Math.trunc(
+      asFiniteNumber(checkpointTimes[0], Math.trunc(lapStartMs)),
+    );
+    if (sfCheckpointIndex >= 0) {
+      checkpointTimes[sfCheckpointIndex] = Math.trunc(lapEndMs);
     }
+  }
+
+  const checkpointSpeeds = {};
+  for (const [rawIndex, rawSpeed] of Object.entries(checkpointSpeedsRaw)) {
+    const checkpointIndex = asFiniteNumber(rawIndex, null);
+    const checkpointSpeed = asFiniteNumber(rawSpeed, null);
+    if (
+      checkpointIndex === null ||
+      checkpointIndex < 0 ||
+      checkpointSpeed === null ||
+      checkpointSpeed <= 0
+    ) {
+      continue;
+    }
+    checkpointSpeeds[Math.trunc(checkpointIndex)] = checkpointSpeed;
+  }
+  if (
+    Number.isFinite(sfSpeed) &&
+    sfCheckpointIndex >= 0 &&
+    !Number.isFinite(asFiniteNumber(checkpointSpeeds[sfCheckpointIndex], null))
+  ) {
+    checkpointSpeeds[sfCheckpointIndex] = sfSpeed;
+  }
+
+  const lapFromClosureCheckpoints = hasClosureCheckpointTimes
+    ? buildLapPayloadFromState({
+      lapNumber: Math.max(1, Math.trunc(lapNumber)),
+      lapStartMs: Math.trunc(lapStartMs),
+      lapEndMs: Math.trunc(lapEndMs),
+      checkpointTimes,
+      checkpointSpeeds,
+      minLapMs: effectiveMinLapMs,
+      minLapTimeSeconds: effectiveMinLapSeconds,
+    })
     : null;
+
+  let splitsMs = [];
+  let sectorsMs = [];
+  let trapSpeedsMps = [];
+  let speedStats = null;
+  if (lapFromClosureCheckpoints) {
+    splitsMs = Array.isArray(lapFromClosureCheckpoints.splits_ms)
+      ? lapFromClosureCheckpoints.splits_ms
+      : [];
+    sectorsMs = Array.isArray(lapFromClosureCheckpoints.sectors_ms)
+      ? lapFromClosureCheckpoints.sectors_ms
+      : [];
+    trapSpeedsMps = Array.isArray(lapFromClosureCheckpoints.trap_speeds_mps)
+      ? lapFromClosureCheckpoints.trap_speeds_mps
+      : [];
+    speedStats =
+      lapFromClosureCheckpoints.speed_stats &&
+      typeof lapFromClosureCheckpoints.speed_stats === 'object'
+        ? lapFromClosureCheckpoints.speed_stats
+        : null;
+  }
+  if (!trapSpeedsMps.length && Number.isFinite(sfSpeed)) {
+    trapSpeedsMps = [sfSpeed];
+  }
+  if (!speedStats && trapSpeedsMps.length) {
+    speedStats = {
+      min_mps: Math.min(...trapSpeedsMps),
+      max_mps: Math.max(...trapSpeedsMps),
+      avg_mps: trapSpeedsMps.reduce((sum, value) => sum + value, 0) / trapSpeedsMps.length,
+    };
+  }
 
   return {
     number: Math.max(1, Math.trunc(lapNumber)),
     lap_start_ms: Math.trunc(lapStartMs),
     lap_end_ms: Math.trunc(lapEndMs),
     total_lap_time_ms: Math.trunc(lapTimeMs),
-    splits_ms: [],
-    sectors_ms: [],
+    splits_ms: splitsMs,
+    sectors_ms: sectorsMs,
     trap_speeds_mps: trapSpeedsMps,
     speed_stats: speedStats,
     valid,
@@ -468,6 +595,259 @@ async function rebuildSessionSummaryFromLapDocs(summaryRefs, preferredLapsRef) {
     options: { merge: true },
   }));
   await commitSetOperations(admin.firestore(), summaryWrites);
+}
+
+async function materializeParticipantSessionFromPassings({
+  db,
+  raceId,
+  eventId,
+  sessionId,
+  uid,
+  minLapMs,
+  minLapTimeSeconds,
+}) {
+  const result = {
+    updated: false,
+    lapsRebuilt: 0,
+    crossingsRebuilt: 0,
+  };
+  if (!db || !raceId || !sessionId || !uid) {
+    return result;
+  }
+
+  const passingsRaw = [];
+  if (eventId) {
+    const eventPassingsSnap = await db
+      .collection('events')
+      .doc(eventId)
+      .collection('sessions')
+      .doc(sessionId)
+      .collection('passings')
+      .where('participant_uid', '==', uid)
+      .limit(6000)
+      .get();
+    for (const doc of eventPassingsSnap.docs) {
+      passingsRaw.push({ id: doc.id, ...doc.data() });
+    }
+  }
+
+  if (!passingsRaw.length) {
+    const legacyPassingsSnap = await db
+      .collection('races')
+      .doc(raceId)
+      .collection('passings')
+      .where('participant_uid', '==', uid)
+      .limit(10000)
+      .get();
+    for (const doc of legacyPassingsSnap.docs) {
+      passingsRaw.push({ id: doc.id, ...doc.data() });
+    }
+  }
+
+  const passings = passingsRaw
+    .filter((passing) => {
+      const passingSessionId = (passing.session_id || '').toString().trim();
+      return passingSessionId === sessionId;
+    })
+    .sort((a, b) => {
+      const at = toMillis(a.timestamp) || 0;
+      const bt = toMillis(b.timestamp) || 0;
+      return at - bt;
+    });
+  if (!passings.length) {
+    return result;
+  }
+
+  const passingsByLap = new Map();
+  for (const passing of passings) {
+    const lapNumber = asFiniteNumber(passing.lap_number, null);
+    if (lapNumber === null || lapNumber <= 0) continue;
+    const normalizedLapNumber = Math.trunc(lapNumber);
+    if (!passingsByLap.has(normalizedLapNumber)) {
+      passingsByLap.set(normalizedLapNumber, []);
+    }
+    passingsByLap.get(normalizedLapNumber).push(passing);
+  }
+  if (!passingsByLap.size) {
+    return result;
+  }
+
+  const raceParticipantRef = db.collection('races').doc(raceId).collection('participants').doc(uid);
+  const raceSessionRef = raceParticipantRef.collection('sessions').doc(sessionId);
+  const raceSessionLapsRef = raceSessionRef.collection('laps');
+  const raceSessionCrossingsRef = raceSessionRef.collection('crossings');
+  const raceSessionSummaryRef = raceSessionRef.collection('analysis').doc('summary');
+
+  const eventSessionParticipantRef = eventId
+    ? db
+      .collection('events')
+      .doc(eventId)
+      .collection('sessions')
+      .doc(sessionId)
+      .collection('participants')
+      .doc(uid)
+    : null;
+  const eventSessionLapsRef = eventSessionParticipantRef
+    ? eventSessionParticipantRef.collection('laps')
+    : null;
+  const eventSessionCrossingsRef = eventSessionParticipantRef
+    ? eventSessionParticipantRef.collection('crossings')
+    : null;
+  const eventSummaryRef = eventId
+    ? db
+      .collection('events')
+      .doc(eventId)
+      .collection('sessions')
+      .doc(sessionId)
+      .collection('analysis')
+      .doc('summary')
+    : null;
+
+  const writeOps = [];
+  const rebuiltLaps = [];
+  const sortedLapNumbers = [...passingsByLap.keys()].sort((a, b) => a - b);
+  for (const lapNumber of sortedLapNumbers) {
+    const lapPassings = passingsByLap.get(lapNumber) || [];
+    const lapPayloadBase = buildLapPayloadFromPassings({
+      lapNumber,
+      passings: lapPassings,
+      minLapMs,
+      minLapTimeSeconds,
+    });
+    if (!lapPayloadBase) continue;
+
+    const lapDocId = `lap_${lapNumber}`;
+    const lapPayload = {
+      ...lapPayloadBase,
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      materialized_from_passings: true,
+      backfilled_from_passings: true,
+    };
+    rebuiltLaps.push(lapPayloadBase);
+    result.lapsRebuilt += 1;
+
+    writeOps.push({
+      ref: raceSessionLapsRef.doc(lapDocId),
+      data: lapPayload,
+      options: { merge: true },
+    });
+    writeOps.push({
+      ref: raceParticipantRef.collection('laps').doc(lapDocId),
+      data: {
+        ...lapPayload,
+        session_id: sessionId,
+        event_id: eventId || null,
+      },
+      options: { merge: true },
+    });
+    if (eventSessionLapsRef) {
+      writeOps.push({
+        ref: eventSessionLapsRef.doc(lapDocId),
+        data: lapPayload,
+        options: { merge: true },
+      });
+    }
+
+    for (const passing of lapPassings) {
+      const checkpointIndex = asFiniteNumber(passing.checkpoint_index, null);
+      const crossedAtMs = toMillis(passing.timestamp);
+      if (
+        checkpointIndex === null ||
+        checkpointIndex < 0 ||
+        !Number.isFinite(crossedAtMs)
+      ) {
+        continue;
+      }
+      const sectorTime = asFiniteNumber(
+        passing.sector_time ?? passing.sector_time_ms,
+        null,
+      );
+      const splitTime = asFiniteNumber(
+        passing.split_time ?? passing.split_time_ms,
+        null,
+      );
+      const trapSpeed = asFiniteNumber(
+        passing.trap_speed ?? passing.speed_mps,
+        0,
+      );
+      const lat = asFiniteNumber(passing.lat, 0) || 0;
+      const lng = asFiniteNumber(passing.lng, 0) || 0;
+      const crossingDocId = `bf_${lapNumber}_${Math.trunc(checkpointIndex)}_${crossedAtMs}`;
+      const crossingPayload = {
+        lap_number: lapNumber,
+        checkpoint_index: Math.trunc(checkpointIndex),
+        crossed_at_ms: crossedAtMs,
+        speed_mps: trapSpeed || 0,
+        lat,
+        lng,
+        sector_time_ms: sectorTime,
+        split_time_ms: splitTime,
+        method: 'backfill_passings',
+        distance_to_checkpoint_m: 0,
+        confidence: 0.5,
+        created_at: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      writeOps.push({
+        ref: raceSessionCrossingsRef.doc(crossingDocId),
+        data: crossingPayload,
+        options: { merge: true },
+      });
+      if (eventSessionCrossingsRef) {
+        writeOps.push({
+          ref: eventSessionCrossingsRef.doc(crossingDocId),
+          data: crossingPayload,
+          options: { merge: true },
+        });
+      }
+      result.crossingsRebuilt += 1;
+    }
+  }
+
+  if (!rebuiltLaps.length) {
+    return result;
+  }
+
+  const summaryPayload = {
+    ...buildSessionSummaryFromLaps(rebuiltLaps),
+    updated_at: admin.firestore.FieldValue.serverTimestamp(),
+    materialized_from_passings: true,
+    backfilled_from_passings: true,
+  };
+  writeOps.push({
+    ref: raceSessionSummaryRef,
+    data: summaryPayload,
+    options: { merge: true },
+  });
+  if (eventSummaryRef) {
+    writeOps.push({
+      ref: eventSummaryRef,
+      data: summaryPayload,
+      options: { merge: true },
+    });
+  }
+  writeOps.push({
+    ref: raceSessionRef,
+    data: {
+      backfilled_at: admin.firestore.FieldValue.serverTimestamp(),
+      materialized_from_passings_at: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    options: { merge: true },
+  });
+  if (eventSessionParticipantRef) {
+    writeOps.push({
+      ref: eventSessionParticipantRef,
+      data: {
+        backfilled_at: admin.firestore.FieldValue.serverTimestamp(),
+        materialized_from_passings_at: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      options: { merge: true },
+    });
+  }
+
+  await commitSetOperations(db, writeOps);
+  result.updated = true;
+  return result;
 }
 
 exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
@@ -747,6 +1127,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
     state.checkpoint_speeds && typeof state.checkpoint_speeds === 'object'
       ? state.checkpoint_speeds
       : {};
+  let shouldMaterializeSessionFromPassings = localLapClosures.length > 0;
 
   try {
     const hasLocalClosures = localLapClosures.length > 0;
@@ -895,6 +1276,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
       }
 
       await commitSetOperations(db, materializedOps);
+      shouldMaterializeSessionFromPassings = true;
 
       if (stateRefs.length) {
         const stateOps = stateRefs.map((ref) => ({
@@ -1198,6 +1580,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
           lng: crossing.lng,
         };
         await Promise.all(passingsRefs.map((ref) => ref.add(passingPayload)));
+        shouldMaterializeSessionFromPassings = true;
 
         state.last_checkpoint_index = checkpointIndex;
         state.last_crossed_at_ms = crossing.timestamp;
@@ -1276,6 +1659,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
             lng: crossing.lng,
           };
           await Promise.all(passingsRefs.map((ref) => ref.add(closingPassingPayload)));
+          shouldMaterializeSessionFromPassings = true;
 
           const nextLapNumber = lapNumber + 1;
           if (startFinishSamePoint) {
@@ -1296,6 +1680,7 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
               lng: crossing.lng,
             };
             await Promise.all(passingsRefs.map((ref) => ref.add(autoOpenPayload)));
+            shouldMaterializeSessionFromPassings = true;
 
             state.lap_number = nextLapNumber;
             state.lap_start_ms = lapEnd;
@@ -1379,6 +1764,32 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
       await upsertRealtimeParticipantSnapshot(realtimePointForSnapshot);
     } catch (realtimeError) {
       console.warn('Failed to upsert realtime participant snapshot:', realtimeError);
+    }
+  }
+
+  if (sessionId && shouldMaterializeSessionFromPassings) {
+    try {
+      const materializeResult = await materializeParticipantSessionFromPassings({
+        db,
+        raceId,
+        eventId,
+        sessionId,
+        uid,
+        minLapMs,
+        minLapTimeSeconds,
+      });
+      if (materializeResult.updated) {
+        console.log(
+          `Materialized from passings user=${uid} session=${sessionId}: ` +
+            `laps=${materializeResult.lapsRebuilt}, ` +
+            `crossings=${materializeResult.crossingsRebuilt}`,
+        );
+      }
+    } catch (materializeError) {
+      console.warn(
+        `Failed to materialize passings for user=${uid} session=${sessionId}:`,
+        materializeError,
+      );
     }
   }
 
@@ -1680,225 +2091,21 @@ exports.backfillSessionAnalytics = functions.https.onCall(async (data, context) 
 
   for (const participantDoc of participantsSnap.docs) {
     const uid = participantDoc.id;
-    const passingsRaw = [];
-
-    if (eventId) {
-      const eventPassingsSnap = await db
-        .collection('events')
-        .doc(eventId)
-        .collection('sessions')
-        .doc(sessionId)
-        .collection('passings')
-        .where('participant_uid', '==', uid)
-        .limit(6000)
-        .get();
-      for (const doc of eventPassingsSnap.docs) {
-        passingsRaw.push({ id: doc.id, ...doc.data() });
-      }
-    }
-
-    if (!passingsRaw.length) {
-      const legacyPassingsSnap = await db
-        .collection('races')
-        .doc(raceId)
-        .collection('passings')
-        .where('participant_uid', '==', uid)
-        .limit(10000)
-        .get();
-      for (const doc of legacyPassingsSnap.docs) {
-        passingsRaw.push({ id: doc.id, ...doc.data() });
-      }
-    }
-
-    const passings = passingsRaw
-      .filter((passing) => {
-        const passingSessionId = (passing.session_id || '').toString().trim();
-        return passingSessionId === sessionId;
-      })
-      .sort((a, b) => {
-        const at = toMillis(a.timestamp) || 0;
-        const bt = toMillis(b.timestamp) || 0;
-        return at - bt;
-      });
-
-    if (!passings.length) {
-      continue;
-    }
-
-    const passingsByLap = new Map();
-    for (const passing of passings) {
-      const lapNumber = asFiniteNumber(passing.lap_number, null);
-      if (lapNumber === null || lapNumber <= 0) continue;
-      const normalizedLapNumber = Math.trunc(lapNumber);
-      if (!passingsByLap.has(normalizedLapNumber)) {
-        passingsByLap.set(normalizedLapNumber, []);
-      }
-      passingsByLap.get(normalizedLapNumber).push(passing);
-    }
-
-    if (!passingsByLap.size) {
-      continue;
-    }
-
-    const raceParticipantRef = db.collection('races').doc(raceId).collection('participants').doc(uid);
-    const raceSessionRef = raceParticipantRef.collection('sessions').doc(sessionId);
-    const raceSessionLapsRef = raceSessionRef.collection('laps');
-    const raceSessionCrossingsRef = raceSessionRef.collection('crossings');
-    const raceSessionSummaryRef = raceSessionRef.collection('analysis').doc('summary');
-
-    const eventSessionParticipantRef = eventId
-      ? db
-        .collection('events')
-        .doc(eventId)
-        .collection('sessions')
-        .doc(sessionId)
-        .collection('participants')
-        .doc(uid)
-      : null;
-    const eventSessionLapsRef = eventSessionParticipantRef
-      ? eventSessionParticipantRef.collection('laps')
-      : null;
-    const eventSessionCrossingsRef = eventSessionParticipantRef
-      ? eventSessionParticipantRef.collection('crossings')
-      : null;
-    const eventSummaryRef = eventId
-      ? db
-        .collection('events')
-        .doc(eventId)
-        .collection('sessions')
-        .doc(sessionId)
-        .collection('analysis')
-        .doc('summary')
-      : null;
-
-    const writeOps = [];
-    const rebuiltLaps = [];
-
-    const sortedLapNumbers = [...passingsByLap.keys()].sort((a, b) => a - b);
-    for (const lapNumber of sortedLapNumbers) {
-      const lapPassings = passingsByLap.get(lapNumber) || [];
-      const lapPayloadBase = buildLapPayloadFromPassings({
-        lapNumber,
-        passings: lapPassings,
-        minLapMs,
-        minLapTimeSeconds,
-      });
-      if (!lapPayloadBase) continue;
-
-      const lapDocId = `lap_${lapNumber}`;
-      const lapPayload = {
-        ...lapPayloadBase,
-        created_at: admin.firestore.FieldValue.serverTimestamp(),
-        backfilled_from_passings: true,
-      };
-      rebuiltLaps.push(lapPayloadBase);
-      result.lapsRebuilt += 1;
-
-      writeOps.push({
-        ref: raceSessionLapsRef.doc(lapDocId),
-        data: lapPayload,
-        options: { merge: true },
-      });
-      writeOps.push({
-        ref: raceParticipantRef.collection('laps').doc(lapDocId),
-        data: {
-          ...lapPayload,
-          session_id: sessionId,
-          event_id: eventId || null,
-        },
-        options: { merge: true },
-      });
-
-      if (eventSessionLapsRef) {
-        writeOps.push({
-          ref: eventSessionLapsRef.doc(lapDocId),
-          data: lapPayload,
-          options: { merge: true },
-        });
-      }
-
-      for (const passing of lapPassings) {
-        const checkpointIndex = asFiniteNumber(passing.checkpoint_index, null);
-        const crossedAtMs = toMillis(passing.timestamp);
-        if (
-          checkpointIndex === null ||
-          checkpointIndex < 0 ||
-          !Number.isFinite(crossedAtMs)
-        ) {
-          continue;
-        }
-        const sectorTime = asFiniteNumber(passing.sector_time, null);
-        const splitTime = asFiniteNumber(passing.split_time, null);
-        const trapSpeed = asFiniteNumber(
-          passing.trap_speed ?? passing.speed_mps,
-          0,
-        );
-        const lat = asFiniteNumber(passing.lat, 0) || 0;
-        const lng = asFiniteNumber(passing.lng, 0) || 0;
-        const crossingDocId = `bf_${lapNumber}_${Math.trunc(checkpointIndex)}_${crossedAtMs}`;
-        const crossingPayload = {
-          lap_number: lapNumber,
-          checkpoint_index: Math.trunc(checkpointIndex),
-          crossed_at_ms: crossedAtMs,
-          speed_mps: trapSpeed || 0,
-          lat,
-          lng,
-          sector_time_ms: sectorTime,
-          split_time_ms: splitTime,
-          method: 'backfill_passings',
-          distance_to_checkpoint_m: 0,
-          confidence: 0.5,
-          created_at: admin.firestore.FieldValue.serverTimestamp(),
-        };
-
-        writeOps.push({
-          ref: raceSessionCrossingsRef.doc(crossingDocId),
-          data: crossingPayload,
-          options: { merge: true },
-        });
-        if (eventSessionCrossingsRef) {
-          writeOps.push({
-            ref: eventSessionCrossingsRef.doc(crossingDocId),
-            data: crossingPayload,
-            options: { merge: true },
-          });
-        }
-        result.crossingsRebuilt += 1;
-      }
-    }
-
-    if (!rebuiltLaps.length) {
-      continue;
-    }
-
-    const summaryPayload = {
-      ...buildSessionSummaryFromLaps(rebuiltLaps),
-      updated_at: admin.firestore.FieldValue.serverTimestamp(),
-      backfilled_from_passings: true,
-    };
-    writeOps.push({ ref: raceSessionSummaryRef, data: summaryPayload });
-    if (eventSummaryRef) {
-      writeOps.push({ ref: eventSummaryRef, data: summaryPayload });
-    }
-    writeOps.push({
-      ref: raceSessionRef,
-      data: {
-        backfilled_at: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      options: { merge: true },
+    const participantResult = await materializeParticipantSessionFromPassings({
+      db,
+      raceId,
+      eventId,
+      sessionId,
+      uid,
+      minLapMs,
+      minLapTimeSeconds,
     });
-    if (eventSessionParticipantRef) {
-      writeOps.push({
-        ref: eventSessionParticipantRef,
-        data: {
-          backfilled_at: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        options: { merge: true },
-      });
+    if (!participantResult.updated) {
+      continue;
     }
-
-    await commitSetOperations(db, writeOps);
     result.participantsUpdated += 1;
+    result.lapsRebuilt += participantResult.lapsRebuilt;
+    result.crossingsRebuilt += participantResult.crossingsRebuilt;
   }
 
   console.log(

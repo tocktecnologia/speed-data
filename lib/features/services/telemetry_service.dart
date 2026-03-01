@@ -469,6 +469,8 @@ class TelemetryService extends ChangeNotifier {
     required bool lapValid,
     required int finishCheckpointIndex,
     required _LocalTimingPoint sfCrossing,
+    required Map<int, int> checkpointTimes,
+    required Map<int, double> checkpointSpeeds,
   }) {
     _pendingLapClosureAfterSf = _PendingLocalLapClosure(
       closedLapNumber: closedLapNumber,
@@ -479,6 +481,8 @@ class TelemetryService extends ChangeNotifier {
       lapValid: lapValid,
       finishCheckpointIndex: finishCheckpointIndex,
       sfCrossing: sfCrossing,
+      checkpointTimes: Map<int, int>.from(checkpointTimes),
+      checkpointSpeeds: Map<int, double>.from(checkpointSpeeds),
     );
   }
 
@@ -669,6 +673,14 @@ class TelemetryService extends ChangeNotifier {
       'sf_checkpoint_index': pending.finishCheckpointIndex,
       'local_timing_min_lap_ms': _localTimingMinLapMs,
       'captured_at_ms': DateTime.now().millisecondsSinceEpoch,
+      'checkpoint_times': <String, int>{
+        for (final entry in pending.checkpointTimes.entries)
+          '${entry.key}': entry.value,
+      },
+      'checkpoint_speeds': <String, double>{
+        for (final entry in pending.checkpointSpeeds.entries)
+          '${entry.key}': entry.value,
+      },
       'sf_crossing': {
         'lat': pending.sfCrossing.lat,
         'lng': pending.sfCrossing.lng,
@@ -924,6 +936,8 @@ class TelemetryService extends ChangeNotifier {
         lapValid: lapValid,
         finishCheckpointIndex: _localFinishCheckpointIndex,
         sfCrossing: crossing,
+        checkpointTimes: _localCheckpointTimes,
+        checkpointSpeeds: _localCheckpointSpeeds,
       );
 
       _localCurrentLapNumber = nextLap;
@@ -1594,6 +1608,8 @@ class _PendingLocalLapClosure {
   final bool lapValid;
   final int finishCheckpointIndex;
   final _LocalTimingPoint sfCrossing;
+  final Map<int, int> checkpointTimes;
+  final Map<int, double> checkpointSpeeds;
 
   const _PendingLocalLapClosure({
     required this.closedLapNumber,
@@ -1604,5 +1620,7 @@ class _PendingLocalLapClosure {
     required this.lapValid,
     required this.finishCheckpointIndex,
     required this.sfCrossing,
+    required this.checkpointTimes,
+    required this.checkpointSpeeds,
   });
 }

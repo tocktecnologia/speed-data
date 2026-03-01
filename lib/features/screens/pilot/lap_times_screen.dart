@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/crossing_model.dart';
 import 'package:speed_data/features/models/lap_analysis_model.dart';
+import 'package:speed_data/features/models/passing_model.dart';
 import 'package:speed_data/features/models/session_analysis_summary_model.dart';
 import 'package:speed_data/features/screens/pilot/widgets/lap_times_details_map.dart';
 import 'package:speed_data/features/screens/pilot/widgets/lap_times_formatters.dart';
@@ -146,6 +147,337 @@ class _LapTimesScreenState extends State<LapTimesScreen> {
       sessionId,
       eventId: widget.eventId,
     );
+  }
+
+  Stream<List<PassingModel>> _passingsStream(String? sessionId) {
+    if (sessionId == null || sessionId.isEmpty) {
+      return Stream<List<PassingModel>>.value(const <PassingModel>[]);
+    }
+    return _firestore.getPassingsStream(
+      widget.raceId,
+      sessionId: sessionId,
+      eventId: widget.eventId,
+    );
+  }
+
+  bool _intListEquals(List<int> left, List<int> right) {
+    if (identical(left, right)) return true;
+    if (left.length != right.length) return false;
+    for (int i = 0; i < left.length; i++) {
+      if (left[i] != right[i]) return false;
+    }
+    return true;
+  }
+
+  List<int> _deriveSplitsFromCrossings(List<CrossingModel> lapCrossings) {
+    final latestByCheckpoint = <int, CrossingModel>{};
+    for (final crossing in lapCrossings) {
+      final split = crossing.splitTimeMs;
+      if (split == null || split < 0) continue;
+      final current = latestByCheckpoint[crossing.checkpointIndex];
+      if (current == null || crossing.crossedAtMs > current.crossedAtMs) {
+        latestByCheckpoint[crossing.checkpointIndex] = crossing;
+      }
+    }
+    final checkpointIndexes = latestByCheckpoint.keys.toList(growable: false)
+      ..sort();
+    return checkpointIndexes
+        .map((index) => latestByCheckpoint[index]!.splitTimeMs!)
+        .toList(growable: false);
+  }
+
+  List<int> _deriveSectorsFromCrossings(List<CrossingModel> lapCrossings) {
+    final latestByCheckpoint = <int, CrossingModel>{};
+    for (final crossing in lapCrossings) {
+      final sector = crossing.sectorTimeMs;
+      if (crossing.checkpointIndex <= 0 || sector == null || sector <= 0) {
+        continue;
+      }
+      final current = latestByCheckpoint[crossing.checkpointIndex];
+      if (current == null || crossing.crossedAtMs > current.crossedAtMs) {
+        latestByCheckpoint[crossing.checkpointIndex] = crossing;
+      }
+    }
+    final checkpointIndexes = latestByCheckpoint.keys.toList(growable: false)
+      ..sort();
+    return checkpointIndexes
+        .map((index) => latestByCheckpoint[index]!.sectorTimeMs!)
+        .toList(growable: false);
+  }
+
+  List<int> _deriveSectorsFromSplits(List<int> splits) {
+    if (splits.isEmpty) return const <int>[];
+    final sanitized =
+        splits.where((value) => value >= 0).toList(growable: false);
+    if (sanitized.isEmpty) return const <int>[];
+
+    final sectors = <int>[];
+    int? previous;
+    for (final split in sanitized) {
+      if (previous == null) {
+        previous = split;
+        continue;
+      }
+      final delta = split - previous;
+      if (delta > 0) {
+        sectors.add(delta);
+      }
+      previous = split;
+    }
+
+    if (sectors.isEmpty) {
+      final lastSplit = sanitized.last;
+      if (lastSplit > 0) {
+        sectors.add(lastSplit);
+      }
+    }
+    return sectors;
+  }
+
+  List<LapAnalysisModel> _enrichLapsWithCrossings(
+    List<LapAnalysisModel> laps,
+    List<CrossingModel> crossings,
+  ) {
+    if (laps.isEmpty || crossings.isEmpty) return laps;
+
+    final crossingsByLap = <int, List<CrossingModel>>{};
+    for (final crossing in crossings) {
+      if (crossing.lapNumber <= 0) continue;
+      crossingsByLap
+          .putIfAbsent(crossing.lapNumber, () => <CrossingModel>[])
+          .add(crossing);
+    }
+
+    bool changed = false;
+    final enriched = <LapAnalysisModel>[];
+    for (final lap in laps) {
+      final lapCrossings = crossingsByLap[lap.number];
+      if (lapCrossings == null || lapCrossings.isEmpty) {
+        enriched.add(lap);
+        continue;
+      }
+
+      final derivedSplits = _deriveSplitsFromCrossings(lapCrossings);
+      final derivedSectors = _deriveSectorsFromCrossings(lapCrossings);
+      final nextSplits = lap.splitsMs.isNotEmpty ? lap.splitsMs : derivedSplits;
+      final nextSectors = lap.sectorsMs.isNotEmpty
+          ? lap.sectorsMs
+          : (derivedSectors.isNotEmpty
+              ? derivedSectors
+              : _deriveSectorsFromSplits(nextSplits));
+      if (_intListEquals(nextSplits, lap.splitsMs) &&
+          _intListEquals(nextSectors, lap.sectorsMs)) {
+        enriched.add(lap);
+        continue;
+      }
+
+      changed = true;
+      enriched.add(
+        LapAnalysisModel(
+          id: lap.id,
+          number: lap.number,
+          lapStartMs: lap.lapStartMs,
+          lapEndMs: lap.lapEndMs,
+          totalLapTimeMs: lap.totalLapTimeMs,
+          valid: lap.valid,
+          invalidReasons: lap.invalidReasons,
+          splitsMs: List<int>.from(nextSplits, growable: false),
+          sectorsMs: List<int>.from(nextSectors, growable: false),
+          trapSpeedsMps: lap.trapSpeedsMps,
+          speedStats: lap.speedStats,
+          distanceM: lap.distanceM,
+          createdAtMs: lap.createdAtMs,
+        ),
+      );
+    }
+
+    return changed ? enriched : laps;
+  }
+
+  List<int> _deriveSplitsFromPassings(List<PassingModel> lapPassings) {
+    final latestByCheckpoint = <int, PassingModel>{};
+    for (final passing in lapPassings) {
+      final split = passing.splitTime;
+      if (split == null || split < 0) continue;
+      final current = latestByCheckpoint[passing.checkpointIndex];
+      if (current == null || passing.timestamp.isAfter(current.timestamp)) {
+        latestByCheckpoint[passing.checkpointIndex] = passing;
+      }
+    }
+    final checkpointIndexes = latestByCheckpoint.keys.toList(growable: false)
+      ..sort();
+    return checkpointIndexes
+        .map((index) => latestByCheckpoint[index]!.splitTime!.round())
+        .toList(growable: false);
+  }
+
+  List<int> _deriveSectorsFromPassings(List<PassingModel> lapPassings) {
+    final latestByCheckpoint = <int, PassingModel>{};
+    for (final passing in lapPassings) {
+      final sector = passing.sectorTime;
+      if (passing.checkpointIndex <= 0 || sector == null || sector <= 0) {
+        continue;
+      }
+      final current = latestByCheckpoint[passing.checkpointIndex];
+      if (current == null || passing.timestamp.isAfter(current.timestamp)) {
+        latestByCheckpoint[passing.checkpointIndex] = passing;
+      }
+    }
+    final checkpointIndexes = latestByCheckpoint.keys.toList(growable: false)
+      ..sort();
+    return checkpointIndexes
+        .map((index) => latestByCheckpoint[index]!.sectorTime!.round())
+        .toList(growable: false);
+  }
+
+  List<LapAnalysisModel> _enrichLapsWithPassings(
+    List<LapAnalysisModel> laps,
+    List<PassingModel> passings,
+  ) {
+    if (laps.isEmpty || passings.isEmpty) return laps;
+
+    final passingsByLap = <int, List<PassingModel>>{};
+    for (final passing in passings) {
+      if (passing.lapNumber <= 0) continue;
+      passingsByLap
+          .putIfAbsent(passing.lapNumber, () => <PassingModel>[])
+          .add(passing);
+    }
+
+    bool changed = false;
+    final enriched = <LapAnalysisModel>[];
+    for (final lap in laps) {
+      final lapPassings = passingsByLap[lap.number];
+      if (lapPassings == null || lapPassings.isEmpty) {
+        enriched.add(lap);
+        continue;
+      }
+
+      final derivedSplits = _deriveSplitsFromPassings(lapPassings);
+      final derivedSectors = _deriveSectorsFromPassings(lapPassings);
+      final nextSplits = lap.splitsMs.isNotEmpty ? lap.splitsMs : derivedSplits;
+      final nextSectors = lap.sectorsMs.isNotEmpty
+          ? lap.sectorsMs
+          : (derivedSectors.isNotEmpty
+              ? derivedSectors
+              : _deriveSectorsFromSplits(nextSplits));
+      if (_intListEquals(nextSplits, lap.splitsMs) &&
+          _intListEquals(nextSectors, lap.sectorsMs)) {
+        enriched.add(lap);
+        continue;
+      }
+
+      changed = true;
+      enriched.add(
+        LapAnalysisModel(
+          id: lap.id,
+          number: lap.number,
+          lapStartMs: lap.lapStartMs,
+          lapEndMs: lap.lapEndMs,
+          totalLapTimeMs: lap.totalLapTimeMs,
+          valid: lap.valid,
+          invalidReasons: lap.invalidReasons,
+          splitsMs: List<int>.from(nextSplits, growable: false),
+          sectorsMs: List<int>.from(nextSectors, growable: false),
+          trapSpeedsMps: lap.trapSpeedsMps,
+          speedStats: lap.speedStats,
+          distanceM: lap.distanceM,
+          createdAtMs: lap.createdAtMs,
+        ),
+      );
+    }
+
+    return changed ? enriched : laps;
+  }
+
+  List<PassingModel> _selectBestMatchingPassingsForLaps(
+    List<PassingModel> passings,
+    List<LapAnalysisModel> laps,
+  ) {
+    if (passings.isEmpty) return const <PassingModel>[];
+
+    final passingsByUid = <String, List<PassingModel>>{};
+    for (final passing in passings) {
+      final uid = passing.participantUid.trim();
+      if (uid.isEmpty || uid == 'SYSTEM') continue;
+      passingsByUid.putIfAbsent(uid, () => <PassingModel>[]).add(passing);
+    }
+    if (passingsByUid.isEmpty) return const <PassingModel>[];
+    if (passingsByUid.length == 1) {
+      return passingsByUid.values.first;
+    }
+
+    final lapByNumber = <int, LapAnalysisModel>{
+      for (final lap in laps) lap.number: lap,
+    };
+    final preferredUid = widget.userId.trim();
+    final sectorsCountByUid = <String, int>{};
+    final matchedLapsByUid = <String, int>{};
+    String? bestUid;
+    double bestScore = double.negativeInfinity;
+    for (final entry in passingsByUid.entries) {
+      final uid = entry.key;
+      final uidPassings = entry.value;
+      final matchedLapNumbers = <int>{};
+      int lapTimeMatches = 0;
+      int sectorsWithData = 0;
+      int splitsWithData = 0;
+      for (final passing in uidPassings) {
+        final lap = lapByNumber[passing.lapNumber];
+        if (lap != null) {
+          matchedLapNumbers.add(passing.lapNumber);
+          final lapTime = passing.lapTime;
+          if (lapTime != null && (lapTime - lap.totalLapTimeMs).abs() <= 2000) {
+            lapTimeMatches += 1;
+          }
+        }
+        if (passing.sectorTime != null && passing.sectorTime! > 0) {
+          sectorsWithData += 1;
+        }
+        if (passing.splitTime != null && passing.splitTime! > 0) {
+          splitsWithData += 1;
+        }
+      }
+      sectorsCountByUid[uid] = sectorsWithData;
+      matchedLapsByUid[uid] = matchedLapNumbers.length;
+
+      final score = (lapTimeMatches * 8) +
+          (matchedLapNumbers.length * 4) +
+          (sectorsWithData * 1.5) +
+          (splitsWithData * 0.5) +
+          (uid == preferredUid ? 2 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        bestUid = uid;
+      }
+    }
+
+    if (bestUid == null) return const <PassingModel>[];
+    final bestUidSectors = sectorsCountByUid[bestUid] ?? 0;
+    if (bestUidSectors <= 0) {
+      String? sectorRichUid;
+      int sectorRichScore = -1;
+      for (final uid in passingsByUid.keys) {
+        final matched = matchedLapsByUid[uid] ?? 0;
+        final sectors = sectorsCountByUid[uid] ?? 0;
+        final score = (matched * 1000) + sectors;
+        if (score > sectorRichScore) {
+          sectorRichScore = score;
+          sectorRichUid = uid;
+        }
+      }
+      if (sectorRichUid != null) {
+        return passingsByUid[sectorRichUid] ?? const <PassingModel>[];
+      }
+    }
+    return passingsByUid[bestUid] ?? const <PassingModel>[];
+  }
+
+  bool _lapsHaveSectorData(List<LapAnalysisModel> laps) {
+    for (final lap in laps) {
+      if (lap.sectorsMs.isNotEmpty) return true;
+    }
+    return false;
   }
 
   void _syncInitialSessionSelection(List<String> sessionIds) {
@@ -492,13 +824,45 @@ class _LapTimesScreenState extends State<LapTimesScreen> {
               builder: (context, crossingsSnapshot) {
                 final crossings =
                     crossingsSnapshot.data ?? const <CrossingModel>[];
-                return _buildAnalysisLayout(
-                  allLaps: sortedLaps,
-                  visibleLaps: candidateLaps,
-                  selectedLap: selectedLap,
-                  comparisonLap: comparisonLap,
-                  summary: summary,
-                  crossings: crossings,
+                return StreamBuilder<List<PassingModel>>(
+                  stream: _passingsStream(_selectedSessionId),
+                  builder: (context, passingsSnapshot) {
+                    final passings =
+                        passingsSnapshot.data ?? const <PassingModel>[];
+                    final selectedPassings = _selectBestMatchingPassingsForLaps(
+                      passings,
+                      sortedLaps,
+                    );
+                    final withCrossings =
+                        _enrichLapsWithCrossings(sortedLaps, crossings);
+                    var allLaps = _enrichLapsWithPassings(
+                        withCrossings, selectedPassings);
+                    if (!_lapsHaveSectorData(allLaps) && passings.isNotEmpty) {
+                      allLaps =
+                          _enrichLapsWithPassings(withCrossings, passings);
+                    }
+                    final lapById = <String, LapAnalysisModel>{
+                      for (final lap in allLaps) lap.id: lap,
+                    };
+                    final visibleLaps = candidateLaps
+                        .map((lap) => lapById[lap.id] ?? lap)
+                        .toList(growable: false);
+                    final comparisonLapResolved = comparisonLap == null
+                        ? null
+                        : (lapById[comparisonLap.id] ?? comparisonLap);
+                    final selectedLapResolved = selectedLap == null
+                        ? null
+                        : (lapById[selectedLap.id] ?? selectedLap);
+
+                    return _buildAnalysisLayout(
+                      allLaps: allLaps,
+                      visibleLaps: visibleLaps,
+                      selectedLap: selectedLapResolved,
+                      comparisonLap: comparisonLapResolved,
+                      summary: summary,
+                      crossings: crossings,
+                    );
+                  },
                 );
               },
             );

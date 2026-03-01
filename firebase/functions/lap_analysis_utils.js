@@ -303,12 +303,18 @@ function buildLapPayloadFromPassings({
     const checkpointIndex = Number(passing.checkpoint_index);
     if (!Number.isFinite(checkpointIndex) || checkpointIndex < 0) continue;
 
-    const split = Number(passing.split_time);
+    let split = Number(passing.split_time ?? passing.split_time_ms);
+    if (!Number.isFinite(split) || split < 0) {
+      const lapTimeAsSplit = Number(passing.lap_time);
+      if (Number.isFinite(lapTimeAsSplit) && lapTimeAsSplit >= 0) {
+        split = lapTimeAsSplit;
+      }
+    }
     if (Number.isFinite(split) && split >= 0) {
       splitsByCheckpoint[checkpointIndex] = split;
     }
 
-    const sector = Number(passing.sector_time);
+    const sector = Number(passing.sector_time ?? passing.sector_time_ms);
     if (Number.isFinite(sector) && sector >= 0 && checkpointIndex > 0) {
       sectorsByCheckpoint[checkpointIndex] = sector;
     }
@@ -327,6 +333,25 @@ function buildLapPayloadFromPassings({
     .map((value) => Number(value))
     .filter((value) => Number.isFinite(value))
     .sort((a, b) => a - b);
+
+  // Derive missing sector values from adjacent split deltas.
+  for (const checkpointIndex of splitKeys) {
+    if (checkpointIndex <= 0) continue;
+    const existingSector = Number(sectorsByCheckpoint[checkpointIndex]);
+    if (Number.isFinite(existingSector) && existingSector >= 0) {
+      continue;
+    }
+    const split = Number(splitsByCheckpoint[checkpointIndex]);
+    const previousSplit = Number(splitsByCheckpoint[checkpointIndex - 1]);
+    if (!Number.isFinite(split) || !Number.isFinite(previousSplit)) {
+      continue;
+    }
+    if (split < previousSplit) {
+      continue;
+    }
+    sectorsByCheckpoint[checkpointIndex] = split - previousSplit;
+  }
+
   const sectorKeys = Object.keys(sectorsByCheckpoint)
     .map((value) => Number(value))
     .filter((value) => Number.isFinite(value))

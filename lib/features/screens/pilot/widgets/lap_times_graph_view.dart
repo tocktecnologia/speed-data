@@ -57,7 +57,8 @@ class LapTimesGraphView extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Text(
               'Graph: Lap ${selectedLap.number}'
-              '${comparisonLap != null ? ' vs Lap ${comparisonLap!.number}' : ''}',
+              '${comparisonLap != null ? ' vs Lap ${comparisonLap!.number}' : ''}'
+              '${_isSpeedMode ? ' (km/h)' : ''}',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
           ),
@@ -177,19 +178,26 @@ class LapTimesGraphView extends StatelessWidget {
       case LapTimesMode.splits:
         return lap.splitsMs.map((v) => v.toDouble()).toList(growable: false);
       case LapTimesMode.trapSpeeds:
-        return lap.trapSpeedsMps.toList(growable: false);
+        return lap.trapSpeedsMps
+            .map((value) => value * 3.6)
+            .toList(growable: false);
       case LapTimesMode.highLow:
         if (lap.trapSpeedsMps.isNotEmpty) {
-          return lap.trapSpeedsMps.toList(growable: false);
+          return lap.trapSpeedsMps
+              .map((value) => value * 3.6)
+              .toList(growable: false);
         }
-        final low = lap.speedStats?.minMps ?? 0;
-        final avg = lap.speedStats?.avgMps ?? 0;
-        final high = lap.speedStats?.maxMps ?? 0;
+        final low = (lap.speedStats?.minMps ?? 0) * 3.6;
+        final avg = (lap.speedStats?.avgMps ?? 0) * 3.6;
+        final high = (lap.speedStats?.maxMps ?? 0) * 3.6;
         return [low, avg, high];
       case LapTimesMode.information:
         return [lap.totalLapTimeMs.toDouble()];
     }
   }
+
+  bool get _isSpeedMode =>
+      mode == LapTimesMode.trapSpeeds || mode == LapTimesMode.highLow;
 
   List<double> _applyResultMode(
     List<double> values, {

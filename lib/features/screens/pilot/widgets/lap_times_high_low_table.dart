@@ -36,10 +36,10 @@ class LapTimesHighLowTable extends StatelessWidget {
         child: DataTable(
           columns: const [
             DataColumn(label: Text('Lap')),
-            DataColumn(label: Text('Low')),
-            DataColumn(label: Text('High')),
-            DataColumn(label: Text('Avg')),
-            DataColumn(label: Text('Range')),
+            DataColumn(label: Text('Low (km/h)')),
+            DataColumn(label: Text('High (km/h)')),
+            DataColumn(label: Text('Avg (km/h)')),
+            DataColumn(label: Text('Range (km/h)')),
           ],
           rows: [
             for (final lap in sorted)
@@ -148,6 +148,7 @@ class LapTimesHighLowTable extends StatelessWidget {
 
   String _formatRange(double? low, double? high) {
     if (low == null || high == null || high < low) return '-';
-    return '${(high - low).toStringAsFixed(1)} m/s';
+    final rangeKmh = (high - low) * 3.6;
+    return rangeKmh.toStringAsFixed(1);
   }
 }

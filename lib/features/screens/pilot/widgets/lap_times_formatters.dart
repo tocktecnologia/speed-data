@@ -17,7 +17,8 @@ String formatDurationMs(int? value, {String fallback = '-'}) {
 
 String formatSpeedMps(double? value, {String fallback = '-'}) {
   if (value == null || value <= 0) return fallback;
-  return '${value.toStringAsFixed(1)} m/s';
+  final speedKmh = value * 3.6;
+  return '${speedKmh.toStringAsFixed(1)} km/h';
 }
 
 String formatDeltaDurationMs(int? deltaMs, {String fallback = '-'}) {
@@ -35,9 +36,10 @@ String formatDeltaDurationMs(int? deltaMs, {String fallback = '-'}) {
 
 String formatDeltaSpeedMps(double? delta, {String fallback = '-'}) {
   if (delta == null) return fallback;
-  if (delta == 0) return '0.0 m/s';
+  if (delta == 0) return '0.0 km/h';
   final sign = delta > 0 ? '+' : '-';
-  return '$sign${delta.abs().toStringAsFixed(1)} m/s';
+  final deltaKmh = delta.abs() * 3.6;
+  return '$sign${deltaKmh.toStringAsFixed(1)} km/h';
 }
 
 bool isLapValid(LapAnalysisModel lap, {int minLapTimeMs = 0}) {

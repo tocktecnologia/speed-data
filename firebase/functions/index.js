@@ -1232,47 +1232,47 @@ exports.ingestTelemetry = functions.https.onCall(async (data, context) => {
           });
         }
 
-        const postSfTimestampMs = asFiniteNumber(postSfPoint.timestamp, null);
-        if (Number.isFinite(postSfTimestampMs)) {
-          const openPassingPayload = {
-            participant_uid: uid,
-            lap_number: nextLapNumber,
-            lap_time: null,
-            timestamp: admin.firestore.Timestamp.fromMillis(
-              Math.trunc(postSfTimestampMs),
-            ),
-            session_id: sessionId || null,
-            event_id: eventId || null,
-            race_id: raceId,
-            checkpoint_index: 0,
-            flags: ['auto_open', 'local_closure'],
-            sector_time: null,
-            split_time: 0,
-            trap_speed: asFiniteNumber(postSfPoint.speed, null),
-            lat: asFiniteNumber(postSfPoint.lat, null),
-            lng: asFiniteNumber(postSfPoint.lng, null),
-            source: 'local_closure',
-            closure_id: closureId,
-          };
-          for (const ref of passingsRefs) {
-            materializedOps.push({
-              ref: ref.doc(`lc_${closureId}_open`),
-              data: openPassingPayload,
-              options: { merge: true },
-            });
-          }
-
-          state.lap_number = nextLapNumber;
-          state.lap_start_ms = Math.trunc(postSfTimestampMs);
-          state.last_checkpoint_index = 0;
-          state.last_crossed_at_ms = Math.trunc(postSfTimestampMs);
-          state.checkpoint_times = { 0: Math.trunc(postSfTimestampMs) };
-          state.checkpoint_speeds = {
-            0: asFiniteNumber(postSfPoint.speed, asFiniteNumber(sfCrossing.speed, 0)) || 0,
-          };
-          state.awaiting_sf_rearm = true;
-          state.last_sf_crossed_at_ms = sfCrossedAtMs;
+        const openingTimestampMs = sfCrossedAtMs;
+        const openingSpeed = asFiniteNumber(
+          sfCrossing.speed,
+          asFiniteNumber(postSfPoint.speed, 0),
+        ) || 0;
+        const openPassingPayload = {
+          participant_uid: uid,
+          lap_number: nextLapNumber,
+          lap_time: null,
+          timestamp: admin.firestore.Timestamp.fromMillis(
+            Math.trunc(openingTimestampMs),
+          ),
+          session_id: sessionId || null,
+          event_id: eventId || null,
+          race_id: raceId,
+          checkpoint_index: 0,
+          flags: ['auto_open', 'local_closure'],
+          sector_time: null,
+          split_time: 0,
+          trap_speed: openingSpeed,
+          lat: asFiniteNumber(sfCrossing.lat, asFiniteNumber(postSfPoint.lat, null)),
+          lng: asFiniteNumber(sfCrossing.lng, asFiniteNumber(postSfPoint.lng, null)),
+          source: 'local_closure',
+          closure_id: closureId,
+        };
+        for (const ref of passingsRefs) {
+          materializedOps.push({
+            ref: ref.doc(`lc_${closureId}_open`),
+            data: openPassingPayload,
+            options: { merge: true },
+          });
         }
+
+        state.lap_number = nextLapNumber;
+        state.lap_start_ms = Math.trunc(openingTimestampMs);
+        state.last_checkpoint_index = 0;
+        state.last_crossed_at_ms = Math.trunc(openingTimestampMs);
+        state.checkpoint_times = { 0: Math.trunc(openingTimestampMs) };
+        state.checkpoint_speeds = { 0: openingSpeed };
+        state.awaiting_sf_rearm = true;
+        state.last_sf_crossed_at_ms = sfCrossedAtMs;
       }
 
       await commitSetOperations(db, materializedOps);

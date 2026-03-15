@@ -269,7 +269,7 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
             OutlinedButton(
               style: isMsgActive
                   ? OutlinedButton.styleFrom(
-                      backgroundColor: Colors.lightBlue.shade100,
+                      backgroundColor: Colors.red.shade500,
                     )
                   : null,
               onPressed: !canSendAlert || isBusy

@@ -11,6 +11,7 @@ import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/models/user_role.dart';
 import 'package:speed_data/features/screens/admin/event_list_screen.dart';
 import 'package:speed_data/features/screens/pilot/pilot_dashboard.dart';
+import 'package:speed_data/features/screens/team/team_dashboard_screen.dart';
 
 class HomePageWidget extends StatefulWidget {
   const HomePageWidget({super.key});
@@ -65,6 +66,8 @@ class _HomePageWidgetState extends State<HomePageWidget> {
           return const EventListScreen();
         } else if (role == UserRole.pilot) {
           return const PilotDashboard();
+        } else if (role == UserRole.teamMember) {
+          return const TeamDashboardScreen();
         } else {
           return _buildRoleSelector(context, user?.uid ?? '');
         }
@@ -135,6 +138,26 @@ class _HomePageWidgetState extends State<HomePageWidget> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 40, vertical: 15)),
               child: const Text('I am an ADMIN'),
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: () async {
+                try {
+                  await _firestoreService.setUserRole(uid, UserRole.teamMember);
+                  setState(() {});
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error: $e')),
+                    );
+                  }
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueGrey,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 40, vertical: 15)),
+              child: const Text('I am TEAM MEMBER'),
             ),
           ],
         ),

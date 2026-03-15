@@ -59,10 +59,16 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   String? _currentEventId;
   RaceSession? _activeSession;
   StreamSubscription? _statusSubscription;
+  StreamSubscription<Map<String, dynamic>?>? _pilotAlertSubscription;
   Color _sessionBackgroundColor = Colors.black;
   LiveTimerMode _mode = LiveTimerMode.simple;
   GaugeType _gaugeType = GaugeType.speed;
   Timer? _uiTimer;
+  Timer? _pilotAlertBlinkTimer;
+  bool _pilotAlertBlinkVisible = true;
+  String? _pilotAlertEventId;
+  String? _pilotAlertSessionId;
+  Map<String, dynamic>? _pilotAlertPayload;
   DateTime _uiNow = DateTime.now();
   String? _autoStartedSimulationSessionId;
   int? _localLapStartMs;
@@ -115,7 +121,9 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   void dispose() {
     _debugLog('dispose');
     _statusSubscription?.cancel(); // Cancel subscription on dispose
+    _pilotAlertSubscription?.cancel();
     _uiTimer?.cancel();
+    _pilotAlertBlinkTimer?.cancel();
     super.dispose();
   }
 
@@ -614,7 +622,84 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       'sendToCloud=${_telemetryService.enableSendDataToCloud}, '
       'sessionIdInTelemetry=${_telemetryService.currentSessionId}',
     );
+    _syncPilotAlertSubscription();
     await _maybeAutoStartSimulation();
+  }
+
+  void _clearPilotAlertState() {
+    _pilotAlertBlinkTimer?.cancel();
+    _pilotAlertBlinkTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _pilotAlertPayload = null;
+      _pilotAlertBlinkVisible = true;
+    });
+  }
+
+  void _startPilotAlertBlinking() {
+    if (_pilotAlertBlinkTimer != null) return;
+    _pilotAlertBlinkTimer =
+        Timer.periodic(const Duration(milliseconds: 450), (_) {
+      if (!mounted) return;
+      setState(() => _pilotAlertBlinkVisible = !_pilotAlertBlinkVisible);
+    });
+  }
+
+  void _syncPilotAlertSubscription() {
+    final eventId = _currentEventId;
+    final sessionId = _activeSession?.id;
+    final pilotUid = _effectiveUserId;
+    final canListen = eventId != null &&
+        eventId.isNotEmpty &&
+        sessionId != null &&
+        sessionId.isNotEmpty &&
+        pilotUid.isNotEmpty;
+
+    if (!canListen) {
+      _pilotAlertSubscription?.cancel();
+      _pilotAlertSubscription = null;
+      _pilotAlertEventId = null;
+      _pilotAlertSessionId = null;
+      _clearPilotAlertState();
+      return;
+    }
+
+    if (_pilotAlertSubscription != null &&
+        _pilotAlertEventId == eventId &&
+        _pilotAlertSessionId == sessionId) {
+      return;
+    }
+
+    _pilotAlertSubscription?.cancel();
+    _pilotAlertEventId = eventId;
+    _pilotAlertSessionId = sessionId;
+    _pilotAlertSubscription = _firestoreService
+        .getPilotAlertStream(
+      eventId: eventId!,
+      sessionId: sessionId!,
+      pilotUid: pilotUid,
+    )
+        .listen((alert) {
+      if (!mounted) return;
+      final rawMessage = (alert?['message'] as String?)?.trim() ?? '';
+      final active = alert?['active'] == true && rawMessage.isNotEmpty;
+      final expiresAtMs = alert?['expires_at_ms'];
+      bool expired = false;
+      if (expiresAtMs is num) {
+        expired = DateTime.now().millisecondsSinceEpoch > expiresAtMs.toInt();
+      }
+
+      if (!active || expired) {
+        _clearPilotAlertState();
+        return;
+      }
+
+      setState(() {
+        _pilotAlertPayload = alert;
+        _pilotAlertBlinkVisible = true;
+      });
+      _startPilotAlertBlinking();
+    });
   }
 
   Future<void> _loadSimulationModeConfig() async {
@@ -1367,6 +1452,60 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     );
   }
 
+  Widget _buildPilotAlertOverlay() {
+    final alert = _pilotAlertPayload;
+    if (alert == null) return const SizedBox.shrink();
+
+    final message = (alert['message'] as String?)?.trim().toUpperCase();
+    if (message == null || message.isEmpty) return const SizedBox.shrink();
+
+    return IgnorePointer(
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 250),
+        opacity: _pilotAlertBlinkVisible ? 1.0 : 0.55,
+        child: Container(
+          color: Colors.red.withOpacity(0.92),
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    size: 88,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'ALERTA DA EQUIPE',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 26,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 56,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider.value(
@@ -1407,237 +1546,276 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
             }
 
             final sessionId = _activeSession?.id ?? telemetry.currentSessionId;
+            final authUser = FirebaseAuth.instance.currentUser;
+            final pilotName = (_pilotDriverName?.trim().isNotEmpty ?? false)
+                ? _pilotDriverName!.trim()
+                : ((authUser?.displayName?.trim().isNotEmpty ?? false)
+                    ? authUser!.displayName!.trim()
+                    : (authUser?.email?.trim().isNotEmpty ?? false)
+                        ? authUser!.email!.trim()
+                        : 'Pilot');
 
             final borderColor = _activeSession != null
                 ? _getFlagColor(_activeSession!.currentFlag)
                 : Colors.transparent;
 
-            return Container(
-              decoration: BoxDecoration(
-                border: Border.all(color: borderColor, width: 4),
-              ),
-              child: Column(
-                children: [
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    color: Colors.black,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _buildStatusIndicator(
-                          telemetry.enableSendDataToCloud,
-                          isSimulating: _telemetryService.isSimulating,
-                          flag: _activeSession?.currentFlag,
-                        ),
-                        _buildModeToggle(),
-                        _buildInfoMetric(
-                          'Speed',
-                          _telemetryService.isSimulating
-                              ? '${(_telemetryService.simulationSpeed * 3.6).toStringAsFixed(1)} km/h'
-                              : '${((telemetry.currentPosition?.speed ?? 0) * 3.6).toStringAsFixed(1)} km/h',
-                          valueColor: Colors.white,
-                        ),
-                      ],
-                    ),
+            return Stack(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: borderColor, width: 4),
                   ),
-                  if (_activeSession == null &&
-                      (sessionId == null || sessionId.isEmpty))
-                    Container(
-                      width: double.infinity,
-                      color: Colors.black87,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 6),
-                      child: const Text(
-                        'Sem sessao ativa detectada. Exibindo dados em fallback.',
-                        style: TextStyle(color: Colors.amber, fontSize: 12),
-                      ),
-                    ),
-                  Expanded(
-                    child: _buildTimingContent(
-                      telemetry: telemetry,
-                      sessionId: sessionId,
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    color: Colors.black,
-                    child: Column(
-                      children: [
-                        Row(
+                  child: Column(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        color: Colors.black,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Icon(
-                              Icons.timer,
-                              color: telemetry.localTimingEnabled
-                                  ? Colors.amberAccent
-                                  : Colors.white54,
-                              size: 18,
+                            _buildStatusIndicator(
+                              telemetry.enableSendDataToCloud,
+                              isSimulating: _telemetryService.isSimulating,
+                              flag: _activeSession?.currentFlag,
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                telemetry.localTimingEnabled
-                                    ? 'Local timing ativo no dispositivo (Fase 1).'
-                                    : (_localTimingConfigLoaded
-                                        ? 'Local timing desativado para este usuario.'
-                                        : 'Loading local timing config...'),
-                                style: TextStyle(
+                            _buildModeToggle(),
+                            const SizedBox(height: 4),
+                            _buildInfoMetric(
+                              'Speed',
+                              _telemetryService.isSimulating
+                                  ? '${(_telemetryService.simulationSpeed * 3.6).toStringAsFixed(1)} km/h'
+                                  : '${((telemetry.currentPosition?.speed ?? 0) * 3.6).toStringAsFixed(1)} km/h',
+                              valueColor: Colors.white,
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (_activeSession == null &&
+                          (sessionId == null || sessionId.isEmpty))
+                        Container(
+                          width: double.infinity,
+                          color: Colors.black87,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
+                          child: const Text(
+                            'Sem sessao ativa detectada. Exibindo dados em fallback.',
+                            style: TextStyle(color: Colors.amber, fontSize: 12),
+                          ),
+                        ),
+                      Expanded(
+                        child: _buildTimingContent(
+                          telemetry: telemetry,
+                          sessionId: sessionId,
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        color: Colors.black,
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.timer,
                                   color: telemetry.localTimingEnabled
                                       ? Colors.amberAccent
-                                      : Colors.white70,
-                                  fontWeight: FontWeight.w600,
+                                      : Colors.white54,
+                                  size: 18,
                                 ),
-                              ),
-                            ),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.end,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 12, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: _getGpsColor(
-                                            _telemetryService.currentFrequency)
-                                        .withAlpha(50),
-                                    borderRadius: BorderRadius.circular(20),
-                                    border: Border.all(
-                                      color: _getGpsColor(
-                                          _telemetryService.currentFrequency),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    telemetry.localTimingEnabled
+                                        ? 'Local timing ativo no dispositivo (Fase 1).'
+                                        : (_localTimingConfigLoaded
+                                            ? 'Local timing desativado para este usuario.'
+                                            : 'Loading local timing config...'),
+                                    style: TextStyle(
+                                      color: telemetry.localTimingEnabled
+                                          ? Colors.amberAccent
+                                          : Colors.white70,
+                                      fontWeight: FontWeight.w600,
                                     ),
                                   ),
+                                ),
+                                Column(
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 12, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: _getGpsColor(
+                                                    _telemetryService
+                                                        .currentFrequency)
+                                                .withAlpha(50),
+                                            borderRadius:
+                                                BorderRadius.circular(20),
+                                            border: Border.all(
+                                              color: _getGpsColor(
+                                                  _telemetryService
+                                                      .currentFrequency),
+                                            ),
+                                          ),
+                                          child: Text(
+                                            "${_telemetryService.currentFrequency} Hz",
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: _getGpsColor(
+                                                  _telemetryService
+                                                      .currentFrequency),
+                                            ),
+                                          ),
+                                        )
+                                      ],
+                                    ),
+                                  ],
+                                )
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                const Icon(Icons.smart_toy,
+                                    color: Colors.greenAccent, size: 18),
+                                const SizedBox(width: 8),
+                                Expanded(
                                   child: Text(
-                                    "${_telemetryService.currentFrequency} Hz",
-                                    style: TextStyle(
+                                    _telemetryService.isSimulating
+                                        ? 'Simulation mode active.'
+                                        : (_autoSimulationMode
+                                            ? (_simulationPausedByUser
+                                                ? 'Simulation paused by user. Press START to resume.'
+                                                : 'Simulation mode enabled. Waiting for active session...')
+                                            : (_simulationConfigLoaded
+                                                ? 'Simulation mode disabled for this user.'
+                                                : 'Loading simulation config...')),
+                                    style: const TextStyle(
+                                      color: Colors.greenAccent,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 6),
+                                  child: Text(
+                                    pilotName,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
                                       fontWeight: FontWeight.bold,
-                                      color: _getGpsColor(
-                                          _telemetryService.currentFrequency),
                                     ),
                                   ),
                                 )
                               ],
-                            )
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            const Icon(Icons.smart_toy,
-                                color: Colors.greenAccent, size: 18),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _telemetryService.isSimulating
-                                    ? 'Simulation mode active.'
-                                    : (_autoSimulationMode
-                                        ? (_simulationPausedByUser
-                                            ? 'Simulation paused by user. Press START to resume.'
-                                            : 'Simulation mode enabled. Waiting for active session...')
-                                        : (_simulationConfigLoaded
-                                            ? 'Simulation mode disabled for this user.'
-                                            : 'Loading simulation config...')),
-                                style: const TextStyle(
-                                  color: Colors.greenAccent,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
                             ),
+                            if (_autoSimulationMode) ...[
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  const Text('Sim speed',
+                                      style: TextStyle(color: Colors.white70)),
+                                  Expanded(
+                                    child: Slider(
+                                      value: _telemetryService.simulationSpeed,
+                                      min: 1,
+                                      max: 100,
+                                      onChanged: (val) {
+                                        _telemetryService
+                                            .setSimulationSpeed(val);
+                                      },
+                                    ),
+                                  ),
+                                  Text(
+                                      '${_telemetryService.simulationSpeed.toStringAsFixed(1)} m/s',
+                                      style: const TextStyle(
+                                          color: Colors.white70)),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      onPressed: _telemetryService.isSimulating
+                                          ? null
+                                          : () async {
+                                              try {
+                                                await _startSimulation(
+                                                    auto: false);
+                                                if (mounted) {
+                                                  ScaffoldMessenger.of(context)
+                                                      .showSnackBar(
+                                                    const SnackBar(
+                                                      content: Text(
+                                                          'Simulation started.'),
+                                                    ),
+                                                  );
+                                                }
+                                              } catch (e) {
+                                                if (mounted) {
+                                                  ScaffoldMessenger.of(context)
+                                                      .showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                          'Failed to start simulation: $e'),
+                                                    ),
+                                                  );
+                                                }
+                                              }
+                                            },
+                                      icon: const Icon(Icons.play_arrow),
+                                      label: const Text('START'),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.green,
+                                        foregroundColor: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      onPressed: !_telemetryService.isSimulating
+                                          ? null
+                                          : () async {
+                                              await _stopSimulation(
+                                                  markPausedByUser: true);
+                                              if (mounted) {
+                                                ScaffoldMessenger.of(context)
+                                                    .showSnackBar(
+                                                  const SnackBar(
+                                                    content: Text(
+                                                        'Simulation paused.'),
+                                                  ),
+                                                );
+                                              }
+                                            },
+                                      icon: const Icon(Icons.stop),
+                                      label: const Text('STOP'),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.red,
+                                        foregroundColor: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
-                        if (_autoSimulationMode) ...[
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              const Text('Sim speed',
-                                  style: TextStyle(color: Colors.white70)),
-                              Expanded(
-                                child: Slider(
-                                  value: _telemetryService.simulationSpeed,
-                                  min: 1,
-                                  max: 100,
-                                  onChanged: (val) {
-                                    _telemetryService.setSimulationSpeed(val);
-                                  },
-                                ),
-                              ),
-                              Text(
-                                  '${_telemetryService.simulationSpeed.toStringAsFixed(1)} m/s',
-                                  style:
-                                      const TextStyle(color: Colors.white70)),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: _telemetryService.isSimulating
-                                      ? null
-                                      : () async {
-                                          try {
-                                            await _startSimulation(auto: false);
-                                            if (mounted) {
-                                              ScaffoldMessenger.of(context)
-                                                  .showSnackBar(
-                                                const SnackBar(
-                                                  content: Text(
-                                                      'Simulation started.'),
-                                                ),
-                                              );
-                                            }
-                                          } catch (e) {
-                                            if (mounted) {
-                                              ScaffoldMessenger.of(context)
-                                                  .showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                      'Failed to start simulation: $e'),
-                                                ),
-                                              );
-                                            }
-                                          }
-                                        },
-                                  icon: const Icon(Icons.play_arrow),
-                                  label: const Text('START'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.green,
-                                    foregroundColor: Colors.white,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: !_telemetryService.isSimulating
-                                      ? null
-                                      : () async {
-                                          await _stopSimulation(
-                                              markPausedByUser: true);
-                                          if (mounted) {
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(
-                                              const SnackBar(
-                                                content:
-                                                    Text('Simulation paused.'),
-                                              ),
-                                            );
-                                          }
-                                        },
-                                  icon: const Icon(Icons.stop),
-                                  label: const Text('STOP'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.red,
-                                    foregroundColor: Colors.white,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+                if (_pilotAlertPayload != null)
+                  Positioned.fill(
+                    child: _buildPilotAlertOverlay(),
+                  ),
+              ],
             );
           },
         ),

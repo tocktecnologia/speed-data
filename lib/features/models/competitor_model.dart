@@ -1,8 +1,9 @@
-
 class Competitor {
   final String id;
   final String groupId;
-  
+  final String teamId;
+  final String teamName;
+
   // Driver Details
   final String firstName;
   final String lastName;
@@ -15,13 +16,15 @@ class Competitor {
   final String category; // Category/Class
   final String vehicleReg; // Chassis/Car Reg
   final String label; // TLA (Three Letter Abbreviation) for scoreboards
-  
+
   // Additional Data
   final Map<String, String> additionalFields; // Sponsor, City, Club, etc.
 
   Competitor({
     required this.id,
     required this.groupId,
+    this.teamId = '',
+    this.teamName = '',
     required this.firstName,
     required this.lastName,
     required this.number,
@@ -37,6 +40,8 @@ class Competitor {
   Competitor copyWith({
     String? id,
     String? groupId,
+    String? teamId,
+    String? teamName,
     String? firstName,
     String? lastName,
     String? number,
@@ -51,6 +56,8 @@ class Competitor {
     return Competitor(
       id: id ?? this.id,
       groupId: groupId ?? this.groupId,
+      teamId: teamId ?? this.teamId,
+      teamName: teamName ?? this.teamName,
       firstName: firstName ?? this.firstName,
       lastName: lastName ?? this.lastName,
       number: number ?? this.number,
@@ -71,6 +78,8 @@ class Competitor {
     return {
       'id': id,
       'group_id': groupId,
+      'team_id': teamId,
+      'team_name': teamName,
       'first_name': firstName,
       'last_name': lastName,
       'driver_reg': driverReg,
@@ -88,6 +97,13 @@ class Competitor {
     return Competitor(
       id: map['id'] ?? '',
       groupId: map['group_id'] ?? '',
+      teamId: map['team_id'] ?? '',
+      teamName: map['team_name'] ??
+          ((map['additional_fields'] is Map)
+              ? (Map<String, dynamic>.from(map['additional_fields'])['Team']
+                      ?.toString() ??
+                  '')
+              : ''),
       firstName: map['first_name'] ?? '',
       lastName: map['last_name'] ?? '',
       driverReg: map['driver_reg'] ?? '',
@@ -97,7 +113,8 @@ class Competitor {
       category: map['category'] ?? '',
       vehicleReg: map['vehicle_reg'] ?? '',
       label: map['label'] ?? '',
-      additionalFields: Map<String, String>.from(map['additional_fields'] ?? {}),
+      additionalFields:
+          Map<String, String>.from(map['additional_fields'] ?? {}),
     );
   }
 }

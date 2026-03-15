@@ -528,6 +528,11 @@ class _PilotDashboardState extends State<PilotDashboard> {
                                     raceId: raceId,
                                     userId: user.uid,
                                     raceName: raceName,
+                                    pilotName:
+                                        (user.displayName?.trim().isNotEmpty ??
+                                                false)
+                                            ? user.displayName
+                                            : user.email,
                                   ),
                                 ),
                               );

@@ -392,6 +392,158 @@ async function assertAdminAccess(db, auth) {
   }
 }
 
+function normalizeRole(value) {
+  const role = (value || '').toString().trim().toLowerCase();
+  if (role === 'teammember') return 'team_member';
+  if (role === 'integrante' || role === 'integrante_equipe') return 'team_member';
+  return role;
+}
+
+function isAdminRole(value) {
+  const role = normalizeRole(value);
+  return role === 'admin' || role === 'root';
+}
+
+async function isAdminUser(db, auth) {
+  if (!auth || !auth.uid) return false;
+  const tokenRole = normalizeRole(auth.token.role);
+  if (auth.token.admin === true || isAdminRole(tokenRole)) {
+    return true;
+  }
+
+  const userDoc = await db.collection('users').doc(auth.uid).get();
+  const userData = userDoc.exists ? userDoc.data() || {} : {};
+  return isAdminRole(userData.role);
+}
+
+async function getUserTeamMemberships(db, eventId, uid, userEmail = null) {
+  const memberships = [];
+  if (!eventId || (!uid && !userEmail)) return memberships;
+  const normalizedEmail = (userEmail || '').toString().trim().toLowerCase();
+
+  const teamsSnap = await db.collection('events').doc(eventId).collection('teams').get();
+  if (teamsSnap.empty) return memberships;
+
+  const checks = teamsSnap.docs.map(async (teamDoc) => {
+    let data = null;
+    if (uid) {
+      const memberDocByUid = await teamDoc.ref.collection('members').doc(uid).get();
+      if (memberDocByUid.exists) {
+        data = memberDocByUid.data() || {};
+      }
+    }
+
+    if (!data && normalizedEmail) {
+      const byEmailSnap = await teamDoc.ref
+        .collection('members')
+        .where('email', '==', normalizedEmail)
+        .limit(1)
+        .get();
+      if (!byEmailSnap.empty) {
+        data = byEmailSnap.docs[0].data() || {};
+      }
+    }
+
+    if (!data) return null;
+    if (data.active === false) return null;
+
+    const role = normalizeRole(data.role || 'staff');
+    if (role === 'pilot') return null;
+
+    const teamData = teamDoc.data() || {};
+    const teamName = (teamData.name || '').toString().trim();
+    return {
+      teamId: teamDoc.id,
+      teamName,
+      role,
+    };
+  });
+
+  const resolved = await Promise.all(checks);
+  for (const item of resolved) {
+    if (item) memberships.push(item);
+  }
+  return memberships;
+}
+
+async function resolveCompetitorByPilotUid(db, eventId, pilotUid) {
+  if (!eventId || !pilotUid) return null;
+  const competitorsRef = db.collection('events').doc(eventId).collection('competitors');
+
+  const byUid = await competitorsRef.where('uid', '==', pilotUid).limit(1).get();
+  if (!byUid.empty) {
+    const doc = byUid.docs[0];
+    return { id: doc.id, ...doc.data() };
+  }
+
+  const byUserId = await competitorsRef.where('user_id', '==', pilotUid).limit(1).get();
+  if (!byUserId.empty) {
+    const doc = byUserId.docs[0];
+    return { id: doc.id, ...doc.data() };
+  }
+  return null;
+}
+
+async function canUserControlPilotAlert({
+  db,
+  auth,
+  eventId,
+  pilotUid,
+  requestedTeamId = null,
+}) {
+  if (!auth || !auth.uid) {
+    return { allowed: false, reason: 'unauthenticated' };
+  }
+
+  if (await isAdminUser(db, auth)) {
+    return { allowed: true, reason: 'admin', teamId: requestedTeamId || null };
+  }
+
+  const memberships = await getUserTeamMemberships(
+    db,
+    eventId,
+    auth.uid,
+    auth.token && auth.token.email ? auth.token.email : null,
+  );
+  if (!memberships.length) {
+    return { allowed: false, reason: 'no-team-membership' };
+  }
+
+  const competitor = await resolveCompetitorByPilotUid(db, eventId, pilotUid);
+  if (!competitor) {
+    return { allowed: false, reason: 'pilot-not-found' };
+  }
+
+  const competitorTeamId = (competitor.team_id || '').toString().trim();
+  if (!competitorTeamId) {
+    return { allowed: false, reason: 'pilot-without-team' };
+  }
+
+  const membershipTeam = memberships.find((item) => item.teamId === competitorTeamId);
+  if (!membershipTeam) {
+    return { allowed: false, reason: 'pilot-outside-team' };
+  }
+
+  if (requestedTeamId && requestedTeamId !== competitorTeamId) {
+    return { allowed: false, reason: 'team-mismatch' };
+  }
+
+  return {
+    allowed: true,
+    reason: 'team-member',
+    teamId: competitorTeamId,
+    teamName: membershipTeam.teamName,
+    competitor,
+  };
+}
+
+function parseSessionType(value) {
+  const normalized = (value || '').toString().trim().toLowerCase();
+  if (normalized === 'race' || normalized === 'corrida') return 'race';
+  if (normalized === 'qualifying' || normalized === 'qualification') return 'qualifying';
+  return 'practice';
+}
+
 function buildLapPayloadFromLocalClosure(
   closure,
   {
@@ -1924,6 +2076,361 @@ exports.processTelemetry = functions.pubsub.topic(TOPIC_NAME).onPublish(async (m
   }
 
   await Promise.all(tasks);
+});
+
+exports.sendPilotAlert = functions.https.onCall(async (data, context) => {
+  if (!context.auth || !context.auth.uid) {
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'Authentication is required.',
+    );
+  }
+
+  const eventId = (data.eventId || '').toString().trim();
+  const sessionId = (data.sessionId || '').toString().trim();
+  const pilotUid = (data.pilotUid || '').toString().trim();
+  const requestedTeamId = (data.teamId || '').toString().trim() || null;
+  const type = (data.type || 'custom').toString().trim().toLowerCase();
+  const rawMessage = (data.message || '').toString().replace(/\s+/g, ' ').trim();
+  const message = type === 'box' ? 'BOX' : rawMessage;
+
+  if (!eventId || !sessionId || !pilotUid) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'eventId, sessionId and pilotUid are required.',
+    );
+  }
+  if (!message || message.length > 32) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'Message must be between 1 and 32 characters.',
+    );
+  }
+
+  const db = admin.firestore();
+  const permission = await canUserControlPilotAlert({
+    db,
+    auth: context.auth,
+    eventId,
+    pilotUid,
+    requestedTeamId,
+  });
+  if (!permission.allowed) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      `Not allowed to alert this pilot (${permission.reason}).`,
+    );
+  }
+
+  const eventDoc = await db.collection('events').doc(eventId).get();
+  if (!eventDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Event not found.');
+  }
+  const eventData = eventDoc.data() || {};
+  const sessions = Array.isArray(eventData.sessions) ? eventData.sessions : [];
+  const sessionExists = sessions.some((session) => session && session.id === sessionId);
+  if (!sessionExists) {
+    throw new functions.https.HttpsError('not-found', 'Session not found in event.');
+  }
+
+  const rateRef = db
+    .collection('events')
+    .doc(eventId)
+    .collection('rate_limits')
+    .doc(`pilot_alert_${context.auth.uid}`);
+  const rateDoc = await rateRef.get();
+  const nowMs = Date.now();
+  const minIntervalMs = 1500;
+  if (rateDoc.exists) {
+    const rateData = rateDoc.data() || {};
+    const lastSentAtMs = asFiniteNumber(rateData.last_sent_at_ms, null);
+    if (lastSentAtMs !== null && nowMs - lastSentAtMs < minIntervalMs) {
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        'Too many alerts. Please wait a moment and try again.',
+      );
+    }
+  }
+
+  let expiresAtMs = null;
+  const expiresInSeconds = asFiniteNumber(data.expiresInSeconds, null);
+  if (expiresInSeconds !== null && expiresInSeconds > 0) {
+    const boundedSeconds = Math.max(5, Math.min(300, Math.trunc(expiresInSeconds)));
+    expiresAtMs = nowMs + boundedSeconds * 1000;
+  }
+
+  const actorName =
+    (context.auth.token.name || context.auth.token.email || '').toString().trim();
+
+  const alertRef = db
+    .collection('events')
+    .doc(eventId)
+    .collection('sessions')
+    .doc(sessionId)
+    .collection('pilot_alerts')
+    .doc(pilotUid);
+
+  await alertRef.set(
+    {
+      active: true,
+      event_id: eventId,
+      session_id: sessionId,
+      pilot_uid: pilotUid,
+      message,
+      type: type === 'box' ? 'box' : 'custom',
+      team_id: permission.teamId || null,
+      team_name: permission.teamName || null,
+      created_by: context.auth.uid,
+      created_by_name: actorName || null,
+      updated_by: context.auth.uid,
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      removed_at: null,
+      removed_by: null,
+      expires_at_ms: expiresAtMs,
+    },
+    { merge: true },
+  );
+
+  await rateRef.set(
+    {
+      key: `pilot_alert_${context.auth.uid}`,
+      uid: context.auth.uid,
+      last_sent_at_ms: nowMs,
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return {
+    success: true,
+    eventId,
+    sessionId,
+    pilotUid,
+    message,
+    type: type === 'box' ? 'box' : 'custom',
+  };
+});
+
+exports.clearPilotAlert = functions.https.onCall(async (data, context) => {
+  if (!context.auth || !context.auth.uid) {
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'Authentication is required.',
+    );
+  }
+
+  const eventId = (data.eventId || '').toString().trim();
+  const sessionId = (data.sessionId || '').toString().trim();
+  const pilotUid = (data.pilotUid || '').toString().trim();
+  if (!eventId || !sessionId || !pilotUid) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'eventId, sessionId and pilotUid are required.',
+    );
+  }
+
+  const db = admin.firestore();
+  const alertRef = db
+    .collection('events')
+    .doc(eventId)
+    .collection('sessions')
+    .doc(sessionId)
+    .collection('pilot_alerts')
+    .doc(pilotUid);
+
+  const alertDoc = await alertRef.get();
+  if (!alertDoc.exists) {
+    return {
+      success: true,
+      eventId,
+      sessionId,
+      pilotUid,
+      alreadyCleared: true,
+    };
+  }
+
+  const alertData = alertDoc.data() || {};
+  let allowed = false;
+
+  if (await isAdminUser(db, context.auth)) {
+    allowed = true;
+  } else if ((alertData.created_by || '').toString().trim() === context.auth.uid) {
+    allowed = true;
+  } else {
+    const permission = await canUserControlPilotAlert({
+      db,
+      auth: context.auth,
+      eventId,
+      pilotUid,
+      requestedTeamId: (alertData.team_id || '').toString().trim() || null,
+    });
+    allowed = permission.allowed;
+  }
+
+  if (!allowed) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'Not allowed to clear this pilot alert.',
+    );
+  }
+
+  await alertRef.set(
+    {
+      active: false,
+      removed_by: context.auth.uid,
+      removed_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_by: context.auth.uid,
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return {
+    success: true,
+    eventId,
+    sessionId,
+    pilotUid,
+  };
+});
+
+exports.getPublicSessionResults = functions.https.onCall(async (data) => {
+  const eventId = (data.eventId || '').toString().trim();
+  const sessionId = (data.sessionId || '').toString().trim();
+  if (!eventId || !sessionId) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'eventId and sessionId are required.',
+    );
+  }
+
+  const db = admin.firestore();
+  const eventDoc = await db.collection('events').doc(eventId).get();
+  if (!eventDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'Event not found.');
+  }
+
+  const eventData = eventDoc.data() || {};
+  const sessions = Array.isArray(eventData.sessions) ? eventData.sessions : [];
+  const sessionEntry = sessions.find((entry) => entry && entry.id === sessionId);
+  if (!sessionEntry) {
+    throw new functions.https.HttpsError('not-found', 'Session not found.');
+  }
+
+  const sessionType = parseSessionType(sessionEntry.type);
+  const sessionName =
+    (sessionEntry.name || '').toString().trim() ||
+    (sessionEntry.short_name || '').toString().trim() ||
+    sessionType.toUpperCase();
+  const minLapTimeSeconds = Math.max(
+    0,
+    Math.trunc(asFiniteNumber(sessionEntry.min_lap_time_seconds, DEFAULT_MIN_LAP_TIME_SECONDS)),
+  );
+  const minLapMs = minLapTimeSeconds * 1000;
+
+  const competitorsSnap = await db
+    .collection('events')
+    .doc(eventId)
+    .collection('competitors')
+    .get();
+
+  const competitorByUid = new Map();
+  for (const doc of competitorsSnap.docs) {
+    const competitor = doc.data() || {};
+    const uid = (competitor.uid || competitor.user_id || '').toString().trim();
+    if (!uid) continue;
+    competitorByUid.set(uid, competitor);
+  }
+
+  const participantsSnap = await db
+    .collection('events')
+    .doc(eventId)
+    .collection('sessions')
+    .doc(sessionId)
+    .collection('participants')
+    .get();
+
+  const rows = [];
+  for (const participantDoc of participantsSnap.docs) {
+    const uid = participantDoc.id;
+    const competitor = competitorByUid.get(uid) || {};
+    const lapsSnap = await participantDoc.ref.collection('laps').limit(1200).get();
+    const laps = lapsSnap.docs.map((doc) => doc.data() || {});
+    if (!laps.length) continue;
+
+    const validLapTimes = [];
+    for (const lap of laps) {
+      const lapMs = asFiniteNumber(
+        lap.total_lap_time_ms ?? lap.lap_time_ms ?? lap.lap_time,
+        null,
+      );
+      const isValid = lap.valid !== false;
+      if (!isValid || lapMs === null || lapMs <= 0) continue;
+      if (minLapMs > 0 && lapMs < minLapMs) continue;
+      validLapTimes.push(Math.trunc(lapMs));
+    }
+
+    const bestLapMs = validLapTimes.length ? Math.min(...validLapTimes) : null;
+    const totalLaps = laps.length;
+    const validLaps = validLapTimes.length;
+
+    const firstName = (competitor.first_name || '').toString().trim();
+    const lastName = (competitor.last_name || '').toString().trim();
+    const displayName = `${firstName} ${lastName}`.trim() || `Pilot ${uid.slice(0, 6)}`;
+    let teamName = (competitor.team_name || '').toString().trim();
+    if (
+      !teamName &&
+      competitor.additional_fields &&
+      typeof competitor.additional_fields === 'object'
+    ) {
+      teamName = (competitor.additional_fields.Team || '').toString().trim();
+    }
+
+    rows.push({
+      uid,
+      display_name: displayName,
+      car_number: (competitor.number || '').toString().trim(),
+      team_name: teamName,
+      best_lap_ms: bestLapMs,
+      valid_laps: validLaps,
+      laps: totalLaps,
+    });
+  }
+
+  rows.sort((a, b) => {
+    if (sessionType === 'race') {
+      if (b.laps !== a.laps) return b.laps - a.laps;
+      if (a.best_lap_ms == null && b.best_lap_ms == null) {
+        return a.display_name.localeCompare(b.display_name);
+      }
+      if (a.best_lap_ms == null) return 1;
+      if (b.best_lap_ms == null) return -1;
+      return a.best_lap_ms - b.best_lap_ms;
+    }
+
+    if (a.best_lap_ms == null && b.best_lap_ms == null) {
+      return a.display_name.localeCompare(b.display_name);
+    }
+    if (a.best_lap_ms == null) return 1;
+    if (b.best_lap_ms == null) return -1;
+    return a.best_lap_ms - b.best_lap_ms;
+  });
+
+  const results = rows.map((row, index) => ({
+    position: index + 1,
+    ...row,
+  }));
+
+  return {
+    success: true,
+    event_id: eventId,
+    session_id: sessionId,
+    event_name: (eventData.name || '').toString().trim(),
+    session_name: sessionName,
+    session_type: sessionType,
+    generated_at_ms: Date.now(),
+    results,
+  };
 });
 
 exports.clearSessionRuntimeData = functions.https.onCall(async (data, context) => {

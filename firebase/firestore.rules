@@ -97,6 +97,16 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isAuthenticated(); // tighten to admins when claims available
 
+      match /teams/{teamId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated(); // tighten to admin/organizer when claims available
+
+        match /members/{memberId} {
+          allow read: if isAuthenticated();
+          allow write: if isAuthenticated(); // tighten to admin/organizer when claims available
+        }
+      }
+
       match /competitors/{competitorId} {
         allow read: if isAuthenticated();
         allow write: if isAuthenticated();
@@ -145,6 +155,12 @@ service cloud.firestore {
         match /analysis/{docId} {
           allow read: if isAuthenticated();
           allow write: if isAuthenticated();
+        }
+
+        match /pilot_alerts/{pilotUid} {
+          allow read: if isAuthenticated();
+          // Write path is controlled by Cloud Functions.
+          allow write: if false;
         }
       }
     }

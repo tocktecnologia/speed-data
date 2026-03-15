@@ -18,11 +18,42 @@ class TeamDashboardScreen extends StatefulWidget {
 class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
   final FirestoreService _firestore = FirestoreService();
   String? _selectedEventId;
-  bool _sendingAlert = false;
+  final Set<String> _alertsInFlightByPilot = <String>{};
 
   String _sessionLabel(RaceSession session) {
     if (session.name.trim().isNotEmpty) return session.name.trim();
     return session.type.name.toUpperCase();
+  }
+
+  bool _isPilotAlertActionInFlight(String pilotUid) {
+    final normalizedUid = pilotUid.trim();
+    if (normalizedUid.isEmpty) return false;
+    return _alertsInFlightByPilot.contains(normalizedUid);
+  }
+
+  void _setPilotAlertActionInFlight(String pilotUid, bool inFlight) {
+    final normalizedUid = pilotUid.trim();
+    if (normalizedUid.isEmpty || !mounted) return;
+    setState(() {
+      if (inFlight) {
+        _alertsInFlightByPilot.add(normalizedUid);
+      } else {
+        _alertsInFlightByPilot.remove(normalizedUid);
+      }
+    });
+  }
+
+  bool _isAlertActive(Map<String, dynamic>? alert) {
+    if (alert == null) return false;
+    if (alert['active'] != true) return false;
+    final message = (alert['message'] as String?)?.trim() ?? '';
+    if (message.isEmpty) return false;
+    final expiresAtMs = alert['expires_at_ms'];
+    if (expiresAtMs is num &&
+        DateTime.now().millisecondsSinceEpoch > expiresAtMs.toInt()) {
+      return false;
+    }
+    return true;
   }
 
   Future<void> _sendBoxAlert({
@@ -30,7 +61,8 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
     required String sessionId,
     required Competitor competitor,
   }) async {
-    if (competitor.uid.trim().isEmpty) {
+    final pilotUid = competitor.uid.trim();
+    if (pilotUid.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -39,6 +71,8 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
       );
       return;
     }
+    if (_isPilotAlertActionInFlight(pilotUid)) return;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -58,12 +92,12 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
     );
     if (confirmed != true) return;
 
-    setState(() => _sendingAlert = true);
+    _setPilotAlertActionInFlight(pilotUid, true);
     try {
       await _firestore.sendPilotAlert(
         eventId: eventId,
         sessionId: sessionId,
-        pilotUid: competitor.uid,
+        pilotUid: pilotUid,
         message: 'BOX',
         type: 'box',
         teamId: competitor.teamId,
@@ -78,7 +112,7 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
         SnackBar(content: Text('Erro ao enviar alerta: $e')),
       );
     } finally {
-      if (mounted) setState(() => _sendingAlert = false);
+      _setPilotAlertActionInFlight(pilotUid, false);
     }
   }
 
@@ -87,7 +121,8 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
     required String sessionId,
     required Competitor competitor,
   }) async {
-    if (competitor.uid.trim().isEmpty) {
+    final pilotUid = competitor.uid.trim();
+    if (pilotUid.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -96,6 +131,7 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
       );
       return;
     }
+    if (_isPilotAlertActionInFlight(pilotUid)) return;
 
     final controller = TextEditingController();
     final text = await showDialog<String>(
@@ -126,12 +162,12 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
     controller.dispose();
     if (text == null || text.trim().isEmpty) return;
 
-    setState(() => _sendingAlert = true);
+    _setPilotAlertActionInFlight(pilotUid, true);
     try {
       await _firestore.sendPilotAlert(
         eventId: eventId,
         sessionId: sessionId,
-        pilotUid: competitor.uid,
+        pilotUid: pilotUid,
         message: text,
         type: 'custom',
         teamId: competitor.teamId,
@@ -146,7 +182,7 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
         SnackBar(content: Text('Erro ao enviar alerta: $e')),
       );
     } finally {
-      if (mounted) setState(() => _sendingAlert = false);
+      _setPilotAlertActionInFlight(pilotUid, false);
     }
   }
 
@@ -155,13 +191,14 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
     required String sessionId,
     required Competitor competitor,
   }) async {
-    if (competitor.uid.trim().isEmpty) return;
-    setState(() => _sendingAlert = true);
+    final pilotUid = competitor.uid.trim();
+    if (pilotUid.isEmpty || _isPilotAlertActionInFlight(pilotUid)) return;
+    _setPilotAlertActionInFlight(pilotUid, true);
     try {
       await _firestore.clearPilotAlert(
         eventId: eventId,
         sessionId: sessionId,
-        pilotUid: competitor.uid,
+        pilotUid: pilotUid,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -173,8 +210,98 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
         SnackBar(content: Text('Erro ao remover alerta: $e')),
       );
     } finally {
-      if (mounted) setState(() => _sendingAlert = false);
+      _setPilotAlertActionInFlight(pilotUid, false);
     }
+  }
+
+  Widget _buildPilotAlertTile({
+    required RaceEvent event,
+    required RaceSession? session,
+    required Competitor competitor,
+    required Map<String, dynamic>? alert,
+  }) {
+    final pilotUid = competitor.uid.trim();
+    final isBusy = _isPilotAlertActionInFlight(pilotUid);
+    final canSendAlert = session != null && pilotUid.isNotEmpty;
+    final isActive = _isAlertActive(alert);
+    final alertType = (alert?['type'] as String?)?.trim().toLowerCase() ?? '';
+    final alertMessage = (alert?['message'] as String?)?.trim() ?? '';
+    final isBoxActive = isActive && alertType == 'box';
+    final isMsgActive = isActive && !isBoxActive;
+    final statusLabel = isActive
+        ? (isBoxActive ? 'Status: BOX ativo' : 'Status: MSG "$alertMessage"')
+        : 'Status: sem alerta';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: CircleAvatar(
+          child: Text(
+            competitor.number.isEmpty ? '?' : competitor.number,
+          ),
+        ),
+        title: Text(
+          competitor.name.isEmpty ? competitor.id : competitor.name,
+        ),
+        subtitle: Text(
+          '${competitor.teamName.isEmpty ? 'Equipe sem nome' : competitor.teamName}\n$statusLabel',
+        ),
+        isThreeLine: true,
+        trailing: Wrap(
+          spacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            OutlinedButton(
+              style: isBoxActive
+                  ? OutlinedButton.styleFrom(
+                      backgroundColor: Colors.red.shade500,
+                    )
+                  : null,
+              onPressed: !canSendAlert || isBusy
+                  ? null
+                  : () => _sendBoxAlert(
+                        eventId: event.id,
+                        sessionId: session.id,
+                        competitor: competitor,
+                      ),
+              child: Text(isBoxActive ? 'BOX ATIVO' : 'BOX'),
+            ),
+            OutlinedButton(
+              style: isMsgActive
+                  ? OutlinedButton.styleFrom(
+                      backgroundColor: Colors.lightBlue.shade100,
+                    )
+                  : null,
+              onPressed: !canSendAlert || isBusy
+                  ? null
+                  : () => _sendCustomAlert(
+                        eventId: event.id,
+                        sessionId: session.id,
+                        competitor: competitor,
+                      ),
+              child: Text(isMsgActive ? 'MSG ATIVA' : 'MSG'),
+            ),
+            IconButton(
+              tooltip: 'Remover alerta',
+              onPressed: !canSendAlert || isBusy || !isActive
+                  ? null
+                  : () => _clearAlert(
+                        eventId: event.id,
+                        sessionId: session.id,
+                        competitor: competitor,
+                      ),
+              icon: isBusy
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.notifications_off_outlined),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildSessionResults(
@@ -410,6 +537,7 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
                   } catch (_) {
                     activeSession = null;
                   }
+                  final activeSessionId = activeSession?.id;
 
                   return ListView(
                     padding: const EdgeInsets.all(12),
@@ -502,72 +630,30 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
                                 )
                               else
                                 ...teamCompetitors.map(
-                                  (competitor) => Card(
-                                    margin: const EdgeInsets.only(bottom: 8),
-                                    child: ListTile(
-                                      leading: CircleAvatar(
-                                        child: Text(
-                                          competitor.number.isEmpty
-                                              ? '?'
-                                              : competitor.number,
-                                        ),
-                                      ),
-                                      title: Text(
-                                        competitor.name.isEmpty
-                                            ? competitor.id
-                                            : competitor.name,
-                                      ),
-                                      subtitle: Text(
-                                        competitor.teamName.isEmpty
-                                            ? 'Equipe sem nome'
-                                            : competitor.teamName,
-                                      ),
-                                      trailing: Wrap(
-                                        spacing: 6,
-                                        children: [
-                                          OutlinedButton(
-                                            onPressed: _sendingAlert ||
-                                                    activeSession == null
-                                                ? null
-                                                : () => _sendBoxAlert(
-                                                      eventId: selectedEvent.id,
-                                                      sessionId:
-                                                          activeSession!.id,
-                                                      competitor: competitor,
-                                                    ),
-                                            child: const Text('BOX'),
-                                          ),
-                                          OutlinedButton(
-                                            onPressed: _sendingAlert ||
-                                                    activeSession == null
-                                                ? null
-                                                : () => _sendCustomAlert(
-                                                      eventId: selectedEvent.id,
-                                                      sessionId:
-                                                          activeSession!.id,
-                                                      competitor: competitor,
-                                                    ),
-                                            child: const Text('MSG'),
-                                          ),
-                                          IconButton(
-                                            tooltip: 'Remover alerta',
-                                            onPressed: _sendingAlert ||
-                                                    activeSession == null
-                                                ? null
-                                                : () => _clearAlert(
-                                                      eventId: selectedEvent.id,
-                                                      sessionId:
-                                                          activeSession!.id,
-                                                      competitor: competitor,
-                                                    ),
-                                            icon: const Icon(
-                                              Icons.notifications_off_outlined,
+                                  (competitor) {
+                                    final pilotUid = competitor.uid.trim();
+                                    final canListen = activeSessionId != null &&
+                                        pilotUid.isNotEmpty;
+                                    return StreamBuilder<Map<String, dynamic>?>(
+                                      stream: canListen
+                                          ? _firestore.getPilotAlertStream(
+                                              eventId: selectedEvent.id,
+                                              sessionId: activeSessionId,
+                                              pilotUid: pilotUid,
+                                            )
+                                          : Stream<Map<String, dynamic>?>.value(
+                                              null,
                                             ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
+                                      builder: (context, alertSnapshot) {
+                                        return _buildPilotAlertTile(
+                                          event: selectedEvent,
+                                          session: activeSession,
+                                          competitor: competitor,
+                                          alert: alertSnapshot.data,
+                                        );
+                                      },
+                                    );
+                                  },
                                 ),
                             ],
                           ),

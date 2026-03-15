@@ -466,6 +466,42 @@ async function getUserTeamMemberships(db, eventId, uid, userEmail = null) {
   return memberships;
 }
 
+async function getUserMembershipForTeam(db, eventId, teamId, uid, userEmail = null) {
+  if (!eventId || !teamId || (!uid && !userEmail)) return null;
+  const teamRef = db.collection('events').doc(eventId).collection('teams').doc(teamId);
+
+  let data = null;
+  if (uid) {
+    const memberDocByUid = await teamRef.collection('members').doc(uid).get();
+    if (memberDocByUid.exists) {
+      data = memberDocByUid.data() || {};
+    }
+  }
+
+  const normalizedEmail = (userEmail || '').toString().trim().toLowerCase();
+  if (!data && normalizedEmail) {
+    const byEmailSnap = await teamRef
+      .collection('members')
+      .where('email', '==', normalizedEmail)
+      .limit(1)
+      .get();
+    if (!byEmailSnap.empty) {
+      data = byEmailSnap.docs[0].data() || {};
+    }
+  }
+
+  if (!data || data.active === false) return null;
+
+  const role = normalizeRole(data.role || 'staff');
+  if (role === 'pilot') return null;
+
+  return {
+    teamId,
+    teamName: (data.team_name || '').toString().trim() || null,
+    role,
+  };
+}
+
 async function resolveCompetitorByPilotUid(db, eventId, pilotUid) {
   if (!eventId || !pilotUid) return null;
   const competitorsRef = db.collection('events').doc(eventId).collection('competitors');
@@ -494,19 +530,11 @@ async function canUserControlPilotAlert({
   if (!auth || !auth.uid) {
     return { allowed: false, reason: 'unauthenticated' };
   }
-
-  if (await isAdminUser(db, auth)) {
-    return { allowed: true, reason: 'admin', teamId: requestedTeamId || null };
-  }
-
-  const memberships = await getUserTeamMemberships(
-    db,
-    eventId,
-    auth.uid,
-    auth.token && auth.token.email ? auth.token.email : null,
-  );
-  if (!memberships.length) {
-    return { allowed: false, reason: 'no-team-membership' };
+  const normalizedRequestedTeamId = (requestedTeamId || '').toString().trim() || null;
+  const tokenRole = normalizeRole(auth.token && auth.token.role ? auth.token.role : null);
+  const hasAdminClaim = (auth.token && auth.token.admin === true) || isAdminRole(tokenRole);
+  if (hasAdminClaim) {
+    return { allowed: true, reason: 'admin-token', teamId: normalizedRequestedTeamId };
   }
 
   const competitor = await resolveCompetitorByPilotUid(db, eventId, pilotUid);
@@ -518,14 +546,49 @@ async function canUserControlPilotAlert({
   if (!competitorTeamId) {
     return { allowed: false, reason: 'pilot-without-team' };
   }
+  if (normalizedRequestedTeamId && normalizedRequestedTeamId !== competitorTeamId) {
+    if (await isAdminUser(db, auth)) {
+      return { allowed: true, reason: 'admin', teamId: normalizedRequestedTeamId };
+    }
+    return { allowed: false, reason: 'team-mismatch' };
+  }
 
+  const membershipTeamId = normalizedRequestedTeamId || competitorTeamId;
+  const membership = await getUserMembershipForTeam(
+    db,
+    eventId,
+    membershipTeamId,
+    auth.uid,
+    auth.token && auth.token.email ? auth.token.email : null,
+  );
+  if (membership && membership.teamId === competitorTeamId) {
+    const competitorTeamName =
+      (competitor.team_name || competitor.teamName || '').toString().trim() || null;
+    return {
+      allowed: true,
+      reason: 'team-member',
+      teamId: competitorTeamId,
+      teamName: membership.teamName || competitorTeamName,
+      competitor,
+    };
+  }
+
+  if (await isAdminUser(db, auth)) {
+    return { allowed: true, reason: 'admin', teamId: normalizedRequestedTeamId };
+  }
+
+  const memberships = await getUserTeamMemberships(
+    db,
+    eventId,
+    auth.uid,
+    auth.token && auth.token.email ? auth.token.email : null,
+  );
+  if (!memberships.length) {
+    return { allowed: false, reason: 'no-team-membership' };
+  }
   const membershipTeam = memberships.find((item) => item.teamId === competitorTeamId);
   if (!membershipTeam) {
     return { allowed: false, reason: 'pilot-outside-team' };
-  }
-
-  if (requestedTeamId && requestedTeamId !== competitorTeamId) {
-    return { allowed: false, reason: 'team-mismatch' };
   }
 
   return {
@@ -2122,14 +2185,13 @@ exports.sendPilotAlert = functions.https.onCall(async (data, context) => {
     );
   }
 
-  const eventDoc = await db.collection('events').doc(eventId).get();
-  if (!eventDoc.exists) {
-    throw new functions.https.HttpsError('not-found', 'Event not found.');
-  }
-  const eventData = eventDoc.data() || {};
-  const sessions = Array.isArray(eventData.sessions) ? eventData.sessions : [];
-  const sessionExists = sessions.some((session) => session && session.id === sessionId);
-  if (!sessionExists) {
+  const sessionDoc = await db
+    .collection('events')
+    .doc(eventId)
+    .collection('sessions')
+    .doc(sessionId)
+    .get();
+  if (!sessionDoc.exists) {
     throw new functions.https.HttpsError('not-found', 'Session not found in event.');
   }
 

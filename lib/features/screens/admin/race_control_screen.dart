@@ -568,146 +568,149 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                     Container(
                       padding: const EdgeInsets.all(8),
                       color: SpeedDataTheme.bgSurface,
-                      child: Row(
-                        children: [
-                          // Flag Control with Reactive Status
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 16, vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: (displaySession?.status ==
-                                              SessionStatus.active
-                                          ? _getFlagColor(currentFlag)
-                                          : _getStatusColor(
-                                              displaySession?.status ??
-                                                  SessionStatus.scheduled))
-                                      .withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(4),
-                                  border: Border.all(
-                                      color: (displaySession?.status ==
-                                                  SessionStatus.active
-                                              ? _getFlagColor(currentFlag)
-                                              : _getStatusColor(
-                                                  displaySession?.status ??
-                                                      SessionStatus.scheduled))
-                                          .withOpacity(0.5),
-                                      width: 2),
-                                ),
-                                child: Text(
-                                  displaySession?.status == SessionStatus.active
-                                      ? 'RACE STATUS: ${currentFlag.name.toUpperCase()} FLAG'
-                                      : 'SESSION: ${displaySession?.status.name.toUpperCase() ?? "UNKNOWN"}',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                    color: displaySession?.status ==
-                                            SessionStatus.active
-                                        ? (currentFlag == RaceFlag.checkered
-                                            ? Colors.white
-                                            : _getFlagColor(currentFlag))
-                                        : _getStatusColor(
-                                            displaySession?.status ??
-                                                SessionStatus.scheduled),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 16),
-                              Wrap(
-                                spacing: 8,
-                                children: [
-                                  _buildActionButton(
-                                      'WARMUP',
-                                      Icons.local_fire_department,
-                                      SpeedDataTheme.flagPurple,
-                                      () => _updateFlag(RaceFlag.warmup,
-                                          session: displaySession,
-                                          currentEvent: eventData),
-                                      isActive: displaySession?.status ==
-                                              SessionStatus.active &&
-                                          currentFlag == RaceFlag.warmup),
-                                  _buildActionButton(
-                                      'GREEN',
-                                      Icons.flag,
-                                      SpeedDataTheme.flagGreen,
-                                      () => _updateFlag(RaceFlag.green,
-                                          session: displaySession,
-                                          currentEvent: eventData),
-                                      isActive: displaySession?.status ==
-                                              SessionStatus.active &&
-                                          currentFlag == RaceFlag.green),
-                                  _buildActionButton(
-                                      'SC',
-                                      Icons.flag,
-                                      SpeedDataTheme.flagYellow,
-                                      () => _updateFlag(RaceFlag.yellow,
-                                          session: displaySession,
-                                          currentEvent: eventData),
-                                      isActive: displaySession?.status ==
-                                              SessionStatus.active &&
-                                          currentFlag == RaceFlag.yellow),
-                                  _buildActionButton(
-                                      'RED',
-                                      Icons.flag,
-                                      SpeedDataTheme.flagRed,
-                                      () => _updateFlag(RaceFlag.red,
-                                          session: displaySession,
-                                          currentEvent: eventData),
-                                      isActive: displaySession?.status ==
-                                              SessionStatus.active &&
-                                          currentFlag == RaceFlag.red),
-                                  _buildActionButton(
-                                      'FINISH',
-                                      Icons.flag,
-                                      Colors.white,
-                                      () => _updateFlag(RaceFlag.checkered,
-                                          session: displaySession,
-                                          currentEvent: eventData),
-                                      textColor: Colors.black,
-                                      isActive: displaySession?.status ==
-                                              SessionStatus.active &&
-                                          currentFlag == RaceFlag.checkered),
-                                  const SizedBox(width: 8),
-                                  _buildActionButton(
-                                      'STOP',
-                                      Icons.stop,
-                                      Colors.grey.shade800,
-                                      () => _confirmAndStopSession(
-                                          displaySession, eventData),
-                                      isOutlined: true),
-                                  _buildActionButton(
-                                      _isClearingSessionData
-                                          ? 'CLEARING...'
-                                          : 'CLEAR SESSION',
-                                      Icons.delete_sweep,
-                                      Colors.redAccent,
-                                      () => _confirmAndClearSessionData(
-                                          displaySession, eventData),
-                                      isOutlined: true),
-                                ],
-                              ),
-                            ],
-                          ),
-                          const SizedBox(width: 24),
-                          if (displaySession != null)
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            // Flag Control with Reactive Status
                             Row(
                               children: [
-                                _buildInfoItem('Duration',
-                                    '${displaySession.durationMinutes} min'),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: (displaySession?.status ==
+                                                SessionStatus.active
+                                            ? _getFlagColor(currentFlag)
+                                            : _getStatusColor(
+                                                displaySession?.status ??
+                                                    SessionStatus.scheduled))
+                                        .withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                        color: (displaySession?.status ==
+                                                    SessionStatus.active
+                                                ? _getFlagColor(currentFlag)
+                                                : _getStatusColor(
+                                                    displaySession?.status ??
+                                                        SessionStatus.scheduled))
+                                            .withOpacity(0.5),
+                                        width: 2),
+                                  ),
+                                  child: Text(
+                                    displaySession?.status ==
+                                            SessionStatus.active
+                                        ? 'RACE STATUS: ${currentFlag.name.toUpperCase()} FLAG'
+                                        : 'SESSION: ${displaySession?.status.name.toUpperCase() ?? "UNKNOWN"}',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                      color: displaySession?.status ==
+                                              SessionStatus.active
+                                          ? (currentFlag == RaceFlag.checkered
+                                              ? Colors.white
+                                              : _getFlagColor(currentFlag))
+                                          : _getStatusColor(
+                                              displaySession?.status ??
+                                                  SessionStatus.scheduled),
+                                    ),
+                                  ),
+                                ),
                                 const SizedBox(width: 16),
-                                _buildInfoItem('Laps',
-                                    '${displaySession.totalLaps ?? "-"}'),
-                                const SizedBox(width: 16),
-                                _buildInfoItem(
-                                    'Start', displaySession.startMethod),
-                                const SizedBox(width: 8),
-                                IconButton(
-                                  icon: const Icon(Icons.edit,
-                                      size: 16,
-                                      color: SpeedDataTheme.textSecondary),
-                                  onPressed: () async {
-                                    final trackCheckpoints =
+                                Wrap(
+                                  spacing: 8,
+                                  children: [
+                                    _buildActionButton(
+                                        'WARMUP',
+                                        Icons.local_fire_department,
+                                        SpeedDataTheme.flagPurple,
+                                        () => _updateFlag(RaceFlag.warmup,
+                                            session: displaySession,
+                                            currentEvent: eventData),
+                                        isActive: displaySession?.status ==
+                                                SessionStatus.active &&
+                                            currentFlag == RaceFlag.warmup),
+                                    _buildActionButton(
+                                        'GREEN',
+                                        Icons.flag,
+                                        SpeedDataTheme.flagGreen,
+                                        () => _updateFlag(RaceFlag.green,
+                                            session: displaySession,
+                                            currentEvent: eventData),
+                                        isActive: displaySession?.status ==
+                                                SessionStatus.active &&
+                                            currentFlag == RaceFlag.green),
+                                    _buildActionButton(
+                                        'SC',
+                                        Icons.flag,
+                                        SpeedDataTheme.flagYellow,
+                                        () => _updateFlag(RaceFlag.yellow,
+                                            session: displaySession,
+                                            currentEvent: eventData),
+                                        isActive: displaySession?.status ==
+                                                SessionStatus.active &&
+                                            currentFlag == RaceFlag.yellow),
+                                    _buildActionButton(
+                                        'RED',
+                                        Icons.flag,
+                                        SpeedDataTheme.flagRed,
+                                        () => _updateFlag(RaceFlag.red,
+                                            session: displaySession,
+                                            currentEvent: eventData),
+                                        isActive: displaySession?.status ==
+                                                SessionStatus.active &&
+                                            currentFlag == RaceFlag.red),
+                                    _buildActionButton(
+                                        'FINISH',
+                                        Icons.flag,
+                                        Colors.white,
+                                        () => _updateFlag(RaceFlag.checkered,
+                                            session: displaySession,
+                                            currentEvent: eventData),
+                                        textColor: Colors.black,
+                                        isActive: displaySession?.status ==
+                                                SessionStatus.active &&
+                                            currentFlag == RaceFlag.checkered),
+                                    const SizedBox(width: 8),
+                                    _buildActionButton(
+                                        'STOP',
+                                        Icons.stop,
+                                        Colors.grey.shade800,
+                                        () => _confirmAndStopSession(
+                                            displaySession, eventData),
+                                        isOutlined: true),
+                                    _buildActionButton(
+                                        _isClearingSessionData
+                                            ? 'CLEARING...'
+                                            : 'CLEAR SESSION',
+                                        Icons.delete_sweep,
+                                        Colors.redAccent,
+                                        () => _confirmAndClearSessionData(
+                                            displaySession, eventData),
+                                        isOutlined: true),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            const SizedBox(width: 24),
+                            if (displaySession != null)
+                              Row(
+                                children: [
+                                  _buildInfoItem('Duration',
+                                      '${displaySession.durationMinutes} min'),
+                                  const SizedBox(width: 16),
+                                  _buildInfoItem('Laps',
+                                      '${displaySession.totalLaps ?? "-"}'),
+                                  const SizedBox(width: 16),
+                                  _buildInfoItem(
+                                      'Start', displaySession.startMethod),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    icon: const Icon(Icons.edit,
+                                        size: 16,
+                                        color: SpeedDataTheme.textSecondary),
+                                    onPressed: () async {
+                                      final trackCheckpoints =
                                         await _loadTrackCheckpoints(
                                             eventData.trackId);
                                     if (!mounted) return;
@@ -730,7 +733,7 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                                 ),
                               ],
                             ),
-                          const Spacer(),
+                          const SizedBox(width: 24),
                           // Session Timer
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -765,6 +768,7 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                           ),
                         ],
                       ),
+                    ),
                     ),
                     const Divider(height: 1, color: SpeedDataTheme.borderColor),
                     // Main Content Area...

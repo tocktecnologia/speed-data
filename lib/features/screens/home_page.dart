@@ -4,6 +4,7 @@ import 'package:speed_data/features/models/user_role.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/screens/admin/admin_dashboard.dart';
 import 'package:speed_data/features/screens/pilot/pilot_dashboard.dart';
+import 'package:speed_data/features/screens/team/team_dashboard_screen.dart';
 
 class SpeedDataHomePage extends StatefulWidget {
   const SpeedDataHomePage({Key? key}) : super(key: key);
@@ -39,6 +40,8 @@ class _SpeedDataHomePageState extends State<SpeedDataHomePage> {
           return const AdminDashboard();
         } else if (role == UserRole.pilot) {
           return const PilotDashboard();
+        } else if (role == UserRole.teamMember) {
+          return const TeamDashboardScreen();
         } else {
           // If no role, maybe allow selection for now (Dev mode) or show error
           return _buildRoleSelector(user.uid);
@@ -70,6 +73,14 @@ class _SpeedDataHomePageState extends State<SpeedDataHomePage> {
                 setState(() {});
               },
               child: const Text('Join as Admin'),
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: () async {
+                await _firestoreService.setUserRole(uid, UserRole.teamMember);
+                setState(() {});
+              },
+              child: const Text('Join as Team Member'),
             ),
           ],
         ),

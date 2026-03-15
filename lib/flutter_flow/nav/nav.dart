@@ -115,6 +115,11 @@ GoRouter createRouter(AppStateNotifier appStateNotifier) => GoRouter(
           name: PilotProfileSetupWidget.routeName,
           path: PilotProfileSetupWidget.routePath,
           builder: (context, params) => PilotProfileSetupWidget(),
+        ),
+        FFRoute(
+          name: PublicResultsPageWidget.routeName,
+          path: PublicResultsPageWidget.routePath,
+          builder: (context, params) => PublicResultsPageWidget(),
         )
       ].map((r) => r.toRoute(appStateNotifier)).toList(),
     );

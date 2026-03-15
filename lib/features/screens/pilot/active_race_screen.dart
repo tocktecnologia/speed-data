@@ -1459,49 +1459,49 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     final message = (alert['message'] as String?)?.trim().toUpperCase();
     if (message == null || message.isEmpty) return const SizedBox.shrink();
 
+    final blinkBackgroundColor =
+        _pilotAlertBlinkVisible ? SpeedDataTheme.flagPurple : Colors.black;
+
     return IgnorePointer(
-      child: AnimatedOpacity(
+      child: AnimatedContainer(
         duration: const Duration(milliseconds: 250),
-        opacity: _pilotAlertBlinkVisible ? 1.0 : 0.55,
-        child: Container(
-          color: SpeedDataTheme.flagPurple.withOpacity(0.92),
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Text(
-                    'ALERTA DA EQUIPE',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1.4,
-                    ),
+        color: blinkBackgroundColor,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text(
+                  'ALERTA DA EQUIPE',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.4,
                   ),
-                  const SizedBox(height: 12),
-                  FractionallySizedBox(
-                    widthFactor: 0.8,
-                    child: FittedBox(
-                      fit: BoxFit.fitWidth,
-                      child: Text(
-                        message,
-                        maxLines: 1,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 180,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 2.5,
-                          height: 1.0,
-                        ),
+                ),
+                const SizedBox(height: 12),
+                FractionallySizedBox(
+                  widthFactor: 0.8,
+                  child: FittedBox(
+                    fit: BoxFit.fitWidth,
+                    child: Text(
+                      message,
+                      maxLines: 1,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 180,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 2.5,
+                        height: 1.0,
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

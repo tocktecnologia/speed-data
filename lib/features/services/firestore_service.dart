@@ -11,7 +11,8 @@ import 'package:speed_data/features/models/passing_model.dart';
 import 'package:speed_data/features/models/lap_analysis_model.dart';
 import 'package:speed_data/features/models/crossing_model.dart';
 import 'package:speed_data/features/models/session_analysis_summary_model.dart';
-import 'package:speed_data/features/screens/admin/widgets/control_flags.dart';
+import 'package:speed_data/features/models/team_model.dart';
+import 'package:rxdart/rxdart.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -65,6 +66,25 @@ class FirestoreService {
         .doc(sessionId)
         .collection('participants')
         .doc(uid);
+  }
+
+  CollectionReference<Map<String, dynamic>> _eventTeamsRef(String eventId) {
+    return _db.collection('events').doc(eventId).collection('teams');
+  }
+
+  DocumentReference<Map<String, dynamic>> _eventTeamRef(
+      String eventId, String teamId) {
+    return _eventTeamsRef(eventId).doc(teamId);
+  }
+
+  CollectionReference<Map<String, dynamic>> _eventTeamMembersRef(
+      String eventId, String teamId) {
+    return _eventTeamRef(eventId, teamId).collection('members');
+  }
+
+  DocumentReference<Map<String, dynamic>> _eventTeamMemberRef(
+      String eventId, String teamId, String uid) {
+    return _eventTeamMembersRef(eventId, teamId).doc(uid);
   }
 
   // --- Users ---
@@ -516,7 +536,7 @@ class FirestoreService {
   /// Get competitor by user UID from event
   Future<Competitor?> getCompetitorByUid(String eventId, String uid) async {
     try {
-      final snapshot = await _db
+      final byUserId = await _db
           .collection('events')
           .doc(eventId)
           .collection('competitors')
@@ -524,8 +544,20 @@ class FirestoreService {
           .limit(1)
           .get();
 
-      if (snapshot.docs.isNotEmpty) {
-        return Competitor.fromMap(snapshot.docs.first.data());
+      if (byUserId.docs.isNotEmpty) {
+        return Competitor.fromMap(byUserId.docs.first.data());
+      }
+
+      final byUid = await _db
+          .collection('events')
+          .doc(eventId)
+          .collection('competitors')
+          .where('uid', isEqualTo: uid)
+          .limit(1)
+          .get();
+
+      if (byUid.docs.isNotEmpty) {
+        return Competitor.fromMap(byUid.docs.first.data());
       }
       return null;
     } catch (e) {
@@ -614,6 +646,346 @@ class FirestoreService {
       print('Error getting user profile: $e');
     }
     return null;
+  }
+
+  // --- Teams / Team Members ---
+
+  Stream<List<TeamModel>> getEventTeamsStream(String eventId) {
+    return _eventTeamsRef(eventId).orderBy('name').snapshots().map((snapshot) =>
+        snapshot.docs
+            .map((doc) => TeamModel.fromMap(doc.id, doc.data()))
+            .toList(growable: false));
+  }
+
+  Future<void> saveEventTeam(String eventId, TeamModel team) async {
+    final normalizedName = team.name.trim().toLowerCase();
+    if (team.id.trim().isEmpty || team.name.trim().isEmpty) {
+      throw Exception('Team id and name are required.');
+    }
+
+    await _eventTeamRef(eventId, team.id).set({
+      ...team.toMap(),
+      'name': team.name.trim(),
+      'normalized_name': normalizedName,
+      'event_id': eventId,
+      'updated_at': FieldValue.serverTimestamp(),
+      'created_at': team.createdAt != null
+          ? Timestamp.fromDate(team.createdAt!)
+          : FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> deleteEventTeam(String eventId, String teamId) async {
+    final membersSnap = await _eventTeamMembersRef(eventId, teamId).get();
+    final batch = _db.batch();
+    for (final member in membersSnap.docs) {
+      batch.delete(member.reference);
+    }
+    batch.delete(_eventTeamRef(eventId, teamId));
+    await batch.commit();
+  }
+
+  Stream<List<TeamMember>> getEventTeamMembersStream(
+      String eventId, String teamId) {
+    return _eventTeamMembersRef(eventId, teamId)
+        .orderBy('name')
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => TeamMember.fromMap(doc.data()))
+            .where((member) => member.uid.trim().isNotEmpty)
+            .toList(growable: false));
+  }
+
+  Future<void> upsertEventTeamMember(
+    String eventId,
+    String teamId,
+    TeamMember member,
+  ) async {
+    final uid = member.uid.trim();
+    if (uid.isEmpty) {
+      throw Exception('Team member uid is required.');
+    }
+    await _eventTeamMemberRef(eventId, teamId, uid).set(
+      member.toMap(eventId: eventId, teamId: teamId),
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> removeEventTeamMember(
+      String eventId, String teamId, String uid) async {
+    if (uid.trim().isEmpty) return;
+    await _eventTeamMemberRef(eventId, teamId, uid.trim()).delete();
+  }
+
+  List<TeamMembership> _mapMembershipDocs(
+    Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
+    required String fallbackUid,
+    required String fallbackEmail,
+  }) {
+    final memberships = <TeamMembership>[];
+    final seen = <String>{};
+
+    for (final doc in docs) {
+      final data = doc.data();
+      if (data['active'] == false) continue;
+      final role = (data['role'] as String?)?.trim().toLowerCase() ?? 'staff';
+      final teamDoc = doc.reference.parent.parent;
+      final eventDoc = teamDoc?.parent.parent;
+      if (teamDoc == null || eventDoc == null) continue;
+
+      final key = '${eventDoc.id}:${teamDoc.id}';
+      if (!seen.add(key)) continue;
+
+      memberships.add(
+        TeamMembership(
+          eventId: eventDoc.id,
+          teamId: teamDoc.id,
+          uid: fallbackUid,
+          role: role,
+          name: (data['name'] as String?)?.trim() ?? '',
+          email: (data['email'] as String?)?.trim().toLowerCase() ??
+              fallbackEmail,
+        ),
+      );
+    }
+    return memberships;
+  }
+
+  Stream<List<TeamMembership>> getTeamMembershipsStream(
+    String uid, {
+    String? email,
+  }) {
+    final normalizedUid = uid.trim();
+    final normalizedEmail =
+        (email ?? '').trim().toLowerCase();
+
+    if (normalizedUid.isEmpty && normalizedEmail.isEmpty) {
+      return Stream<List<TeamMembership>>.value(const <TeamMembership>[]);
+    }
+
+    final members = _db.collectionGroup('members');
+
+    Stream<List<TeamMembership>> primaryStream;
+
+    if (normalizedUid.isNotEmpty && normalizedEmail.isNotEmpty) {
+      final byUid =
+          members.where('uid', isEqualTo: normalizedUid).snapshots();
+      final byEmail =
+          members.where('email', isEqualTo: normalizedEmail).snapshots();
+      primaryStream = Rx.combineLatest2<
+          QuerySnapshot<Map<String, dynamic>>,
+          QuerySnapshot<Map<String, dynamic>>,
+          List<TeamMembership>>(byUid, byEmail, (uidSnap, emailSnap) {
+        final docByPath =
+            <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+        for (final doc in uidSnap.docs) {
+          docByPath[doc.reference.path] = doc;
+        }
+        for (final doc in emailSnap.docs) {
+          docByPath[doc.reference.path] = doc;
+        }
+        return _mapMembershipDocs(
+          docByPath.values,
+          fallbackUid: normalizedUid,
+          fallbackEmail: normalizedEmail,
+        );
+      });
+    } else {
+      final query = normalizedUid.isNotEmpty
+          ? members.where('uid', isEqualTo: normalizedUid)
+          : members.where('email', isEqualTo: normalizedEmail);
+
+      primaryStream = query.snapshots().map((snapshot) => _mapMembershipDocs(
+            snapshot.docs,
+            fallbackUid: normalizedUid,
+            fallbackEmail: normalizedEmail,
+          ));
+    }
+
+    // Fallback path for environments where collectionGroup("members")
+    // can fail due query/rules/index constraints.
+    return primaryStream.onErrorResume((error, stackTrace) {
+      _debugLog(
+        'getTeamMembershipsStream fallback activated for uid=$normalizedUid '
+        'email=$normalizedEmail error=$error',
+      );
+      return Stream.fromFuture(
+        getTeamMembershipsByScan(
+          normalizedUid,
+          email: normalizedEmail,
+        ),
+      );
+    });
+  }
+
+  Future<List<TeamMembership>> getTeamMembershipsByScan(
+    String uid, {
+    String? email,
+  }) async {
+    final normalizedUid = uid.trim();
+    final normalizedEmail = (email ?? '').trim().toLowerCase();
+    if (normalizedUid.isEmpty && normalizedEmail.isEmpty) {
+      return const <TeamMembership>[];
+    }
+
+    final memberships = <TeamMembership>[];
+    final seen = <String>{};
+    final eventsSnap = await _db.collection('events').get();
+
+    for (final eventDoc in eventsSnap.docs) {
+      final eventId = eventDoc.id;
+      final teamsSnap = await eventDoc.reference.collection('teams').get();
+      for (final teamDoc in teamsSnap.docs) {
+        Map<String, dynamic>? memberData;
+
+        if (normalizedUid.isNotEmpty) {
+          final memberByUid =
+              await teamDoc.reference.collection('members').doc(normalizedUid).get();
+          if (memberByUid.exists) {
+            memberData = memberByUid.data();
+          }
+        }
+
+        if (memberData == null && normalizedEmail.isNotEmpty) {
+          final byEmailSnap = await teamDoc.reference
+              .collection('members')
+              .where('email', isEqualTo: normalizedEmail)
+              .limit(1)
+              .get();
+          if (byEmailSnap.docs.isNotEmpty) {
+            memberData = byEmailSnap.docs.first.data();
+          }
+        }
+
+        if (memberData == null || memberData['active'] == false) continue;
+        final role =
+            (memberData['role'] as String?)?.trim().toLowerCase() ?? 'staff';
+        if (role == 'pilot') continue;
+
+        final key = '$eventId:${teamDoc.id}';
+        if (!seen.add(key)) continue;
+
+        memberships.add(
+          TeamMembership(
+            eventId: eventId,
+            teamId: teamDoc.id,
+            uid: normalizedUid,
+            role: role,
+            name: (memberData['name'] as String?)?.trim() ?? '',
+            email: (memberData['email'] as String?)?.trim().toLowerCase() ??
+                normalizedEmail,
+          ),
+        );
+      }
+    }
+
+    return memberships;
+  }
+
+  Future<void> assignCompetitorToTeam({
+    required String eventId,
+    required String competitorId,
+    required String teamId,
+    required String teamName,
+  }) async {
+    final payload = {
+      'team_id': teamId,
+      'team_name': teamName,
+      'updated_at': FieldValue.serverTimestamp(),
+      'additional_fields.Team': teamName,
+    };
+
+    await _db
+        .collection('events')
+        .doc(eventId)
+        .collection('competitors')
+        .doc(competitorId)
+        .set(payload, SetOptions(merge: true));
+  }
+
+  // --- Team Alerts ---
+
+  Stream<Map<String, dynamic>?> getPilotAlertStream({
+    required String eventId,
+    required String sessionId,
+    required String pilotUid,
+  }) {
+    if (eventId.trim().isEmpty ||
+        sessionId.trim().isEmpty ||
+        pilotUid.trim().isEmpty) {
+      return Stream<Map<String, dynamic>?>.value(null);
+    }
+
+    return _db
+        .collection('events')
+        .doc(eventId)
+        .collection('sessions')
+        .doc(sessionId)
+        .collection('pilot_alerts')
+        .doc(pilotUid)
+        .snapshots()
+        .map((doc) {
+      if (!doc.exists || doc.data() == null) return null;
+      return {
+        'id': doc.id,
+        ...doc.data()!,
+      };
+    });
+  }
+
+  Future<void> sendPilotAlert({
+    required String eventId,
+    required String sessionId,
+    required String pilotUid,
+    required String message,
+    String type = 'custom',
+    String? teamId,
+    int? expiresInSeconds,
+  }) async {
+    final callable = FirebaseFunctions.instance.httpsCallable('sendPilotAlert');
+    await callable.call({
+      'eventId': eventId,
+      'sessionId': sessionId,
+      'pilotUid': pilotUid,
+      'message': message,
+      'type': type,
+      'teamId': teamId,
+      'expiresInSeconds': expiresInSeconds,
+    });
+  }
+
+  Future<void> clearPilotAlert({
+    required String eventId,
+    required String sessionId,
+    required String pilotUid,
+  }) async {
+    final callable =
+        FirebaseFunctions.instance.httpsCallable('clearPilotAlert');
+    await callable.call({
+      'eventId': eventId,
+      'sessionId': sessionId,
+      'pilotUid': pilotUid,
+    });
+  }
+
+  Future<Map<String, dynamic>> getPublicSessionResults({
+    required String eventId,
+    required String sessionId,
+  }) async {
+    final callable =
+        FirebaseFunctions.instance.httpsCallable('getPublicSessionResults');
+    final response = await callable.call({
+      'eventId': eventId,
+      'sessionId': sessionId,
+    });
+    final data = response.data;
+    if (data is Map<String, dynamic>) {
+      return data;
+    }
+    if (data is Map) {
+      return Map<String, dynamic>.from(data);
+    }
+    throw Exception('Unexpected response format from getPublicSessionResults.');
   }
 
   Future<bool> isUserRegisteredInEvent(String eventId, String uid) async {

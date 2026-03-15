@@ -7,6 +7,7 @@ import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/screens/admin/create_event_screen.dart';
 import 'package:speed_data/features/screens/admin/session_settings_screen.dart';
 import 'package:speed_data/features/screens/admin/competitor_settings_screen.dart';
+import 'package:speed_data/features/screens/admin/event_team_management_screen.dart';
 import 'package:speed_data/features/screens/admin/race_control_screen.dart';
 import 'package:speed_data/theme/speed_data_theme.dart';
 import 'package:uuid/uuid.dart';
@@ -129,6 +130,20 @@ class _EventRegistrationScreenState extends State<EventRegistrationScreen> {
                 : 'Manage Groups: ${_currentEvent!.name}'),
             backgroundColor: Colors.black,
             actions: [
+              IconButton(
+                icon: const Icon(Icons.groups_2_outlined),
+                tooltip: 'Manage Teams',
+                onPressed: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          EventTeamManagementScreen(event: _currentEvent!),
+                    ),
+                  );
+                  _refreshEvent();
+                },
+              ),
               IconButton(
                 icon: const Icon(Icons.sports_score,
                     color: SpeedDataTheme.accentPrimary), // Flag icon

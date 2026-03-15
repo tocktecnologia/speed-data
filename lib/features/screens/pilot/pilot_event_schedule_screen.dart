@@ -92,6 +92,10 @@ class PilotEventScheduleScreen extends StatelessWidget {
                         raceId: event.trackId,
                         userId: user.uid,
                         raceName: event.name,
+                        pilotName: (user.displayName?.trim().isNotEmpty ??
+                                false)
+                            ? user.displayName
+                            : user.email,
                         eventId: event.id,
                         initialSessionId: session.id,
                         fixedSessionLabel: title,

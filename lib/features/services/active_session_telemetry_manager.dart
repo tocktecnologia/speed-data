@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
+import 'package:speed_data/features/models/user_role.dart';
 import 'package:speed_data/features/services/firestore_service.dart';
 import 'package:speed_data/features/services/telemetry_service.dart';
 
@@ -23,6 +24,7 @@ class ActiveSessionTelemetryManager {
   String? _currentEventId;
   String? _currentSessionId;
   String? _currentRaceId;
+  int _authRevision = 0;
   bool _started = false;
 
   void _debugLog(String message) {
@@ -54,6 +56,7 @@ class ActiveSessionTelemetryManager {
   }
 
   void _handleAuthChange(User? user) {
+    final authRevision = ++_authRevision;
     _debugLog('auth change -> uid=${user?.uid}, email=${user?.email}');
     _currentUid = user?.uid;
     _eventsSubscription?.cancel();
@@ -61,6 +64,21 @@ class ActiveSessionTelemetryManager {
 
     if (user == null) {
       _debugLog('auth change: no user, stopping telemetry');
+      _stopTelemetry();
+      return;
+    }
+
+    _resolveRoleAndSubscribe(user, authRevision);
+  }
+
+  Future<void> _resolveRoleAndSubscribe(User user, int authRevision) async {
+    final role = await _firestoreService.getUserRole(user.uid);
+    if (authRevision != _authRevision) return;
+
+    if (role != UserRole.pilot) {
+      _debugLog(
+        'auth change: role=${role.toStringValue()}, telemetry disabled for this role',
+      );
       _stopTelemetry();
       return;
     }

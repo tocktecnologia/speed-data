@@ -1546,6 +1546,14 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
             }
 
             final sessionId = _activeSession?.id ?? telemetry.currentSessionId;
+            final authUser = FirebaseAuth.instance.currentUser;
+            final pilotName = (_pilotDriverName?.trim().isNotEmpty ?? false)
+                ? _pilotDriverName!.trim()
+                : ((authUser?.displayName?.trim().isNotEmpty ?? false)
+                    ? authUser!.displayName!.trim()
+                    : (authUser?.email?.trim().isNotEmpty ?? false)
+                        ? authUser!.email!.trim()
+                        : 'Pilot');
 
             final borderColor = _activeSession != null
                 ? _getFlagColor(_activeSession!.currentFlag)
@@ -1572,6 +1580,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                               flag: _activeSession?.currentFlag,
                             ),
                             _buildModeToggle(),
+                            const SizedBox(height: 4),
                             _buildInfoMetric(
                               'Speed',
                               _telemetryService.isSimulating
@@ -1630,31 +1639,39 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                                     ),
                                   ),
                                 ),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.end,
+                                Column(
                                   children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 12, vertical: 6),
-                                      decoration: BoxDecoration(
-                                        color: _getGpsColor(_telemetryService
-                                                .currentFrequency)
-                                            .withAlpha(50),
-                                        borderRadius: BorderRadius.circular(20),
-                                        border: Border.all(
-                                          color: _getGpsColor(_telemetryService
-                                              .currentFrequency),
-                                        ),
-                                      ),
-                                      child: Text(
-                                        "${_telemetryService.currentFrequency} Hz",
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: _getGpsColor(_telemetryService
-                                              .currentFrequency),
-                                        ),
-                                      ),
-                                    )
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 12, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: _getGpsColor(
+                                                    _telemetryService
+                                                        .currentFrequency)
+                                                .withAlpha(50),
+                                            borderRadius:
+                                                BorderRadius.circular(20),
+                                            border: Border.all(
+                                              color: _getGpsColor(
+                                                  _telemetryService
+                                                      .currentFrequency),
+                                            ),
+                                          ),
+                                          child: Text(
+                                            "${_telemetryService.currentFrequency} Hz",
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: _getGpsColor(
+                                                  _telemetryService
+                                                      .currentFrequency),
+                                            ),
+                                          ),
+                                        )
+                                      ],
+                                    ),
                                   ],
                                 )
                               ],
@@ -1682,6 +1699,18 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                                     ),
                                   ),
                                 ),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 6),
+                                  child: Text(
+                                    pilotName,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                )
                               ],
                             ),
                             if (_autoSimulationMode) ...[

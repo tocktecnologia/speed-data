@@ -16,6 +16,7 @@ import 'package:rxdart/rxdart.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+  static bool _membersCollectionGroupBlocked = false;
 
   void _debugLog(String message) {
     if (!kDebugMode) return;
@@ -763,6 +764,15 @@ class FirestoreService {
       return Stream<List<TeamMembership>>.value(const <TeamMembership>[]);
     }
 
+    if (_membersCollectionGroupBlocked) {
+      return Stream.fromFuture(
+        getTeamMembershipsByScan(
+          normalizedUid,
+          email: normalizedEmail,
+        ),
+      );
+    }
+
     final members = _db.collectionGroup('members');
 
     Stream<List<TeamMembership>> primaryStream;
@@ -805,10 +815,21 @@ class FirestoreService {
     // Fallback path for environments where collectionGroup("members")
     // can fail due query/rules/index constraints.
     return primaryStream.onErrorResume((error, stackTrace) {
-      _debugLog(
-        'getTeamMembershipsStream fallback activated for uid=$normalizedUid '
-        'email=$normalizedEmail error=$error',
-      );
+      final errorText = error.toString().toLowerCase();
+      if (!_membersCollectionGroupBlocked &&
+          (errorText.contains('permission-denied') ||
+              errorText.contains('insufficient permissions'))) {
+        _membersCollectionGroupBlocked = true;
+        _debugLog(
+          'collectionGroup(members) disabled after permission-denied; '
+          'using scan fallback for next reads.',
+        );
+      } else {
+        _debugLog(
+          'getTeamMembershipsStream fallback activated for uid=$normalizedUid '
+          'email=$normalizedEmail error=$error',
+        );
+      }
       return Stream.fromFuture(
         getTeamMembershipsByScan(
           normalizedUid,

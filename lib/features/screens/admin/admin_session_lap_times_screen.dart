@@ -363,6 +363,7 @@ class _AdminSessionLapTimesScreenState
                                 userId: entry.uid,
                                 raceName:
                                     '${widget.event.name} - ${_participantLabel(entry)}',
+                                pilotName: _participantLabel(entry),
                                 eventId: widget.event.id,
                                 initialSessionId: widget.session.id,
                                 fixedSessionLabel:

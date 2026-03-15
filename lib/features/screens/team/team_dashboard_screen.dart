@@ -275,22 +275,38 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Painel da Equipe'),
-        actions: [
-          IconButton(
-            tooltip: 'Sair',
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await FirebaseAuth.instance.signOut();
-              if (context.mounted) {
-                context.goNamedAuth(
-                  'Login',
-                  context.mounted,
-                  ignoreRedirect: true,
-                );
-              }
-            },
-          ),
-        ],
+      ),
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            UserAccountsDrawerHeader(
+              decoration: const BoxDecoration(color: Colors.black),
+              accountName: Text(user.displayName?.trim().isNotEmpty == true
+                  ? user.displayName!
+                  : 'Team Member'),
+              accountEmail: Text(user.email ?? ''),
+              currentAccountPicture: const CircleAvatar(
+                backgroundColor: Colors.white,
+                child: Icon(Icons.groups, color: Colors.black),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Sign Out'),
+              onTap: () async {
+                await FirebaseAuth.instance.signOut();
+                if (context.mounted) {
+                  context.goNamedAuth(
+                    'Login',
+                    context.mounted,
+                    ignoreRedirect: true,
+                  );
+                }
+              },
+            ),
+          ],
+        ),
       ),
       body: StreamBuilder<List<TeamMembership>>(
         stream: _firestore.getTeamMembershipsStream(

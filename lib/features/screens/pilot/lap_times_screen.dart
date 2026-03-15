@@ -18,6 +18,7 @@ class LapTimesScreen extends StatefulWidget {
   final String raceId;
   final String userId;
   final String raceName;
+  final String? pilotName;
   final String? eventId;
   final String? initialSessionId;
   final String? fixedSessionLabel;
@@ -38,6 +39,7 @@ class LapTimesScreen extends StatefulWidget {
     required this.raceId,
     required this.userId,
     required this.raceName,
+    this.pilotName,
     this.eventId,
     this.initialSessionId,
     this.fixedSessionLabel,
@@ -73,6 +75,7 @@ class _LapTimesScreenState extends State<LapTimesScreen> {
   bool get _isSessionSelectionLocked =>
       widget.lockSessionSelection &&
       (widget.initialSessionId?.trim().isNotEmpty ?? false);
+  String get _pilotLabel => (widget.pilotName ?? '').trim();
   bool _isCompactLayout(BuildContext context) =>
       MediaQuery.sizeOf(context).width < 700;
 
@@ -619,6 +622,25 @@ class _LapTimesScreenState extends State<LapTimesScreen> {
       ),
       body: Column(
         children: [
+          if (_pilotLabel.isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: EdgeInsets.symmetric(
+                horizontal: compact ? 8 : 12,
+                vertical: compact ? 6 : 8,
+              ),
+              color: Theme.of(context)
+                  .colorScheme
+                  .surfaceContainerHighest
+                  .withOpacity(0.45),
+              child: Text(
+                'Piloto: $_pilotLabel',
+                style: TextStyle(
+                  fontSize: compact ? 13 : 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
           _buildSessionSelector(compact: compact),
           _buildModeSelector(compact: compact),
           if (_allowLegacySessionSelection && _selectedSessionId == null)

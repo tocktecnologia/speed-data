@@ -42,7 +42,7 @@ class LapTimesTrapSpeedsTable extends StatelessWidget {
         child: DataTable(
           columns: [
             const DataColumn(label: Text('Lap')),
-            const DataColumn(label: Text('Peak')),
+            const DataColumn(label: Text('Peak (km/h)')),
             for (int i = 0; i < maxTrapCount; i++)
               DataColumn(label: Text('TP${i + 1}')),
           ],

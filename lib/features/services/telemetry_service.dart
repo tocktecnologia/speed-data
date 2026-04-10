@@ -398,6 +398,70 @@ class TelemetryService extends ChangeNotifier {
 
   double _dot(_Vec2 a, _Vec2 b) => a.x * b.x + a.y * b.y;
 
+  double _estimateTimeFractionWithConstantAcceleration({
+    required double spatialAlpha,
+    required _LocalTimingPoint a,
+    required _LocalTimingPoint b,
+  }) {
+    final clampedAlpha = spatialAlpha.clamp(0.0, 1.0);
+    final dtMs = b.timestamp - a.timestamp;
+    if (dtMs <= 0) return clampedAlpha;
+    final dtSec = dtMs / 1000.0;
+    if (dtSec <= 1e-9) return clampedAlpha;
+
+    final v0 = a.speed;
+    final v1 = b.speed;
+    if (!v0.isFinite || !v1.isFinite || v0 < 0 || v1 < 0) {
+      return clampedAlpha;
+    }
+
+    final accel = (v1 - v0) / dtSec;
+    final totalDistanceM = ((v0 + v1) / 2.0) * dtSec;
+    if (!totalDistanceM.isFinite || totalDistanceM <= 1e-6) {
+      return clampedAlpha;
+    }
+    final targetDistanceM = clampedAlpha * totalDistanceM;
+    final linearTimeSec = clampedAlpha * dtSec;
+    double? crossingTimeSec;
+
+    if (accel.abs() <= 1e-6) {
+      if (v0 > 1e-6) {
+        crossingTimeSec = targetDistanceM / v0;
+      }
+    } else {
+      final qa = 0.5 * accel;
+      final qb = v0;
+      final qc = -targetDistanceM;
+      final discriminant = qb * qb - (4 * qa * qc);
+      if (discriminant.isFinite && discriminant >= -1e-6) {
+        final safeDisc = discriminant < 0 ? 0.0 : discriminant;
+        final sqrtDisc = math.sqrt(safeDisc);
+        final denom = 2 * qa;
+        if (denom.abs() > 1e-12) {
+          final r1 = (-qb + sqrtDisc) / denom;
+          final r2 = (-qb - sqrtDisc) / denom;
+          bool inRange(double value) =>
+              value.isFinite && value >= -1e-6 && value <= dtSec + 1e-6;
+          final c1 = inRange(r1) ? r1 : null;
+          final c2 = inRange(r2) ? r2 : null;
+          if (c1 != null && c2 != null) {
+            crossingTimeSec =
+                (c1 - linearTimeSec).abs() <= (c2 - linearTimeSec).abs()
+                    ? c1
+                    : c2;
+          } else {
+            crossingTimeSec = c1 ?? c2;
+          }
+        }
+      }
+    }
+
+    if (crossingTimeSec == null || !crossingTimeSec.isFinite) {
+      return clampedAlpha;
+    }
+    return (crossingTimeSec / dtSec).clamp(0.0, 1.0);
+  }
+
   _LocalTimingPoint? _interpolateLineCrossing(
     _LocalTimingLine line,
     _LocalTimingPoint a,
@@ -424,15 +488,22 @@ class TelemetryService extends ChangeNotifier {
     final alongCross = alongA + (alongB - alongA) * alpha;
     if (alongCross.abs() > line.halfWidthM) return null;
 
-    double interp(double av, double bv) => av + (bv - av) * alpha;
+    final temporalAlpha = _estimateTimeFractionWithConstantAcceleration(
+      spatialAlpha: alpha,
+      a: a,
+      b: b,
+    );
+    double interpSpatial(double av, double bv) => av + (bv - av) * alpha;
+    double interpTemporal(double av, double bv) =>
+        av + (bv - av) * temporalAlpha;
     final timestamp =
-        (a.timestamp + ((b.timestamp - a.timestamp) * alpha)).round();
+        (a.timestamp + ((b.timestamp - a.timestamp) * temporalAlpha)).round();
     return _LocalTimingPoint(
-      lat: interp(a.lat, b.lat),
-      lng: interp(a.lng, b.lng),
-      speed: interp(a.speed, b.speed),
-      heading: interp(a.heading, b.heading),
-      altitude: interp(a.altitude, b.altitude),
+      lat: interpSpatial(a.lat, b.lat),
+      lng: interpSpatial(a.lng, b.lng),
+      speed: interpTemporal(a.speed, b.speed),
+      heading: interpTemporal(a.heading, b.heading),
+      altitude: interpTemporal(a.altitude, b.altitude),
       timestamp: timestamp,
       method: 'line_interpolation',
       lineOffsetM: alongCross,
@@ -704,12 +775,16 @@ class TelemetryService extends ChangeNotifier {
     };
     unawaited(_persistLapClosureLocally(closurePayload));
 
+    final startSpeed = pending.sfCrossing.speed.isFinite
+        ? pending.sfCrossing.speed
+        : currentPoint.speed;
+
     _localCurrentLapNumber = pending.nextLapNumber;
-    _localLapStartMs = currentPoint.timestamp;
+    _localLapStartMs = pending.sfCrossedAtMs;
     _localLastCheckpointIndex = 0;
-    _localLastCrossedAtMs = currentPoint.timestamp;
-    _localCheckpointTimes = {0: currentPoint.timestamp};
-    _localCheckpointSpeeds = {0: currentPoint.speed};
+    _localLastCrossedAtMs = pending.sfCrossedAtMs;
+    _localCheckpointTimes = {0: pending.sfCrossedAtMs};
+    _localCheckpointSpeeds = {0: startSpeed};
 
     _pendingLapClosureAfterSf = null;
     return true;

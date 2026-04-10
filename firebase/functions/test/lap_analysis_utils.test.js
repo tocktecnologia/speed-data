@@ -187,9 +187,41 @@ test('interpolateLineCrossing returns interpolated crossing when segment crosses
   assert.ok(crossing);
   assert.equal(crossing.checkpointIndex, 1);
   assert.equal(crossing.method, 'line_interpolation');
-  assert.equal(crossing.timestamp, 1500);
+  assert.equal(crossing.timestamp, 1535);
   assert.ok(Math.abs(crossing.lng - 0.001) < 1e-8);
-  assert.ok(Math.abs(crossing.speed - 35) < 0.0001);
+  assert.ok(Math.abs(crossing.speed - 35.3553) < 0.001);
+});
+
+test('interpolateLineCrossing anticipates timestamp when decelerating', () => {
+  const checkpoints = [
+    { lat: 0, lng: 0 },
+    { lat: 0, lng: 0.001 },
+    { lat: 0, lng: 0.002 },
+  ];
+  const line = buildCheckpointLines(checkpoints)[1];
+
+  const crossing = interpolateLineCrossing(
+    line,
+    {
+      lat: 0,
+      lng: 0.0009,
+      speed: 40,
+      timestamp: 1000,
+    },
+    {
+      lat: 0,
+      lng: 0.0011,
+      speed: 20,
+      timestamp: 2000,
+    },
+  );
+
+  assert.ok(crossing);
+  assert.equal(crossing.checkpointIndex, 1);
+  assert.equal(crossing.method, 'line_interpolation');
+  assert.equal(crossing.timestamp, 1418);
+  assert.ok(Math.abs(crossing.lng - 0.001) < 1e-8);
+  assert.ok(Math.abs(crossing.speed - 31.6228) < 0.001);
 });
 
 test('interpolateLineCrossing rejects crossings outside trap width', () => {

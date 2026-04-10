@@ -111,6 +111,74 @@ function buildCheckpointLines(checkpoints = [], trapWidthM = DEFAULT_TRAP_WIDTH_
   return lines.filter(Boolean);
 }
 
+function estimateTimeFractionWithConstantAcceleration(alpha, pointA, pointB) {
+  const clampedAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const t0Ms = Number(pointA && pointA.timestamp);
+  const t1Ms = Number(pointB && pointB.timestamp);
+  if (!Number.isFinite(t0Ms) || !Number.isFinite(t1Ms) || t1Ms <= t0Ms) {
+    return clampedAlpha;
+  }
+
+  const dtSec = (t1Ms - t0Ms) / 1000;
+  const v0 = Number(pointA && pointA.speed);
+  const v1 = Number(pointB && pointB.speed);
+  if (
+    !Number.isFinite(v0) ||
+    !Number.isFinite(v1) ||
+    v0 < 0 ||
+    v1 < 0 ||
+    dtSec <= 1e-9
+  ) {
+    return clampedAlpha;
+  }
+
+  const accel = (v1 - v0) / dtSec;
+  const totalDistanceM = ((v0 + v1) / 2) * dtSec;
+  if (!Number.isFinite(totalDistanceM) || totalDistanceM <= 1e-6) {
+    return clampedAlpha;
+  }
+  const targetDistanceM = clampedAlpha * totalDistanceM;
+
+  const linearTimeSec = clampedAlpha * dtSec;
+  let crossingTimeSec = null;
+
+  if (Math.abs(accel) <= 1e-6) {
+    if (v0 > 1e-6) {
+      crossingTimeSec = targetDistanceM / v0;
+    }
+  } else {
+    const qa = 0.5 * accel;
+    const qb = v0;
+    const qc = -targetDistanceM;
+    const discriminant = qb * qb - 4 * qa * qc;
+    if (Number.isFinite(discriminant) && discriminant >= -1e-6) {
+      const safeDiscriminant = Math.max(0, discriminant);
+      const sqrtDisc = Math.sqrt(safeDiscriminant);
+      const denom = 2 * qa;
+      if (Math.abs(denom) > 1e-12) {
+        const r1 = (-qb + sqrtDisc) / denom;
+        const r2 = (-qb - sqrtDisc) / denom;
+        const inRange = (v) => Number.isFinite(v) && v >= -1e-6 && v <= dtSec + 1e-6;
+        const c1 = inRange(r1) ? r1 : null;
+        const c2 = inRange(r2) ? r2 : null;
+        if (c1 !== null && c2 !== null) {
+          crossingTimeSec =
+            Math.abs(c1 - linearTimeSec) <= Math.abs(c2 - linearTimeSec) ? c1 : c2;
+        } else if (c1 !== null) {
+          crossingTimeSec = c1;
+        } else if (c2 !== null) {
+          crossingTimeSec = c2;
+        }
+      }
+    }
+  }
+
+  if (!Number.isFinite(crossingTimeSec)) {
+    return clampedAlpha;
+  }
+  return Math.max(0, Math.min(1, crossingTimeSec / dtSec));
+}
+
 function interpolateLineCrossing(line, pointA, pointB) {
   if (!line || !pointA || !pointB) return null;
 
@@ -161,15 +229,32 @@ function interpolateLineCrossing(line, pointA, pointB) {
     return fallback;
   };
 
+  const temporalAlpha = estimateTimeFractionWithConstantAcceleration(
+    alpha,
+    pointA,
+    pointB,
+  );
+  const interpByTime = (a, b, fallback = 0) => {
+    const av = Number(a);
+    const bv = Number(b);
+    if (Number.isFinite(av) && Number.isFinite(bv)) {
+      return av + (bv - av) * temporalAlpha;
+    }
+    if (Number.isFinite(av)) return av;
+    if (Number.isFinite(bv)) return bv;
+    return fallback;
+  };
+
   return {
     checkpointIndex: line.index,
-    timestamp: Math.trunc(interp(t0, t1, t0)),
+    timestamp: Math.trunc(interpByTime(t0, t1, t0)),
     lat: interp(pointA.lat, pointB.lat),
     lng: interp(pointA.lng, pointB.lng),
-    speed: interp(pointA.speed, pointB.speed, 0),
-    heading: interp(pointA.heading, pointB.heading, 0),
-    altitude: interp(pointA.altitude, pointB.altitude, 0),
+    speed: interpByTime(pointA.speed, pointB.speed, 0),
+    heading: interpByTime(pointA.heading, pointB.heading, 0),
+    altitude: interpByTime(pointA.altitude, pointB.altitude, 0),
     alpha,
+    temporal_alpha: temporalAlpha,
     line_offset_m: alongCross,
     method: 'line_interpolation',
     confidence: 0.97,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/models/race_group_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
@@ -364,6 +365,38 @@ class _EventRegistrationScreenState extends State<EventRegistrationScreen> {
     );
   }
 
+  String _paymentStatusLabel(String status) {
+    final normalized = status.trim().toLowerCase();
+    if (normalized == 'paid') return 'PAID';
+    return 'PENDING';
+  }
+
+  Color _paymentStatusColor(String status) {
+    final normalized = status.trim().toLowerCase();
+    if (normalized == 'paid') return Colors.green;
+    return Colors.orange;
+  }
+
+  Future<void> _updateCompetitorPaymentStatus(
+      Competitor competitor, String nextStatus) async {
+    await _firestoreService.updateCompetitorPaymentStatus(
+      eventId: _currentEvent!.id,
+      competitorId: competitor.id,
+      paymentStatus: nextStatus,
+      paymentMethod: nextStatus == 'paid' ? 'manual_pix' : null,
+      updatedBy: FirebaseAuth.instance.currentUser?.uid,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Payment for ${competitor.name.isNotEmpty ? competitor.name : competitor.id} '
+          'updated to ${_paymentStatusLabel(nextStatus)}.',
+        ),
+      ),
+    );
+  }
+
   Widget _buildGroupDetails(RaceGroup group, {bool isMobile = false}) {
     return Column(
       children: [
@@ -502,7 +535,55 @@ class _EventRegistrationScreenState extends State<EventRegistrationScreen> {
                     child: ListTile(
                       leading: CircleAvatar(child: Text(comp.number)),
                       title: Text(comp.name),
-                      subtitle: Text('Category: ${comp.category}'),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Category: ${comp.category}'),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: _paymentStatusColor(comp.paymentStatus)
+                                      .withOpacity(0.16),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color:
+                                        _paymentStatusColor(comp.paymentStatus),
+                                  ),
+                                ),
+                                child: Text(
+                                  _paymentStatusLabel(comp.paymentStatus),
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color:
+                                        _paymentStatusColor(comp.paymentStatus),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              TextButton.icon(
+                                onPressed: () => _updateCompetitorPaymentStatus(
+                                  comp,
+                                  comp.paymentStatus == 'paid'
+                                      ? 'pending'
+                                      : 'paid',
+                                ),
+                                icon: const Icon(Icons.payments, size: 16),
+                                label: Text(
+                                  comp.paymentStatus == 'paid'
+                                      ? 'Mark Pending'
+                                      : 'Mark Paid',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      isThreeLine: true,
                       onTap: () => _editCompetitor(comp),
                       trailing: IconButton(
                         icon: const Icon(Icons.delete,

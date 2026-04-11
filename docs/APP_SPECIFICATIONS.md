@@ -1,7 +1,7 @@
 ﻿# Speed Data - EspecificaÃ§Ãµes do Aplicativo
 
 Plataforma de telemetria e rastreamento GPS em tempo real para corridas (drones/karts/automobilismo).
-ConstruÃ­do com **Flutter + FlutterFlow**, usando **Firebase** (Auth, Firestore, Cloud Functions) como backend.
+ConstruÃ­do com **Flutter (Dart)**, usando **Firebase** (Auth, Firestore, Cloud Functions) como backend.
 
 > Este documento Ã© atualizado sempre que houver mudanÃ§as ou adiÃ§Ãµes de funcionalidades.
 
@@ -627,7 +627,7 @@ HomePageWidget
 
 | Camada | Tecnologia |
 |--------|------------|
-| **Frontend** | Flutter (Dart) + FlutterFlow |
+| **Frontend** | Flutter (Dart) |
 | **AutenticaÃ§Ã£o** | Firebase Auth (Email, Google, Apple, GitHub) |
 | **Banco de Dados** | Cloud Firestore (primÃ¡rio) + SQLite (backup offline) |
 | **Backend** | Google Cloud Functions + Pub/Sub |

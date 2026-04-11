@@ -1,10 +1,10 @@
 # Speed Data
 
-A new Flutter project.
+Plataforma de telemetria e timing em tempo real para corridas.
 
 ## Getting Started
 
-FlutterFlow projects are built to run on the Flutter _stable_ release.
+Projeto Flutter (Dart) executado no canal _stable_.
 
 ## Deploy
 

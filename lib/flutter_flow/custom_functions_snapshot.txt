@@ -1,4 +1,4 @@
-// Automatic FlutterFlow imports
+// Automatic project imports
 import 'dart:convert';
 import 'dart:math' as math;
 

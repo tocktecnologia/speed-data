@@ -75,6 +75,8 @@ class TelemetryService extends ChangeNotifier {
   int? get localLapStartMs => _localLapStartMs;
   int? get localBestLapMs => _localBestLapMs;
   int? get localPreviousLapMs => _localPreviousLapMs;
+  int get localLastCheckpointIndex => _localLastCheckpointIndex;
+  int get localCheckpointCount => _localTimingLines.length;
   List<int> get localCompletedLapTimesMs =>
       List<int>.unmodifiable(_localCompletedLapTimesMs);
 

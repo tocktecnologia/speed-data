@@ -840,6 +840,30 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     return '$minutes:$seconds.$milliseconds';
   }
 
+  int? _calculateLapDeltaMs({
+    required int? currentLapMs,
+    required int? referenceLapMs,
+  }) {
+    if (currentLapMs == null || referenceLapMs == null) return null;
+    if (currentLapMs < 0 || referenceLapMs <= 0) return null;
+    return currentLapMs - referenceLapMs;
+  }
+
+  String _formatDelta(int? deltaMs) {
+    if (deltaMs == null) return '--.---';
+    final sign = deltaMs > 0 ? '+' : '';
+    final absMs = deltaMs.abs();
+    final seconds = (absMs / 1000).floor();
+    final milliseconds = (absMs % 1000).toString().padLeft(3, '0');
+    return '$sign$seconds.$milliseconds';
+  }
+
+  Color _deltaColor(int? deltaMs) {
+    if (deltaMs == null) return Colors.white70;
+    if (deltaMs <= 0) return Colors.greenAccent;
+    return Colors.redAccent;
+  }
+
   String _sessionDisplayName(RaceSession session) {
     if (session.name.isNotEmpty) return session.name;
     return session.type.name.toUpperCase();
@@ -1175,6 +1199,9 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     required String best,
     required String previous,
     required String current,
+    required String delta,
+    required Color deltaColor,
+    required String sectorFeedback,
   }) {
     Widget row(String title, String value, Color color) {
       return Expanded(
@@ -1205,6 +1232,34 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
     return Column(
       children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          color: Colors.black,
+          child: Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            runSpacing: 4,
+            children: [
+              Text(
+                'Delta vs Best: $delta',
+                style: TextStyle(
+                  color: deltaColor,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              Text(
+                sectorFeedback,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
         row('Best', best, const Color(0xFF0D2BFF)),
         row('Previous', previous, const Color(0xFF0D2BFF)),
         row('Current', current, const Color(0xFF0D2BFF)),
@@ -1215,6 +1270,9 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   Widget _buildClassicMode({
     required String currentLap,
     required TelemetryService telemetry,
+    required String delta,
+    required Color deltaColor,
+    required String sectorFeedback,
   }) {
     return Column(
       children: [
@@ -1232,6 +1290,34 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                 fontFamily: 'monospace'),
           ),
         ),
+        Container(
+          width: double.infinity,
+          color: Colors.black,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            runSpacing: 4,
+            children: [
+              Text(
+                'Delta vs Best: $delta',
+                style: TextStyle(
+                  color: deltaColor,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              Text(
+                sectorFeedback,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
         Expanded(
           child: _buildTrackChart(telemetry: telemetry),
         ),
@@ -1242,6 +1328,9 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   Widget _buildGaugeMode({
     required String currentLap,
     required TelemetryService telemetry,
+    required String delta,
+    required Color deltaColor,
+    required String sectorFeedback,
   }) {
     final speedKmh = _telemetryService.isSimulating
         ? _telemetryService.simulationSpeed * 3.6
@@ -1275,7 +1364,72 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
               fontWeight: FontWeight.bold,
               fontFamily: 'monospace'),
         ),
+        const SizedBox(height: 8),
+        Text(
+          'Delta vs Best: $delta',
+          style: TextStyle(
+            color: deltaColor,
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            fontFamily: 'monospace',
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          sectorFeedback,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
       ],
+    );
+  }
+
+  Widget _buildTimingModeBySelection({
+    required TelemetryService telemetry,
+    required String best,
+    required String previous,
+    required String current,
+    required int? currentLapMs,
+    required int? bestLapMs,
+    required String sectorFeedback,
+  }) {
+    final deltaMs = _calculateLapDeltaMs(
+      currentLapMs: currentLapMs,
+      referenceLapMs: bestLapMs,
+    );
+    final deltaText = _formatDelta(deltaMs);
+    final deltaColor = _deltaColor(deltaMs);
+
+    if (_mode == LiveTimerMode.simple) {
+      return _buildSimpleMode(
+        best: best,
+        previous: previous,
+        current: current,
+        delta: deltaText,
+        deltaColor: deltaColor,
+        sectorFeedback: sectorFeedback,
+      );
+    }
+
+    if (_mode == LiveTimerMode.classic) {
+      return _buildClassicMode(
+        currentLap: current,
+        telemetry: telemetry,
+        delta: deltaText,
+        deltaColor: deltaColor,
+        sectorFeedback: sectorFeedback,
+      );
+    }
+
+    return _buildGaugeMode(
+      currentLap: current,
+      telemetry: telemetry,
+      delta: deltaText,
+      deltaColor: deltaColor,
+      sectorFeedback: sectorFeedback,
     );
   }
 
@@ -1287,31 +1441,40 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       final bestLapMs = telemetry.localBestLapMs;
       final previousLapMs = telemetry.localPreviousLapMs;
       final currentLapMs = telemetry.localCurrentLapMs;
+      final checkpointCount = telemetry.localCheckpointCount;
+      final checkpointIndex = telemetry.localLastCheckpointIndex;
+      final sectorNumber = checkpointCount <= 0
+          ? 0
+          : (checkpointIndex < 0 ? 1 : (checkpointIndex + 1))
+              .clamp(1, checkpointCount);
+      final localDeltaMs = _calculateLapDeltaMs(
+        currentLapMs: currentLapMs,
+        referenceLapMs: bestLapMs,
+      );
+      final deltaHint = localDeltaMs == null
+          ? '--.---'
+          : _formatDelta(localDeltaMs).replaceFirst('+', '');
+      final sectorFeedback = checkpointCount <= 0
+          ? 'Sector feedback unavailable'
+          : localDeltaMs == null
+              ? 'Sector $sectorNumber/$checkpointCount'
+              : localDeltaMs <= 0
+                  ? 'Sector $sectorNumber/$checkpointCount | gaining $deltaHint'
+                  : 'Sector $sectorNumber/$checkpointCount | losing $deltaHint';
 
       final best = bestLapMs != null ? _formatLapTime(bestLapMs) : '--:--.---';
       final previous =
           previousLapMs != null ? _formatLapTime(previousLapMs) : '--:--.---';
       final current =
           currentLapMs != null ? _formatLapTime(currentLapMs) : '--:--.---';
-
-      if (_mode == LiveTimerMode.simple) {
-        return _buildSimpleMode(
-          best: best,
-          previous: previous,
-          current: current,
-        );
-      }
-
-      if (_mode == LiveTimerMode.classic) {
-        return _buildClassicMode(
-          currentLap: current,
-          telemetry: telemetry,
-        );
-      }
-
-      return _buildGaugeMode(
-        currentLap: current,
+      return _buildTimingModeBySelection(
         telemetry: telemetry,
+        best: best,
+        previous: previous,
+        current: current,
+        currentLapMs: currentLapMs,
+        bestLapMs: bestLapMs,
+        sectorFeedback: sectorFeedback,
       );
     }
 
@@ -1426,25 +1589,24 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
             final current = currentLapMs != null
                 ? _formatLapTime(currentLapMs)
                 : '--:--.---';
+            final cloudDeltaMs = _calculateLapDeltaMs(
+              currentLapMs: currentLapMs,
+              referenceLapMs: bestLapMs,
+            );
+            final sectorFeedback = cloudDeltaMs == null
+                ? 'Sector feedback synced from passings'
+                : cloudDeltaMs <= 0
+                    ? 'Synced sector trend: gaining ${_formatDelta(cloudDeltaMs).replaceFirst('+', '')}'
+                    : 'Synced sector trend: losing ${_formatDelta(cloudDeltaMs).replaceFirst('+', '')}';
 
-            if (_mode == LiveTimerMode.simple) {
-              return _buildSimpleMode(
-                best: best,
-                previous: previous,
-                current: current,
-              );
-            }
-
-            if (_mode == LiveTimerMode.classic) {
-              return _buildClassicMode(
-                currentLap: current,
-                telemetry: telemetry,
-              );
-            }
-
-            return _buildGaugeMode(
-              currentLap: current,
+            return _buildTimingModeBySelection(
               telemetry: telemetry,
+              best: best,
+              previous: previous,
+              current: current,
+              currentLapMs: currentLapMs,
+              bestLapMs: bestLapMs,
+              sectorFeedback: sectorFeedback,
             );
           },
         );

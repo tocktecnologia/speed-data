@@ -20,10 +20,12 @@ class _PilotEventsScreenState extends State<PilotEventsScreen> {
       final registration =
           await _firestoreService.getUserEventRegistration(event.id, uid);
       final isRegistered = registration != null;
-      final paymentStatus = isRegistered
-          ? ((registration?['payment_status'] as String?) ?? 'pending')
-              .toLowerCase()
-          : null;
+      String? paymentStatus;
+      if (registration != null) {
+        paymentStatus =
+            ((registration['payment_status'] as String?) ?? 'pending')
+                .toLowerCase();
+      }
       return _EventWithReg(
         event: event,
         isRegistered: isRegistered,

@@ -1,4 +1,3 @@
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
 import 'package:speed_data/features/models/race_group_model.dart';
@@ -12,9 +11,11 @@ class RaceEvent {
   final DateTime? endDate; // Optional end date
   // drivers are now managed via sub-collection 'competitors' or similar pattern
   // keeping driverIds for backward compatibility or quick lookup if needed, but primary is Competitor model
-  final List<String> driverIds; 
+  final List<String> driverIds;
   final List<RaceSession> sessions;
   final List<RaceGroup> groups;
+  final double registrationFee;
+  final String currency;
 
   RaceEvent({
     required this.id,
@@ -26,6 +27,8 @@ class RaceEvent {
     this.driverIds = const [],
     this.sessions = const [],
     this.groups = const [],
+    this.registrationFee = 0,
+    this.currency = 'BRL',
   });
 
   Map<String, dynamic> toMap() {
@@ -38,6 +41,8 @@ class RaceEvent {
       'driver_ids': driverIds,
       'sessions': sessions.map((s) => s.toMap()).toList(),
       'groups': groups.map((g) => g.toMap()).toList(),
+      'registration_fee': registrationFee,
+      'currency': currency,
     };
   }
 
@@ -49,12 +54,13 @@ class RaceEvent {
       organizerId: map['organizer_id'] is String ? map['organizer_id'] : '',
       date: (map['date'] as Timestamp?)?.toDate() ?? DateTime.now(),
       endDate: (map['end_date'] as Timestamp?)?.toDate(),
-      driverIds: map['driver_ids'] is List ? List<String>.from(map['driver_ids']) : [],
-      sessions: map['sessions'] is List 
+      driverIds:
+          map['driver_ids'] is List ? List<String>.from(map['driver_ids']) : [],
+      sessions: map['sessions'] is List
           ? (map['sessions'] as List)
               .where((s) => s is Map<String, dynamic>)
               .map((s) => RaceSession.fromMap(s as Map<String, dynamic>))
-              .toList() 
+              .toList()
           : [],
       groups: map['groups'] is List
           ? (map['groups'] as List)
@@ -62,6 +68,13 @@ class RaceEvent {
               .map((g) => RaceGroup.fromMap(g as Map<String, dynamic>))
               .toList()
           : [],
+      registrationFee: map['registration_fee'] is num
+          ? (map['registration_fee'] as num).toDouble()
+          : 0,
+      currency:
+          map['currency'] is String && (map['currency'] as String).isNotEmpty
+              ? (map['currency'] as String)
+              : 'BRL',
     );
   }
 
@@ -75,6 +88,8 @@ class RaceEvent {
     List<String>? driverIds,
     List<RaceSession>? sessions,
     List<RaceGroup>? groups,
+    double? registrationFee,
+    String? currency,
   }) {
     return RaceEvent(
       id: id ?? this.id,
@@ -86,6 +101,8 @@ class RaceEvent {
       driverIds: driverIds ?? this.driverIds,
       sessions: sessions ?? this.sessions,
       groups: groups ?? this.groups,
+      registrationFee: registrationFee ?? this.registrationFee,
+      currency: currency ?? this.currency,
     );
   }
 }

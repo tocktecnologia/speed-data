@@ -377,6 +377,77 @@ class _EventRegistrationScreenState extends State<EventRegistrationScreen> {
     return Colors.orange;
   }
 
+  String _formatMoney(double value, String currency) {
+    final safeValue = value.isFinite ? value : 0;
+    if (currency.toUpperCase() == 'BRL') {
+      return 'R\$ ${safeValue.toStringAsFixed(2)}';
+    }
+    return '${currency.toUpperCase()} ${safeValue.toStringAsFixed(2)}';
+  }
+
+  Future<void> _showEditRegistrationFeeDialog() async {
+    if (_currentEvent == null) return;
+    final controller = TextEditingController(
+      text: _currentEvent!.registrationFee.toStringAsFixed(2),
+    );
+    final currencyController = TextEditingController(
+      text: _currentEvent!.currency,
+    );
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Registration fee'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: controller,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Fee amount',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: currencyController,
+              textCapitalization: TextCapitalization.characters,
+              maxLength: 4,
+              decoration: const InputDecoration(
+                labelText: 'Currency (ex: BRL)',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final parsedFee =
+        double.tryParse(controller.text.trim().replaceAll(',', '.')) ?? 0;
+    final currency = currencyController.text.trim().toUpperCase();
+
+    setState(() {
+      _currentEvent = _currentEvent!.copyWith(
+        registrationFee: parsedFee < 0 ? 0 : parsedFee,
+        currency: currency.isEmpty ? 'BRL' : currency,
+      );
+    });
+    await _saveEvent();
+  }
+
   Future<void> _updateCompetitorPaymentStatus(
       Competitor competitor, String nextStatus) async {
     await _firestoreService.updateCompetitorPaymentStatus(
@@ -497,9 +568,56 @@ class _EventRegistrationScreenState extends State<EventRegistrationScreen> {
 
         final competitors =
             snapshot.data!.where((c) => c.groupId == group.id).toList();
+        final paidCount =
+            competitors.where((c) => c.paymentStatus == 'paid').length;
+        final pendingCount = competitors.length - paidCount;
+        final fee = _currentEvent?.registrationFee ?? 0;
+        final currency = _currentEvent?.currency ?? 'BRL';
+        final paidRevenue = paidCount * fee;
+        final expectedRevenue = competitors.length * fee;
 
         return Column(
           children: [
+            Card(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          'Payment summary',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const Spacer(),
+                        TextButton.icon(
+                          onPressed: _showEditRegistrationFeeDialog,
+                          icon: const Icon(Icons.edit, size: 16),
+                          label: const Text('Edit fee'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 8,
+                      children: [
+                        Text('Fee: ${_formatMoney(fee, currency)}'),
+                        Text('Competitors: ${competitors.length}'),
+                        Text('Paid: $paidCount'),
+                        Text('Pending: $pendingCount'),
+                        Text(
+                            'Paid total: ${_formatMoney(paidRevenue, currency)}'),
+                        Text(
+                            'Expected total: ${_formatMoney(expectedRevenue, currency)}'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: Row(

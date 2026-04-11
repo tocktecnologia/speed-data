@@ -17,9 +17,18 @@ class _PilotEventsScreenState extends State<PilotEventsScreen> {
   Future<List<_EventWithReg>> _loadRegistrations(
       List<RaceEvent> events, String uid) async {
     final checks = await Future.wait(events.map((event) async {
-      final isRegistered =
-          await _firestoreService.isUserRegisteredInEvent(event.id, uid);
-      return _EventWithReg(event: event, isRegistered: isRegistered);
+      final registration =
+          await _firestoreService.getUserEventRegistration(event.id, uid);
+      final isRegistered = registration != null;
+      final paymentStatus = isRegistered
+          ? ((registration?['payment_status'] as String?) ?? 'pending')
+              .toLowerCase()
+          : null;
+      return _EventWithReg(
+        event: event,
+        isRegistered: isRegistered,
+        paymentStatus: paymentStatus,
+      );
     }));
     return checks;
   }
@@ -107,13 +116,42 @@ class _PilotEventsScreenState extends State<PilotEventsScreen> {
   Widget _buildEventCard(_EventWithReg entry) {
     final event = entry.event;
     final dateStr = event.date.toString().split(' ').first;
+    final paymentStatus = entry.paymentStatus?.toLowerCase();
+    final showPayment = entry.isRegistered;
+    final paymentColor = paymentStatus == 'paid' ? Colors.green : Colors.orange;
+    final paymentLabel = paymentStatus == 'paid' ? 'PAID' : 'PENDING';
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
         title: Text(event.name,
             style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text('Data: $dateStr'),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Data: $dateStr'),
+            if (showPayment) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: paymentColor.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: paymentColor),
+                ),
+                child: Text(
+                  'Pagamento: $paymentLabel',
+                  style: TextStyle(
+                    color: paymentColor,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        isThreeLine: showPayment,
         trailing: Icon(
           entry.isRegistered ? Icons.check_circle : Icons.event,
           color: entry.isRegistered ? Colors.green : Colors.blueGrey,
@@ -137,6 +175,11 @@ class _PilotEventsScreenState extends State<PilotEventsScreen> {
 class _EventWithReg {
   final RaceEvent event;
   final bool isRegistered;
+  final String? paymentStatus;
 
-  const _EventWithReg({required this.event, required this.isRegistered});
+  const _EventWithReg({
+    required this.event,
+    required this.isRegistered,
+    this.paymentStatus,
+  });
 }

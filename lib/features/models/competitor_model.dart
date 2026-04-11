@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 class Competitor {
   final String id;
   final String groupId;
@@ -19,6 +21,9 @@ class Competitor {
 
   // Additional Data
   final Map<String, String> additionalFields; // Sponsor, City, Club, etc.
+  final String paymentStatus; // pending | paid
+  final DateTime? paymentConfirmedAt;
+  final String paymentMethod; // manual_pix, cash, transfer, etc
 
   Competitor({
     required this.id,
@@ -35,6 +40,9 @@ class Competitor {
     this.vehicleReg = '',
     this.label = '',
     this.additionalFields = const {},
+    this.paymentStatus = 'pending',
+    this.paymentConfirmedAt,
+    this.paymentMethod = '',
   });
 
   Competitor copyWith({
@@ -52,6 +60,9 @@ class Competitor {
     String? vehicleReg,
     String? label,
     Map<String, String>? additionalFields,
+    String? paymentStatus,
+    DateTime? paymentConfirmedAt,
+    String? paymentMethod,
   }) {
     return Competitor(
       id: id ?? this.id,
@@ -68,6 +79,9 @@ class Competitor {
       vehicleReg: vehicleReg ?? this.vehicleReg,
       label: label ?? this.label,
       additionalFields: additionalFields ?? this.additionalFields,
+      paymentStatus: paymentStatus ?? this.paymentStatus,
+      paymentConfirmedAt: paymentConfirmedAt ?? this.paymentConfirmedAt,
+      paymentMethod: paymentMethod ?? this.paymentMethod,
     );
   }
 
@@ -90,10 +104,27 @@ class Competitor {
       'vehicle_reg': vehicleReg,
       'label': label,
       'additional_fields': additionalFields,
+      'payment_status':
+          paymentStatus.trim().isEmpty ? 'pending' : paymentStatus,
+      'payment_confirmed_at': paymentConfirmedAt != null
+          ? Timestamp.fromDate(paymentConfirmedAt!)
+          : null,
+      'payment_method': paymentMethod,
     };
   }
 
   factory Competitor.fromMap(Map<String, dynamic> map) {
+    final paymentConfirmedRaw = map['payment_confirmed_at'];
+    DateTime? paymentConfirmedAt;
+    if (paymentConfirmedRaw is Timestamp) {
+      paymentConfirmedAt = paymentConfirmedRaw.toDate();
+    } else if (paymentConfirmedRaw is DateTime) {
+      paymentConfirmedAt = paymentConfirmedRaw;
+    } else if (paymentConfirmedRaw is int) {
+      paymentConfirmedAt =
+          DateTime.fromMillisecondsSinceEpoch(paymentConfirmedRaw);
+    }
+
     return Competitor(
       id: map['id'] ?? '',
       groupId: map['group_id'] ?? '',
@@ -115,6 +146,12 @@ class Competitor {
       label: map['label'] ?? '',
       additionalFields:
           Map<String, String>.from(map['additional_fields'] ?? {}),
+      paymentStatus:
+          (map['payment_status'] as String?)?.trim().isNotEmpty == true
+              ? (map['payment_status'] as String).trim().toLowerCase()
+              : 'pending',
+      paymentConfirmedAt: paymentConfirmedAt,
+      paymentMethod: (map['payment_method'] as String?)?.trim() ?? '',
     );
   }
 }

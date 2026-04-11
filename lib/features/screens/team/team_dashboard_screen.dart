@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:speed_data/features/models/competitor_model.dart';
 import 'package:speed_data/features/models/event_model.dart';
@@ -19,6 +20,51 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
   final FirestoreService _firestore = FirestoreService();
   String? _selectedEventId;
   final Set<String> _alertsInFlightByPilot = <String>{};
+
+  DateTime? _asDateTime(dynamic rawValue) {
+    if (rawValue == null) return null;
+    if (rawValue is Timestamp) return rawValue.toDate();
+    if (rawValue is DateTime) return rawValue;
+    if (rawValue is num) {
+      return DateTime.fromMillisecondsSinceEpoch(rawValue.toInt());
+    }
+    if (rawValue is String) {
+      return DateTime.tryParse(rawValue);
+    }
+    return null;
+  }
+
+  String _liveStatusLabel({
+    required DateTime? lastUpdate,
+    required DateTime now,
+  }) {
+    if (lastUpdate == null) return 'OFFLINE';
+    final ageSeconds = now.difference(lastUpdate).inSeconds;
+    if (ageSeconds <= 8) return 'ONLINE';
+    if (ageSeconds <= 30) return 'STALE';
+    return 'OFFLINE';
+  }
+
+  Color _liveStatusColor(String status) {
+    switch (status) {
+      case 'ONLINE':
+        return Colors.green;
+      case 'STALE':
+        return Colors.orange;
+      default:
+        return Colors.redAccent;
+    }
+  }
+
+  String _formatLastUpdateAgo(DateTime? timestamp, DateTime now) {
+    if (timestamp == null) return '--';
+    final diff = now.difference(timestamp);
+    if (diff.isNegative) return '0s';
+    if (diff.inSeconds < 60) return '${diff.inSeconds}s';
+    final minutes = diff.inMinutes;
+    final seconds = diff.inSeconds.remainder(60);
+    return '${minutes}m ${seconds}s';
+  }
 
   String _sessionLabel(RaceSession session) {
     if (session.name.trim().isNotEmpty) return session.name.trim();
@@ -390,6 +436,132 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
     );
   }
 
+  Widget _buildLiveMonitorCard({
+    required RaceEvent event,
+    required RaceSession? activeSession,
+    required List<Competitor> teamCompetitors,
+  }) {
+    if (activeSession == null) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(12),
+          child: Text(
+            'Sem sessao ativa para monitoramento remoto.',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Monitoramento remoto (live)',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            StreamBuilder<QuerySnapshot>(
+              stream: _firestore.getRaceLocations(
+                event.trackId,
+                eventId: event.id,
+                sessionId: activeSession.id,
+              ),
+              builder: (context, snapshot) {
+                final docs = snapshot.data?.docs ?? const [];
+                final byUid = <String, Map<String, dynamic>>{};
+                for (final doc in docs) {
+                  if (doc.data() is! Map<String, dynamic>) continue;
+                  byUid[doc.id] = doc.data() as Map<String, dynamic>;
+                }
+
+                final now = DateTime.now();
+                final tiles = teamCompetitors.map((competitor) {
+                  final uid = competitor.uid.trim();
+                  final current = uid.isEmpty
+                      ? null
+                      : (byUid[uid]?['current'] as Map<String, dynamic>?);
+                  final lastUpdate = _asDateTime(
+                    current?['last_updated'] ?? current?['timestamp'],
+                  );
+                  final status = _liveStatusLabel(
+                    lastUpdate: lastUpdate,
+                    now: now,
+                  );
+                  final speedMps = current?['speed'];
+                  final speedKmh = speedMps is num ? speedMps * 3.6 : null;
+                  final statusColor = _liveStatusColor(status);
+
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        child: Text(
+                          competitor.number.isEmpty ? '?' : competitor.number,
+                        ),
+                      ),
+                      title: Text(
+                        competitor.name.isEmpty
+                            ? competitor.id
+                            : competitor.name,
+                      ),
+                      subtitle: Text(
+                        'Last update: ${_formatLastUpdateAgo(lastUpdate, now)}',
+                      ),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: statusColor.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: statusColor),
+                            ),
+                            child: Text(
+                              status,
+                              style: TextStyle(
+                                color: statusColor,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            speedKmh == null
+                                ? '-- km/h'
+                                : '${speedKmh.toStringAsFixed(1)} km/h',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(growable: false);
+
+                if (tiles.isEmpty) {
+                  return const Text(
+                    'Nenhum piloto de equipe vinculado nesta sessao.',
+                    style: TextStyle(color: Colors.grey),
+                  );
+                }
+                return Column(children: tiles);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -585,6 +757,11 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
                             ],
                           ),
                         ),
+                      ),
+                      _buildLiveMonitorCard(
+                        event: selectedEvent,
+                        activeSession: activeSession,
+                        teamCompetitors: teamCompetitors,
                       ),
                       Card(
                         child: Padding(

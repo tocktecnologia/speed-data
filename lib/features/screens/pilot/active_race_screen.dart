@@ -60,6 +60,10 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
   RaceSession? _activeSession;
   StreamSubscription? _statusSubscription;
   StreamSubscription<Map<String, dynamic>?>? _pilotAlertSubscription;
+  bool _sessionStreamConnected = false;
+  bool _pilotAlertStreamConnected = false;
+  String? _sessionStreamError;
+  String? _pilotAlertStreamError;
   Color _sessionBackgroundColor = Colors.black;
   LiveTimerMode _mode = LiveTimerMode.simple;
   GaugeType _gaugeType = GaugeType.speed;
@@ -381,11 +385,24 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
 
       _statusSubscription?.cancel();
       _debugLog('attachEventListeners: subscribed getEventActiveSessionStream');
+      if (mounted) {
+        setState(() {
+          _sessionStreamConnected = false;
+          _sessionStreamError = null;
+        });
+      }
       _statusSubscription = _firestoreService
           .getEventActiveSessionStream(eventId)
           .listen((session) async {
         _debugLog(
             'eventActiveSessionStream: update -> ${_sessionDebug(session)}');
+        if (mounted &&
+            (!_sessionStreamConnected || _sessionStreamError != null)) {
+          setState(() {
+            _sessionStreamConnected = true;
+            _sessionStreamError = null;
+          });
+        }
         await _applySessionState(session);
         if (session == null) {
           _debugLog(
@@ -393,6 +410,19 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
           );
           unawaited(recoverActiveSessionBinding());
         }
+      }, onError: (error, stackTrace) {
+        _debugLog('eventActiveSessionStream: error -> $error');
+        if (!mounted) return;
+        setState(() {
+          _sessionStreamConnected = false;
+          _sessionStreamError = '$error';
+        });
+      }, onDone: () {
+        _debugLog('eventActiveSessionStream: done');
+        if (!mounted) return;
+        setState(() {
+          _sessionStreamConnected = false;
+        });
       });
     }
 
@@ -660,6 +690,12 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
       _pilotAlertSubscription = null;
       _pilotAlertEventId = null;
       _pilotAlertSessionId = null;
+      if (mounted) {
+        setState(() {
+          _pilotAlertStreamConnected = false;
+          _pilotAlertStreamError = null;
+        });
+      }
       _clearPilotAlertState();
       return;
     }
@@ -673,6 +709,12 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     _pilotAlertSubscription?.cancel();
     _pilotAlertEventId = eventId;
     _pilotAlertSessionId = sessionId;
+    if (mounted) {
+      setState(() {
+        _pilotAlertStreamConnected = false;
+        _pilotAlertStreamError = null;
+      });
+    }
     _pilotAlertSubscription = _firestoreService
         .getPilotAlertStream(
       eventId: eventId!,
@@ -681,6 +723,12 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
     )
         .listen((alert) {
       if (!mounted) return;
+      if (!_pilotAlertStreamConnected || _pilotAlertStreamError != null) {
+        setState(() {
+          _pilotAlertStreamConnected = true;
+          _pilotAlertStreamError = null;
+        });
+      }
       final rawMessage = (alert?['message'] as String?)?.trim() ?? '';
       final active = alert?['active'] == true && rawMessage.isNotEmpty;
       final expiresAtMs = alert?['expires_at_ms'];
@@ -699,7 +747,93 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
         _pilotAlertBlinkVisible = true;
       });
       _startPilotAlertBlinking();
+    }, onError: (error, stackTrace) {
+      _debugLog('pilotAlertStream: error -> $error');
+      if (!mounted) return;
+      setState(() {
+        _pilotAlertStreamConnected = false;
+        _pilotAlertStreamError = '$error';
+      });
+      _clearPilotAlertState();
+    }, onDone: () {
+      _debugLog('pilotAlertStream: done');
+      if (!mounted) return;
+      setState(() {
+        _pilotAlertStreamConnected = false;
+      });
     });
+  }
+
+  Widget _buildRealtimeHealthBar() {
+    Widget badge({
+      required String label,
+      required bool connected,
+      String? error,
+      required IconData icon,
+    }) {
+      final hasError = error != null && error.trim().isNotEmpty;
+      final bgColor = hasError
+          ? Colors.red.withValues(alpha: 0.14)
+          : connected
+              ? Colors.green.withValues(alpha: 0.14)
+              : Colors.orange.withValues(alpha: 0.14);
+      final borderColor =
+          hasError ? Colors.red : (connected ? Colors.green : Colors.orange);
+      final textColor = borderColor;
+      final statusText = hasError
+          ? 'offline'
+          : connected
+              ? 'online'
+              : 'connecting';
+
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: borderColor),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: textColor),
+            const SizedBox(width: 6),
+            Text(
+              '$label: $statusText',
+              style: TextStyle(
+                color: textColor,
+                fontWeight: FontWeight.w700,
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      color: Colors.black,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        children: [
+          badge(
+            label: 'Session',
+            connected: _sessionStreamConnected,
+            error: _sessionStreamError,
+            icon: Icons.sync,
+          ),
+          badge(
+            label: 'Alerts',
+            connected: _pilotAlertStreamConnected,
+            error: _pilotAlertStreamError,
+            icon: Icons.notifications_active_outlined,
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _loadSimulationModeConfig() async {
@@ -1594,6 +1728,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                           ],
                         ),
                       ),
+                      _buildRealtimeHealthBar(),
                       if (_activeSession == null &&
                           (sessionId == null || sessionId.isEmpty))
                         Container(

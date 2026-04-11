@@ -43,7 +43,7 @@ class _HomePageWidgetState extends State<HomePageWidget> {
   @override
   Widget build(BuildContext context) {
     // Determine the current user's role and route accordingly
-    final user = currentUser; // From auth_util.dart (FlutterFlow)
+    final user = currentUser; // From auth_util.dart
 
     // If not logged in (should prevent reaching here via route guards, but safe check)
     if (!loggedIn) {

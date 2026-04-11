@@ -1139,6 +1139,45 @@ class FirestoreService {
         .set(payload, SetOptions(merge: true));
   }
 
+  Future<Map<String, dynamic>> getEventPaymentSummary({
+    required String eventId,
+    required double registrationFee,
+    String currency = 'BRL',
+  }) async {
+    final snapshot = await _db
+        .collection('events')
+        .doc(eventId)
+        .collection('competitors')
+        .get();
+
+    int paid = 0;
+    int pending = 0;
+    for (final doc in snapshot.docs) {
+      final status = _normalizeRegistrationPaymentStatus(
+        doc.data()['payment_status'],
+      );
+      if (status == 'paid') {
+        paid += 1;
+      } else {
+        pending += 1;
+      }
+    }
+
+    final total = snapshot.docs.length;
+    final paidTotal = paid * registrationFee;
+    final expectedTotal = total * registrationFee;
+    return {
+      'event_id': eventId,
+      'currency': currency.toUpperCase(),
+      'registration_fee': registrationFee,
+      'total_competitors': total,
+      'paid_competitors': paid,
+      'pending_competitors': pending,
+      'paid_total': paidTotal,
+      'expected_total': expectedTotal,
+    };
+  }
+
   Future<void> joinRace(
       String raceId, String uid, String displayName, int color) async {
     // Try to get the name from the user profile first

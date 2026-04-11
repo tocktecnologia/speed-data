@@ -31,6 +31,16 @@ class _RaceControlScreenState extends State<RaceControlScreen>
   late TabController _tabController;
   String? _selectedSessionId;
   bool _isClearingSessionData = false;
+  final Map<String, Set<String>> _sessionOperationalChecks =
+      <String, Set<String>>{};
+
+  static const List<MapEntry<String, String>> _operationalChecklistItems = [
+    MapEntry('participants_ready', 'Participants ready'),
+    MapEntry('comms_checked', 'Comms check'),
+    MapEntry('flags_ready', 'Flags check'),
+    MapEntry('timing_checked', 'Timing check'),
+    MapEntry('results_ready', 'Results workflow'),
+  ];
 
   @override
   void initState() {
@@ -591,9 +601,9 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                                         color: (displaySession?.status ==
                                                     SessionStatus.active
                                                 ? _getFlagColor(currentFlag)
-                                                : _getStatusColor(
-                                                    displaySession?.status ??
-                                                        SessionStatus.scheduled))
+                                                : _getStatusColor(displaySession
+                                                        ?.status ??
+                                                    SessionStatus.scheduled))
                                             .withOpacity(0.5),
                                         width: 2),
                                   ),
@@ -706,70 +716,82 @@ class _RaceControlScreenState extends State<RaceControlScreen>
                                       'Start', displaySession.startMethod),
                                   const SizedBox(width: 8),
                                   IconButton(
-                                    icon: const Icon(Icons.edit,
-                                        size: 16,
-                                        color: SpeedDataTheme.textSecondary),
+                                    icon: const Icon(
+                                      Icons.edit,
+                                      size: 16,
+                                      color: SpeedDataTheme.textSecondary,
+                                    ),
                                     onPressed: () async {
                                       final trackCheckpoints =
-                                        await _loadTrackCheckpoints(
-                                            eventData.trackId);
-                                    if (!mounted) return;
-                                    await Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) =>
-                                            SessionSettingsScreen(
-                                          trackCheckpoints: trackCheckpoints,
-                                          session: displaySession!,
-                                          onSave: (updatedSession) {
-                                            _updateSessionStatus(
-                                                updatedSession, eventData);
-                                          },
+                                          await _loadTrackCheckpoints(
+                                        eventData.trackId,
+                                      );
+                                      if (!mounted) return;
+                                      await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) =>
+                                              SessionSettingsScreen(
+                                            trackCheckpoints: trackCheckpoints,
+                                            session: displaySession!,
+                                            onSave: (updatedSession) {
+                                              _updateSessionStatus(
+                                                updatedSession,
+                                                eventData,
+                                              );
+                                            },
+                                          ),
                                         ),
+                                      );
+                                    },
+                                    tooltip: 'Edit Session Settings',
+                                  ),
+                                ],
+                              ),
+                            const SizedBox(width: 24),
+                            // Session Timer
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              child: displaySession != null
+                                  ? StreamBuilder<List<PassingModel>>(
+                                      stream:
+                                          _firestoreService.getPassingsStream(
+                                        eventData.trackId,
+                                        eventId: eventData.id,
+                                        sessionId: displaySession.id,
+                                        session: displaySession,
                                       ),
-                                    );
-                                  },
-                                  tooltip: 'Edit Session Settings',
-                                ),
-                              ],
-                            ),
-                          const SizedBox(width: 24),
-                          // Session Timer
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 8),
-                            child: displaySession != null
-                                ? StreamBuilder<List<PassingModel>>(
-                                    stream: _firestoreService.getPassingsStream(
-                                      eventData.trackId,
-                                      eventId: eventData.id,
-                                      sessionId: displaySession.id,
-                                      session: displaySession,
-                                    ),
-                                    builder: (context, psnaps) {
-                                      int maxLap = 0;
-                                      if (psnaps.hasData) {
-                                        for (var p in psnaps.data!) {
-                                          if (p.participantUid != 'SYSTEM' &&
-                                              p.lapNumber > maxLap) {
-                                            maxLap = p.lapNumber;
+                                      builder: (context, psnaps) {
+                                        int maxLap = 0;
+                                        if (psnaps.hasData) {
+                                          for (var p in psnaps.data!) {
+                                            if (p.participantUid != 'SYSTEM' &&
+                                                p.lapNumber > maxLap) {
+                                              maxLap = p.lapNumber;
+                                            }
                                           }
                                         }
-                                      }
-                                      return SessionClock(
+                                        return SessionClock(
                                           session: displaySession!,
-                                          currentLeaderLap: maxLap);
-                                    })
-                                : const Text('00:00:00',
-                                    style: TextStyle(
+                                          currentLeaderLap: maxLap,
+                                        );
+                                      },
+                                    )
+                                  : const Text(
+                                      '00:00:00',
+                                      style: TextStyle(
                                         fontFamily: 'monospace',
                                         fontSize: 24,
-                                        color: SpeedDataTheme.flagGreen)),
-                          ),
-                        ],
+                                        color: SpeedDataTheme.flagGreen,
+                                      ),
+                                    ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                    ),
+                    _buildOperationalChecklistPanel(displaySession),
                     const Divider(height: 1, color: SpeedDataTheme.borderColor),
                     // Main Content Area...
                     Expanded(
@@ -1078,6 +1100,89 @@ class _RaceControlScreenState extends State<RaceControlScreen>
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
         elevation: isActive ? 8 : 0,
+      ),
+    );
+  }
+
+  bool _isOperationalCheckDone(String sessionId, String checkKey) {
+    final checks = _sessionOperationalChecks[sessionId];
+    if (checks == null) return false;
+    return checks.contains(checkKey);
+  }
+
+  void _toggleOperationalCheck(String sessionId, String checkKey) {
+    setState(() {
+      final checks =
+          _sessionOperationalChecks.putIfAbsent(sessionId, () => <String>{});
+      if (checks.contains(checkKey)) {
+        checks.remove(checkKey);
+      } else {
+        checks.add(checkKey);
+      }
+    });
+  }
+
+  Widget _buildOperationalChecklistPanel(RaceSession? session) {
+    if (session == null) {
+      return Container(
+        width: double.infinity,
+        color: SpeedDataTheme.bgBase,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: const Text(
+          'Operational checklist unavailable: select a session.',
+          style: TextStyle(color: SpeedDataTheme.textSecondary),
+        ),
+      );
+    }
+
+    final completedCount = _operationalChecklistItems
+        .where((entry) => _isOperationalCheckDone(session.id, entry.key))
+        .length;
+    final totalCount = _operationalChecklistItems.length;
+    final allDone = completedCount == totalCount;
+
+    return Container(
+      width: double.infinity,
+      color: SpeedDataTheme.bgBase,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                allDone ? Icons.verified : Icons.rule_folder_outlined,
+                size: 16,
+                color: allDone ? Colors.green : Colors.orange,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Operational checklist ($completedCount/$totalCount)',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: allDone ? Colors.green : SpeedDataTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: _operationalChecklistItems.map((entry) {
+              final checked = _isOperationalCheckDone(session.id, entry.key);
+              return FilterChip(
+                label: Text(entry.value),
+                selected: checked,
+                showCheckmark: true,
+                onSelected: (_) =>
+                    _toggleOperationalCheck(session.id, entry.key),
+                selectedColor: Colors.green.withOpacity(0.2),
+                checkmarkColor: Colors.green,
+              );
+            }).toList(growable: false),
+          ),
+        ],
       ),
     );
   }

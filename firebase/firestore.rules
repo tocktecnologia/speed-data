@@ -164,5 +164,41 @@ service cloud.firestore {
         }
       }
     }
+
+    // -----------------------------
+    // Portal Race public collections
+    // -----------------------------
+
+    // Public editorial content for Portal Race
+    match /news/{newsId} {
+      allow read: if true;
+      allow write: if isAuthenticated(); // tighten to editors/admins when claims are available
+    }
+
+    // Public championship catalog
+    match /championships/{championshipId} {
+      allow read: if true;
+      allow write: if isAuthenticated(); // tighten to editors/admins when claims are available
+    }
+
+    // Public projection of events (safe for anonymous reads)
+    match /events_public/{eventId} {
+      allow read: if true;
+      // Write should happen via Admin SDK / Cloud Functions.
+      allow write: if false;
+    }
+
+    // Public results and standings
+    match /results_public/{resultId} {
+      allow read: if true;
+      // Write should happen via Admin SDK / Cloud Functions.
+      allow write: if false;
+    }
+
+    // Portal conversion leads
+    match /portal_leads/{leadId} {
+      allow create: if true;
+      allow read, update, delete: if isAuthenticated();
+    }
   }
 }

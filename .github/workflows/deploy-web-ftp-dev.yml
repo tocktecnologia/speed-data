@@ -1,0 +1,60 @@
+name: Deploy Flutter Web to FTP (Dev)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web-ftp-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Validate FTP dev secrets
+        run: |
+          if [ -z "${{ secrets.FTP_DEV_SERVER }}" ] || \
+             [ -z "${{ secrets.FTP_DEV_USERNAME }}" ] || \
+             [ -z "${{ secrets.FTP_DEV_PASSWORD }}" ]; then
+            echo "Missing FTP dev secrets. Configure FTP_DEV_SERVER, FTP_DEV_USERNAME and FTP_DEV_PASSWORD."
+            exit 1
+          fi
+
+      - name: Enable Flutter web
+        run: flutter config --enable-web
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build web app
+        run: flutter build web --release
+
+      - name: Deploy to FTP dev server
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.6
+        with:
+          server: ${{ secrets.FTP_DEV_SERVER }}
+          username: ${{ secrets.FTP_DEV_USERNAME }}
+          password: ${{ secrets.FTP_DEV_PASSWORD }}
+          local-dir: build/web/
+          protocol: ${{ vars.FTP_DEV_PROTOCOL || vars.FTP_PROTOCOL || 'ftp' }}
+          port: ${{ vars.FTP_DEV_PORT || vars.FTP_PORT || 21 }}
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**

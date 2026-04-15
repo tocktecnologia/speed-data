@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:speed_data/features/models/event_model.dart';
 import 'package:speed_data/features/models/race_group_model.dart';
 import 'package:speed_data/features/models/race_session_model.dart';
@@ -364,6 +365,109 @@ class _EventRegistrationScreenState extends State<EventRegistrationScreen> {
     );
   }
 
+  String _paymentStatusLabel(String status) {
+    final normalized = status.trim().toLowerCase();
+    if (normalized == 'paid') return 'PAID';
+    return 'PENDING';
+  }
+
+  Color _paymentStatusColor(String status) {
+    final normalized = status.trim().toLowerCase();
+    if (normalized == 'paid') return Colors.green;
+    return Colors.orange;
+  }
+
+  String _formatMoney(double value, String currency) {
+    final safeValue = value.isFinite ? value : 0;
+    if (currency.toUpperCase() == 'BRL') {
+      return 'R\$ ${safeValue.toStringAsFixed(2)}';
+    }
+    return '${currency.toUpperCase()} ${safeValue.toStringAsFixed(2)}';
+  }
+
+  Future<void> _showEditRegistrationFeeDialog() async {
+    if (_currentEvent == null) return;
+    final controller = TextEditingController(
+      text: _currentEvent!.registrationFee.toStringAsFixed(2),
+    );
+    final currencyController = TextEditingController(
+      text: _currentEvent!.currency,
+    );
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Registration fee'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: controller,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Fee amount',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: currencyController,
+              textCapitalization: TextCapitalization.characters,
+              maxLength: 4,
+              decoration: const InputDecoration(
+                labelText: 'Currency (ex: BRL)',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final parsedFee =
+        double.tryParse(controller.text.trim().replaceAll(',', '.')) ?? 0;
+    final currency = currencyController.text.trim().toUpperCase();
+
+    setState(() {
+      _currentEvent = _currentEvent!.copyWith(
+        registrationFee: parsedFee < 0 ? 0 : parsedFee,
+        currency: currency.isEmpty ? 'BRL' : currency,
+      );
+    });
+    await _saveEvent();
+  }
+
+  Future<void> _updateCompetitorPaymentStatus(
+      Competitor competitor, String nextStatus) async {
+    await _firestoreService.updateCompetitorPaymentStatus(
+      eventId: _currentEvent!.id,
+      competitorId: competitor.id,
+      paymentStatus: nextStatus,
+      paymentMethod: nextStatus == 'paid' ? 'manual_pix' : null,
+      updatedBy: FirebaseAuth.instance.currentUser?.uid,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Payment for ${competitor.name.isNotEmpty ? competitor.name : competitor.id} '
+          'updated to ${_paymentStatusLabel(nextStatus)}.',
+        ),
+      ),
+    );
+  }
+
   Widget _buildGroupDetails(RaceGroup group, {bool isMobile = false}) {
     return Column(
       children: [
@@ -464,9 +568,56 @@ class _EventRegistrationScreenState extends State<EventRegistrationScreen> {
 
         final competitors =
             snapshot.data!.where((c) => c.groupId == group.id).toList();
+        final paidCount =
+            competitors.where((c) => c.paymentStatus == 'paid').length;
+        final pendingCount = competitors.length - paidCount;
+        final fee = _currentEvent?.registrationFee ?? 0;
+        final currency = _currentEvent?.currency ?? 'BRL';
+        final paidRevenue = paidCount * fee;
+        final expectedRevenue = competitors.length * fee;
 
         return Column(
           children: [
+            Card(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          'Payment summary',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const Spacer(),
+                        TextButton.icon(
+                          onPressed: _showEditRegistrationFeeDialog,
+                          icon: const Icon(Icons.edit, size: 16),
+                          label: const Text('Edit fee'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 8,
+                      children: [
+                        Text('Fee: ${_formatMoney(fee, currency)}'),
+                        Text('Competitors: ${competitors.length}'),
+                        Text('Paid: $paidCount'),
+                        Text('Pending: $pendingCount'),
+                        Text(
+                            'Paid total: ${_formatMoney(paidRevenue, currency)}'),
+                        Text(
+                            'Expected total: ${_formatMoney(expectedRevenue, currency)}'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: Row(
@@ -502,7 +653,55 @@ class _EventRegistrationScreenState extends State<EventRegistrationScreen> {
                     child: ListTile(
                       leading: CircleAvatar(child: Text(comp.number)),
                       title: Text(comp.name),
-                      subtitle: Text('Category: ${comp.category}'),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Category: ${comp.category}'),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: _paymentStatusColor(comp.paymentStatus)
+                                      .withOpacity(0.16),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color:
+                                        _paymentStatusColor(comp.paymentStatus),
+                                  ),
+                                ),
+                                child: Text(
+                                  _paymentStatusLabel(comp.paymentStatus),
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color:
+                                        _paymentStatusColor(comp.paymentStatus),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              TextButton.icon(
+                                onPressed: () => _updateCompetitorPaymentStatus(
+                                  comp,
+                                  comp.paymentStatus == 'paid'
+                                      ? 'pending'
+                                      : 'paid',
+                                ),
+                                icon: const Icon(Icons.payments, size: 16),
+                                label: Text(
+                                  comp.paymentStatus == 'paid'
+                                      ? 'Mark Pending'
+                                      : 'Mark Paid',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      isThreeLine: true,
                       onTap: () => _editCompetitor(comp),
                       trailing: IconButton(
                         icon: const Icon(Icons.delete,

@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:speed_data/flutter_flow/nav/nav.dart';
@@ -73,7 +72,8 @@ class _EventListScreenState extends State<EventListScreen> {
           children: [
             UserAccountsDrawerHeader(
               accountName: const Text('Admin User'),
-              accountEmail: Text(FirebaseAuth.instance.currentUser?.email ?? ''),
+              accountEmail:
+                  Text(FirebaseAuth.instance.currentUser?.email ?? ''),
               currentAccountPicture: const CircleAvatar(
                 backgroundColor: Colors.white,
                 child: Icon(Icons.person, color: Colors.black),
@@ -87,11 +87,12 @@ class _EventListScreenState extends State<EventListScreen> {
                 Navigator.pop(context); // Close drawer
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => const RaceTrackListScreen()),
+                  MaterialPageRoute(
+                      builder: (context) => const RaceTrackListScreen()),
                 );
               },
             ),
-             ListTile(
+            ListTile(
               leading: const Icon(Icons.logout),
               title: const Text('Sign Out'),
               onTap: () async {
@@ -128,15 +129,15 @@ class _EventListScreenState extends State<EventListScreen> {
           final events = snapshot.data!;
 
           if (events.isEmpty) {
-             return RefreshIndicator(
-               onRefresh: _refreshEvents,
-               child: ListView(
-                 children: const [
-                   SizedBox(height: 100),
-                   Center(child: Text('No events scheduled.')),
-                 ],
-               ),
-             );
+            return RefreshIndicator(
+              onRefresh: _refreshEvents,
+              child: ListView(
+                children: const [
+                  SizedBox(height: 100),
+                  Center(child: Text('No events scheduled.')),
+                ],
+              ),
+            );
           }
 
           return RefreshIndicator(
@@ -146,21 +147,57 @@ class _EventListScreenState extends State<EventListScreen> {
               itemBuilder: (context, index) {
                 final event = events[index];
                 return Card(
-                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   child: ListTile(
-                    title: Text(event.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    title: Text(event.name,
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Date: ${DateFormat('yyyy-MM-dd').format(event.date)}'),
-                        Text('Sessions: ${event.sessions.map((s) => s.type.name.toUpperCase()).join(", ")}'),
+                        Text(
+                            'Date: ${DateFormat('yyyy-MM-dd').format(event.date)}'),
+                        Text(
+                            'Sessions: ${event.sessions.map((s) => s.type.name.toUpperCase()).join(", ")}'),
                       ],
                     ),
-                    trailing: const Icon(Icons.chevron_right),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Manage registration & groups',
+                          icon: const Icon(Icons.app_registration,
+                              color: Colors.blue),
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      EventRegistrationScreen(event: event)),
+                            );
+                          },
+                        ),
+                        IconButton(
+                          tooltip: 'Open race control',
+                          icon: const Icon(Icons.sports_score,
+                              color: Colors.green),
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      RaceControlScreen(event: event)),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                     onTap: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (context) => RaceControlScreen(event: event)),
+                        MaterialPageRoute(
+                            builder: (context) =>
+                                EventRegistrationScreen(event: event)),
                       );
                     },
                   ),

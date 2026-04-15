@@ -40,6 +40,12 @@ class FirestoreService {
     return fallback;
   }
 
+  String _normalizeRegistrationPaymentStatus(dynamic value) {
+    final raw = (value as String?)?.trim().toLowerCase();
+    if (raw == 'paid') return 'paid';
+    return 'pending';
+  }
+
   DocumentReference<Map<String, dynamic>> _raceParticipantRef(
       String raceId, String uid) {
     return _db
@@ -495,7 +501,12 @@ class FirestoreService {
         .doc(eventId)
         .collection('competitors')
         .doc(competitor.id)
-        .set(competitor.toMap());
+        .set({
+      ...competitor.toMap(),
+      'payment_status':
+          _normalizeRegistrationPaymentStatus(competitor.paymentStatus),
+      'updated_at': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<void> removeCompetitor(String eventId, String competitorId) async {
@@ -744,8 +755,8 @@ class FirestoreService {
           uid: fallbackUid,
           role: role,
           name: (data['name'] as String?)?.trim() ?? '',
-          email: (data['email'] as String?)?.trim().toLowerCase() ??
-              fallbackEmail,
+          email:
+              (data['email'] as String?)?.trim().toLowerCase() ?? fallbackEmail,
         ),
       );
     }
@@ -757,8 +768,7 @@ class FirestoreService {
     String? email,
   }) {
     final normalizedUid = uid.trim();
-    final normalizedEmail =
-        (email ?? '').trim().toLowerCase();
+    final normalizedEmail = (email ?? '').trim().toLowerCase();
 
     if (normalizedUid.isEmpty && normalizedEmail.isEmpty) {
       return Stream<List<TeamMembership>>.value(const <TeamMembership>[]);
@@ -778,8 +788,7 @@ class FirestoreService {
     Stream<List<TeamMembership>> primaryStream;
 
     if (normalizedUid.isNotEmpty && normalizedEmail.isNotEmpty) {
-      final byUid =
-          members.where('uid', isEqualTo: normalizedUid).snapshots();
+      final byUid = members.where('uid', isEqualTo: normalizedUid).snapshots();
       final byEmail =
           members.where('email', isEqualTo: normalizedEmail).snapshots();
       primaryStream = Rx.combineLatest2<
@@ -860,8 +869,10 @@ class FirestoreService {
         Map<String, dynamic>? memberData;
 
         if (normalizedUid.isNotEmpty) {
-          final memberByUid =
-              await teamDoc.reference.collection('members').doc(normalizedUid).get();
+          final memberByUid = await teamDoc.reference
+              .collection('members')
+              .doc(normalizedUid)
+              .get();
           if (memberByUid.exists) {
             memberData = memberByUid.data();
           }
@@ -1045,6 +1056,126 @@ class FirestoreService {
       print('Error checking registration: $e');
       return false;
     }
+  }
+
+  Future<Map<String, dynamic>?> getUserEventRegistration(
+      String eventId, String uid) async {
+    try {
+      final uidSnapshot = await _db
+          .collection('events')
+          .doc(eventId)
+          .collection('competitors')
+          .where('uid', isEqualTo: uid)
+          .limit(1)
+          .get();
+      QueryDocumentSnapshot<Map<String, dynamic>>? doc;
+      if (uidSnapshot.docs.isNotEmpty) {
+        doc = uidSnapshot.docs.first;
+      } else {
+        final userIdSnapshot = await _db
+            .collection('events')
+            .doc(eventId)
+            .collection('competitors')
+            .where('user_id', isEqualTo: uid)
+            .limit(1)
+            .get();
+        if (userIdSnapshot.docs.isNotEmpty) {
+          doc = userIdSnapshot.docs.first;
+        }
+      }
+
+      if (doc == null) return null;
+      final data = Map<String, dynamic>.from(doc.data());
+      final paymentStatus =
+          _normalizeRegistrationPaymentStatus(data['payment_status']);
+      final paymentConfirmedAtRaw = data['payment_confirmed_at'];
+      DateTime? paymentConfirmedAt;
+      if (paymentConfirmedAtRaw is Timestamp) {
+        paymentConfirmedAt = paymentConfirmedAtRaw.toDate();
+      } else if (paymentConfirmedAtRaw is DateTime) {
+        paymentConfirmedAt = paymentConfirmedAtRaw;
+      }
+
+      return {
+        'id': doc.id,
+        ...data,
+        'payment_status': paymentStatus,
+        'payment_confirmed_at': paymentConfirmedAt,
+      };
+    } catch (e) {
+      print('Error getting user event registration: $e');
+      return null;
+    }
+  }
+
+  Future<void> updateCompetitorPaymentStatus({
+    required String eventId,
+    required String competitorId,
+    required String paymentStatus,
+    String? paymentMethod,
+    String? updatedBy,
+  }) async {
+    final normalizedStatus = _normalizeRegistrationPaymentStatus(paymentStatus);
+    final payload = <String, dynamic>{
+      'payment_status': normalizedStatus,
+      'updated_at': FieldValue.serverTimestamp(),
+      'updated_by': updatedBy,
+    };
+    if (normalizedStatus == 'paid') {
+      payload['payment_confirmed_at'] = FieldValue.serverTimestamp();
+      if (paymentMethod != null && paymentMethod.trim().isNotEmpty) {
+        payload['payment_method'] = paymentMethod.trim();
+      }
+    } else {
+      payload['payment_confirmed_at'] = null;
+      payload['payment_method'] = '';
+    }
+
+    await _db
+        .collection('events')
+        .doc(eventId)
+        .collection('competitors')
+        .doc(competitorId)
+        .set(payload, SetOptions(merge: true));
+  }
+
+  Future<Map<String, dynamic>> getEventPaymentSummary({
+    required String eventId,
+    required double registrationFee,
+    String currency = 'BRL',
+  }) async {
+    final snapshot = await _db
+        .collection('events')
+        .doc(eventId)
+        .collection('competitors')
+        .get();
+
+    int paid = 0;
+    int pending = 0;
+    for (final doc in snapshot.docs) {
+      final status = _normalizeRegistrationPaymentStatus(
+        doc.data()['payment_status'],
+      );
+      if (status == 'paid') {
+        paid += 1;
+      } else {
+        pending += 1;
+      }
+    }
+
+    final total = snapshot.docs.length;
+    final paidTotal = paid * registrationFee;
+    final expectedTotal = total * registrationFee;
+    return {
+      'event_id': eventId,
+      'currency': currency.toUpperCase(),
+      'registration_fee': registrationFee,
+      'total_competitors': total,
+      'paid_competitors': paid,
+      'pending_competitors': pending,
+      'paid_total': paidTotal,
+      'expected_total': expectedTotal,
+    };
   }
 
   Future<void> joinRace(

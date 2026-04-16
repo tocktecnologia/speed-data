@@ -80,7 +80,8 @@ class PilotEventScheduleScreen extends StatelessWidget {
                   final user = FirebaseAuth.instance.currentUser;
                   if (user == null) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Usuario nao autenticado.')),
+                      const SnackBar(
+                          content: Text('Usuário não autenticado.')),
                     );
                     return;
                   }

@@ -1899,7 +1899,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 12, vertical: 6),
                           child: const Text(
-                            'Sem sessao ativa detectada. Exibindo dados em fallback.',
+                            'Sem sessão ativa detectada. Exibindo dados em fallback.',
                             style: TextStyle(color: Colors.amber, fontSize: 12),
                           ),
                         ),
@@ -1929,7 +1929,7 @@ class _ActiveRaceScreenState extends State<ActiveRaceScreen> {
                                     telemetry.localTimingEnabled
                                         ? 'Local timing ativo no dispositivo (Fase 1).'
                                         : (_localTimingConfigLoaded
-                                            ? 'Local timing desativado para este usuario.'
+                                            ? 'Local timing desativado para este usuário.'
                                             : 'Loading local timing config...'),
                                     style: TextStyle(
                                       color: telemetry.localTimingEnabled

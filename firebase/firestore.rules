@@ -92,6 +92,23 @@ service cloud.firestore {
       allow write: if isAuthenticated(); // tighten to admins if needed
     }
 
+    // Organization management (Gestao Portal Race)
+    // NOTE: while custom claims are not available, keep this auth-gated.
+    match /organizations/{organizationId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    match /organization_users/{membershipId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    match /tracks/{trackId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
     // Events Collection (admin/organizer access - currently any authenticated user)
     match /events/{eventId} {
       allow read: if isAuthenticated();
@@ -165,6 +182,13 @@ service cloud.firestore {
       }
     }
 
+    // Collection group support for competitors (used by "Somente inscritas")
+    // Without this recursive matcher, collectionGroup('competitors') may be denied
+    // even when /events/{eventId}/competitors has read access.
+    match /{path=**}/competitors/{competitorId} {
+      allow read: if isAuthenticated();
+    }
+
     // -----------------------------
     // Portal Race public collections
     // -----------------------------
@@ -184,8 +208,23 @@ service cloud.firestore {
     // Public projection of events (safe for anonymous reads)
     match /events_public/{eventId} {
       allow read: if true;
-      // Write should happen via Admin SDK / Cloud Functions.
-      allow write: if false;
+      // Gestao Portal Race currently syncs this projection from the client app.
+      // Tighten to admin/organizer role claims when available.
+      allow write: if isAuthenticated();
+
+      // Dynamic registration form config managed by Gestao Portal Race.
+      // Keep parent event_public doc immutable from client, but allow this subcollection.
+      match /inscription_config/{configId} {
+        allow read: if true;
+        allow write: if isAuthenticated();
+      }
+
+      // User inscriptions for public events.
+      // Contains personal data and payment confirmation status.
+      match /inscriptions/{inscriptionId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated();
+      }
     }
 
     // Public results and standings

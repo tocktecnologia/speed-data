@@ -446,7 +446,7 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
         child: Padding(
           padding: EdgeInsets.all(12),
           child: Text(
-            'Sem sessao ativa para monitoramento remoto.',
+            'Sem sessão ativa para monitoramento remoto.',
             style: TextStyle(color: Colors.grey),
           ),
         ),
@@ -549,7 +549,7 @@ class _TeamDashboardScreenState extends State<TeamDashboardScreen> {
 
                 if (tiles.isEmpty) {
                   return const Text(
-                    'Nenhum piloto de equipe vinculado nesta sessao.',
+                    'Nenhum piloto de equipe vinculado nesta sessão.',
                     style: TextStyle(color: Colors.grey),
                   );
                 }

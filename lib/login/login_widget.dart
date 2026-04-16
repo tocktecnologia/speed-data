@@ -1,13 +1,11 @@
 import '/auth/firebase_auth/auth_util.dart';
-import '/flutter_flow/flutter_flow_theme.dart';
+import '/auth/firebase_auth/google_auth.dart';
 import '/flutter_flow/flutter_flow_util.dart';
-import 'dart:ui';
 import '/index.dart';
-import 'package:auto_size_text/auto_size_text.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:provider/provider.dart';
 import '../theme/speed_data_theme.dart';
 import '../theme/speed_data_components.dart';
 import 'login_model.dart';
@@ -29,6 +27,8 @@ class _LoginWidgetState extends State<LoginWidget> {
   late LoginModel _model;
 
   final scaffoldKey = GlobalKey<ScaffoldState>();
+  final FirestoreService _firestoreService = FirestoreService();
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
 
   @override
   void initState() {
@@ -47,6 +47,262 @@ class _LoginWidgetState extends State<LoginWidget> {
     _model.dispose();
 
     super.dispose();
+  }
+
+  Future<String?> _showRolePickerDialog() async {
+    String selectedRole = 'pilot';
+
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Escolha seu perfil'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Selecione o perfil para este acesso:'),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedRole,
+                    decoration: const InputDecoration(
+                      labelText: 'Perfil',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'pilot',
+                        child: Text('Piloto'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'team_member',
+                        child: Text('Equipe'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'admin',
+                        child: Text('Administrador'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => selectedRole = value);
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(selectedRole),
+                  child: const Text('Continuar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<String?> _showPasswordForGoogleLinkDialog(String email) async {
+    final controller = TextEditingController();
+
+    try {
+      return await showDialog<String>(
+        context: context,
+        barrierDismissible: true,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Vincular login Google'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Para $email, informe a senha atual para vincular ao Google.',
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Senha',
+                  ),
+                  onSubmitted: (_) =>
+                      Navigator.of(context).pop(controller.text.trim()),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancelar'),
+              ),
+              ElevatedButton(
+                onPressed: () =>
+                    Navigator.of(context).pop(controller.text.trim()),
+                child: const Text('OK'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<void> _showForgotPasswordDialog() async {
+    final emailController = TextEditingController(
+      text: _model.emailAddressTextController.text.trim(),
+    );
+
+    try {
+      final email = await showDialog<String>(
+        context: context,
+        barrierDismissible: true,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Recuperar senha'),
+            content: TextField(
+              controller: emailController,
+              autofocus: true,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                labelText: 'Email',
+              ),
+              onSubmitted: (_) =>
+                  Navigator.of(context).pop(emailController.text.trim()),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancelar'),
+              ),
+              ElevatedButton(
+                onPressed: () =>
+                    Navigator.of(context).pop(emailController.text.trim()),
+                child: const Text('OK'),
+              ),
+            ],
+          );
+        },
+      );
+
+      final normalizedEmail = (email ?? '').trim();
+      if (normalizedEmail.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Informe um email valido.')),
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      await authManager.resetPassword(
+        email: normalizedEmail,
+        context: context,
+      );
+    } finally {
+      emailController.dispose();
+    }
+  }
+
+  Future<void> _ensureRoleIfMissing({
+    required String uid,
+    required String selectedRole,
+  }) async {
+    final userSnapshot = await _db.collection('users').doc(uid).get();
+    final data = userSnapshot.data() ?? <String, dynamic>{};
+    final existingRole = (data['role'] as String?)?.trim() ?? '';
+    if (existingRole.isNotEmpty) {
+      return;
+    }
+
+    final role = UserRole.fromString(selectedRole);
+    await _firestoreService.setUserRole(
+      uid,
+      role,
+      email: FirebaseAuth.instance.currentUser?.email,
+    );
+  }
+
+  Future<bool> _handleGoogleConflict(
+    GoogleSignInAccountConflictException conflict,
+  ) async {
+    final password = await _showPasswordForGoogleLinkDialog(conflict.email);
+    final normalizedPassword = (password ?? '').trim();
+    if (normalizedPassword.isEmpty) {
+      return false;
+    }
+
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: conflict.email,
+        password: normalizedPassword,
+      );
+
+      final authUser = FirebaseAuth.instance.currentUser;
+      if (authUser == null) {
+        return false;
+      }
+
+      final hasGoogleProvider = authUser.providerData
+          .any((provider) => provider.providerId == 'google.com');
+      if (!hasGoogleProvider) {
+        await authUser.linkWithCredential(conflict.pendingCredential);
+      }
+      return true;
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Falha ao vincular Google: ${e.message}')),
+      );
+      return false;
+    }
+  }
+
+  Future<void> _handleGoogleLogin() async {
+    final selectedRole = await _showRolePickerDialog();
+    if (selectedRole == null) {
+      return;
+    }
+    if (!mounted) return;
+
+    try {
+      GoRouter.of(context).prepareAuthEvent();
+      final user = await authManager.signInWithGoogle(context);
+      if (user == null) {
+        return;
+      }
+
+      final uid = user.uid;
+      if (uid != null && uid.trim().isNotEmpty) {
+        await _ensureRoleIfMissing(uid: uid, selectedRole: selectedRole);
+      }
+
+      if (!mounted) return;
+      context.goNamedAuth(HomePageWidget.routeName, context.mounted);
+    } on GoogleSignInAccountConflictException catch (conflict) {
+      final linked = await _handleGoogleConflict(conflict);
+      if (!linked) return;
+
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null && uid.trim().isNotEmpty) {
+        await _ensureRoleIfMissing(uid: uid, selectedRole: selectedRole);
+      }
+
+      if (!mounted) return;
+      context.goNamedAuth(HomePageWidget.routeName, context.mounted);
+    }
   }
 
   @override
@@ -145,18 +401,7 @@ class _LoginWidgetState extends State<LoginWidget> {
                                     child: SizedBox(
                                       width: double.infinity,
                                       child: SpeedButton.secondary(
-                                        onPressed: () async {
-                                          GoRouter.of(context)
-                                              .prepareAuthEvent();
-                                          final user = await authManager
-                                              .signInWithGoogle(context);
-                                          if (user == null) {
-                                            return;
-                                          }
-                                          context.goNamedAuth(
-                                              HomePageWidget.routeName,
-                                              context.mounted);
-                                        },
+                                        onPressed: _handleGoogleLogin,
                                         text: 'Entrar pelo Google',
                                         icon: const FaIcon(
                                           FontAwesomeIcons.google,
@@ -381,58 +626,28 @@ class _LoginWidgetState extends State<LoginWidget> {
                                           ),
                                         ),
                                       ),
-                                      // Start Role Dropdown
-                                      Padding(
-                                        padding: const EdgeInsetsDirectional
-                                            .fromSTEB(0, 0, 0, 16),
-                                        child: Container(
-                                          width: double.infinity,
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 12),
-                                          decoration: BoxDecoration(
-                                            color: SpeedDataTheme.bgSurface,
-                                            borderRadius: BorderRadius.circular(
-                                                SpeedDataTheme.radiusMd),
-                                            border: Border.all(
-                                              color:
-                                                  SpeedDataTheme.borderSubtle,
-                                              width: 1,
-                                            ),
-                                          ),
-                                          child: DropdownButtonHideUnderline(
-                                            child: DropdownButton<String>(
-                                              value: _model.selectedRole ??
-                                                  'pilot',
-                                              items: const [
-                                                DropdownMenuItem(
-                                                    value: 'pilot',
-                                                    child: Text('Pilot')),
-                                                DropdownMenuItem(
-                                                    value: 'team_member',
-                                                    child: Text('Team Member')),
-                                                DropdownMenuItem(
-                                                    value: 'admin',
-                                                    child: Text('Admin')),
-                                              ],
-                                              onChanged: (val) {
-                                                if (val != null) {
-                                                  safeSetState(() => _model
-                                                      .selectedRole = val);
-                                                }
-                                              },
-                                              dropdownColor:
-                                                  SpeedDataTheme.bgSurface,
+                                      Align(
+                                        alignment:
+                                            const AlignmentDirectional(1.0, 0.0),
+                                        child: Padding(
+                                          padding:
+                                              const EdgeInsetsDirectional
+                                                  .fromSTEB(0.0, 0.0, 0.0, 16.0),
+                                          child: InkWell(
+                                            onTap: _showForgotPasswordDialog,
+                                            child: Text(
+                                              'Esqueci minha senha',
                                               style: SpeedDataTheme.themeData
-                                                  .textTheme.bodyMedium,
-                                              icon: const Icon(
-                                                  Icons.arrow_drop_down,
-                                                  color: SpeedDataTheme
-                                                      .textSecondary),
+                                                  .textTheme.bodySmall
+                                                  ?.copyWith(
+                                                color: SpeedDataTheme
+                                                    .accentPrimary,
+                                                fontWeight: FontWeight.w600,
+                                              ),
                                             ),
                                           ),
                                         ),
                                       ),
-                                      // End Role Dropdown
 
                                       Padding(
                                         padding: const EdgeInsetsDirectional
@@ -441,11 +656,12 @@ class _LoginWidgetState extends State<LoginWidget> {
                                           width: double.infinity,
                                           child: SpeedButton.primary(
                                             onPressed: () async {
-                                              GoRouter.of(context)
+                                              final currentContext = context;
+                                              GoRouter.of(currentContext)
                                                   .prepareAuthEvent();
                                               final user = await authManager
                                                   .signInWithEmail(
-                                                context,
+                                                currentContext,
                                                 _model
                                                     .emailAddressTextController
                                                     .text,
@@ -455,24 +671,12 @@ class _LoginWidgetState extends State<LoginWidget> {
                                               if (user == null) {
                                                 return;
                                               }
-                                              // Switch Context
-                                              try {
-                                                final roleStr =
-                                                    _model.selectedRole ??
-                                                        'pilot';
-                                                final roleEnum =
-                                                    UserRole.fromString(
-                                                        roleStr);
-                                                await FirestoreService()
-                                                    .setUserRole(
-                                                        user.uid!, roleEnum);
-                                              } catch (e) {
-                                                print(
-                                                    'Error switching role: $e');
+                                              if (!currentContext.mounted) {
+                                                return;
                                               }
-                                              context.goNamedAuth(
+                                              currentContext.goNamedAuth(
                                                   HomePageWidget.routeName,
-                                                  context.mounted);
+                                                  currentContext.mounted);
                                             },
                                             text: 'Entrar',
                                           ),

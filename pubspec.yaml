@@ -95,6 +95,8 @@ dependencies:
   flutter_polyline_points: ^3.1.0
   http: ^1.4.0
   cloud_functions: ^5.5.2
+  firebase_storage: ^12.4.7
+  image_picker: ^1.1.2
   wakelock_plus: ^1.4.0
   fl_chart: ^1.1.0
 
@@ -157,4 +159,3 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/custom-fonts/#from-packages
-

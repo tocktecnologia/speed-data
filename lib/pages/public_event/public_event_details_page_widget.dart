@@ -218,7 +218,8 @@ class _PublicEventDetailsPageWidgetState
               : 'Evento';
           final location = (data['location'] as String?)?.trim() ?? '';
           final state = (data['state'] as String?)?.trim() ?? '';
-          final startDate = _asDateTime(data['start_date'] ?? data['startDate']);
+          final startDate =
+              _asDateTime(data['start_date'] ?? data['startDate']);
           final endDate = _asDateTime(data['end_date'] ?? data['endDate']);
           final categories = data['categories'] is List
               ? List<String>.from(
@@ -246,16 +247,20 @@ class _PublicEventDetailsPageWidgetState
             );
           }
 
-          return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: _db
                 .collection('events_public')
                 .doc(widget.eventId)
                 .collection('inscriptions')
-                .doc(uid)
+                .where('user_uid', isEqualTo: uid)
+                .limit(1)
                 .snapshots(),
             builder: (context, inscriptionSnapshot) {
-              final inscriptionData = inscriptionSnapshot.data?.data();
-              final hasInscription = inscriptionSnapshot.data?.exists ?? false;
+              final inscriptionDocs = inscriptionSnapshot.data?.docs ??
+                  <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+              final hasInscription = inscriptionDocs.isNotEmpty;
+              final inscriptionData =
+                  hasInscription ? inscriptionDocs.first.data() : null;
               final paymentStatus = _normalizePaymentStatus(
                 inscriptionData?['payment_status'],
               );

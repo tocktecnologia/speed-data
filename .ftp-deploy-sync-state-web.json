@@ -1,0 +1,104 @@
+{
+  "files": {
+    ".htaccess": {
+      "sha1": "03688e7e54a118c7fbb4148b110ab3e26b3bdbfb"
+    },
+    ".last_build_id": {
+      "sha1": "a06d04ea4e4d14060bcf0a4f1f153fcd0a10c857"
+    },
+    "assets/AssetManifest.bin": {
+      "sha1": "73b82a1ec749685c0f5794d3194d9d64b7c6f480"
+    },
+    "assets/AssetManifest.bin.json": {
+      "sha1": "0f5749b0b9eb41d367e317871334699e5d30a119"
+    },
+    "assets/FontManifest.json": {
+      "sha1": "ae2f7d8a3a122bbba55a654e7cdf6a3172f2b44f"
+    },
+    "assets/NOTICES": {
+      "sha1": "a9223ff972fd257a329572c4fa8cfe767610ac8e"
+    },
+    "assets/assets/audios/favicon.png": {
+      "sha1": "60fbf276142d0cfd30b7380df516c18f1b6fd731"
+    },
+    "assets/assets/fonts/favicon.png": {
+      "sha1": "60fbf276142d0cfd30b7380df516c18f1b6fd731"
+    },
+    "assets/assets/images/favicon.png": {
+      "sha1": "60fbf276142d0cfd30b7380df516c18f1b6fd731"
+    },
+    "assets/assets/jsons/favicon.png": {
+      "sha1": "60fbf276142d0cfd30b7380df516c18f1b6fd731"
+    },
+    "assets/assets/pdfs/favicon.png": {
+      "sha1": "60fbf276142d0cfd30b7380df516c18f1b6fd731"
+    },
+    "assets/assets/rive_animations/favicon.png": {
+      "sha1": "60fbf276142d0cfd30b7380df516c18f1b6fd731"
+    },
+    "assets/assets/videos/favicon.png": {
+      "sha1": "60fbf276142d0cfd30b7380df516c18f1b6fd731"
+    },
+    "assets/fonts/MaterialIcons-Regular.otf": {
+      "sha1": "c0f6647a83c94814c3bdb02a5034615367be0ed6"
+    },
+    "assets/packages/cupertino_icons/assets/CupertinoIcons.ttf": {
+      "sha1": "2e76c70d09fb1d8e6cfd9c64f7a60387224459c2"
+    },
+    "assets/packages/font_awesome_flutter/lib/fonts/fa-brands-400.ttf": {
+      "sha1": "0b4383d85036fdc7c60119b341373cd677932e08"
+    },
+    "assets/packages/font_awesome_flutter/lib/fonts/fa-regular-400.ttf": {
+      "sha1": "9c88810d593f4dfcf44da07ac79bf637539cf6fc"
+    },
+    "assets/packages/font_awesome_flutter/lib/fonts/fa-solid-900.ttf": {
+      "sha1": "4d449a385faa60fd7252a20a219257628f139b20"
+    },
+    "assets/packages/wakelock_plus/assets/no_sleep.js": {
+      "sha1": "e17ecf67de61920504d79194dbee5cd552a01cfd"
+    },
+    "assets/shaders/ink_sparkle.frag": {
+      "sha1": "04071b68382dc22f3c3513aad600d4a45bd26997"
+    },
+    "assets/shaders/stretch_effect.frag": {
+      "sha1": "27d553f2d716c3f6fbdecca341c6f772a52317f9"
+    },
+    "brand_icon_base.png": {
+      "sha1": "20abe503ee56f1ab4293b6683977c0ff5c01af37"
+    },
+    "favicon.png": {
+      "sha1": "60fbf276142d0cfd30b7380df516c18f1b6fd731"
+    },
+    "flutter.js": {
+      "sha1": "c433e7a48fdcc7a9573723c2802bd083431a9e69"
+    },
+    "flutter_bootstrap.js": {
+      "sha1": "c5afb394003c7fd0504119c3951d48e7ca1eebc1"
+    },
+    "flutter_service_worker.js": {
+      "sha1": "10b206dfe5fad9bc248b2c9337dbd9b81dc04130"
+    },
+    "icons/Icon-192.png": {
+      "sha1": "61e15090983d60db17fa04a31282072b89b52bcf"
+    },
+    "icons/Icon-512.png": {
+      "sha1": "35a7935ada33c745da4223223d4af8c9ba1897ed"
+    },
+    "index.html": {
+      "sha1": "e6eaabf018fa4adfb26c4297ce638ccadf0e4ab3"
+    },
+    "main.dart.js": {
+      "sha1": "4fcb11e5f5a61d5e3eacd68ea3580c4eb4b83e03"
+    },
+    "manifest.json": {
+      "sha1": "f8f95c080a93a15e8d93c42f0451d9a4cb755f29"
+    },
+    "og-image.png": {
+      "sha1": "69cfdebf1c9fefdb5b9c479f9635afbf12e76a8e"
+    },
+    "version.json": {
+      "sha1": "b40c9195ffc3e7447660331df44678c6b767bb84"
+    }
+  },
+  "version": 1
+}

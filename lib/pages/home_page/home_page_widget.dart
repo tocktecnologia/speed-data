@@ -37,11 +37,13 @@ class _HomePageWidgetState extends State<HomePageWidget> {
   DateTimeRange? _eventDateRange;
   bool _onlyMyEvents = false;
   bool _loadingMyEvents = false;
+  bool _myEventsLoaded = false;
   bool _savingProfile = false;
   bool _uploadingProfilePhoto = false;
   bool _profileDraftInitialized = false;
 
   Set<String> _myEventIds = <String>{};
+  String _myEventsLoadedUid = '';
 
   @override
   void initState() {
@@ -203,7 +205,9 @@ class _HomePageWidgetState extends State<HomePageWidget> {
 
   double? _asDoubleOrNull(dynamic value) {
     if (value is num) return value.toDouble();
-    if (value is String) return double.tryParse(value.trim().replaceAll(',', '.'));
+    if (value is String) {
+      return double.tryParse(value.trim().replaceAll(',', '.'));
+    }
     return null;
   }
 
@@ -300,42 +304,20 @@ class _HomePageWidgetState extends State<HomePageWidget> {
   }
 
   Future<void> _loadMyEventIds(String uid) async {
-    if (_loadingMyEvents || uid.trim().isEmpty) return;
+    final normalizedUid = uid.trim();
+    if (_loadingMyEvents || normalizedUid.isEmpty) return;
 
     setState(() => _loadingMyEvents = true);
-    final Set<String> ids = <String>{};
-
-    Future<void> collectByField(String field) async {
-      final snapshot = await _db
-          .collectionGroup('inscriptions')
-          .where(field, isEqualTo: uid)
-          .get();
-
-      for (final doc in snapshot.docs) {
-        final eventDoc = doc.reference.parent.parent;
-        if (eventDoc != null && eventDoc.path.startsWith('events_public/')) {
-          ids.add(eventDoc.id);
-        }
-      }
-    }
 
     try {
-      await collectByField('user_uid');
-      await collectByField('uid');
-      await collectByField('user_id');
+      final ids = await _loadMyEventIdsByEventTraversal(normalizedUid);
       if (!mounted) return;
-      setState(() => _myEventIds = ids);
+      setState(() {
+        _myEventIds = ids;
+        _myEventsLoaded = true;
+        _myEventsLoadedUid = normalizedUid;
+      });
     } catch (e) {
-      if (e is FirebaseException && e.code == 'permission-denied') {
-        try {
-          final fallbackIds = await _loadMyEventIdsByEventTraversal(uid);
-          if (!mounted) return;
-          setState(() => _myEventIds = fallbackIds);
-          return;
-        } catch (_) {
-          // keep default error below when fallback also fails
-        }
-      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Falha ao carregar inscrições: $e')),
@@ -351,25 +333,19 @@ class _HomePageWidgetState extends State<HomePageWidget> {
     final eventIds = <String>{};
     final eventsSnapshot = await _db.collection('events_public').get();
 
-    for (final eventDoc in eventsSnapshot.docs) {
-      final inscriptionsRef = eventDoc.reference.collection('inscriptions');
-      final byUserUid =
-          await inscriptionsRef.where('user_uid', isEqualTo: uid).limit(1).get();
-      if (byUserUid.docs.isNotEmpty) {
-        eventIds.add(eventDoc.id);
-        continue;
+    final checks = eventsSnapshot.docs.map((eventDoc) async {
+      final inscriptionDoc =
+          await eventDoc.reference.collection('inscriptions').doc(uid).get();
+      if (inscriptionDoc.exists) {
+        return eventDoc.id;
       }
+      return null;
+    });
 
-      final byUid = await inscriptionsRef.where('uid', isEqualTo: uid).limit(1).get();
-      if (byUid.docs.isNotEmpty) {
-        eventIds.add(eventDoc.id);
-        continue;
-      }
-
-      final byUserId =
-          await inscriptionsRef.where('user_id', isEqualTo: uid).limit(1).get();
-      if (byUserId.docs.isNotEmpty) {
-        eventIds.add(eventDoc.id);
+    final results = await Future.wait(checks);
+    for (final eventId in results) {
+      if (eventId != null) {
+        eventIds.add(eventId);
       }
     }
 
@@ -381,7 +357,10 @@ class _HomePageWidgetState extends State<HomePageWidget> {
     if (role != UserRole.pilot) return;
     setState(() => _onlyMyEvents = value);
     if (value) {
-      await _loadMyEventIds(uid);
+      final normalizedUid = uid.trim();
+      if (!_myEventsLoaded || _myEventsLoadedUid != normalizedUid) {
+        await _loadMyEventIds(normalizedUid);
+      }
     }
   }
 
@@ -1490,7 +1469,8 @@ class _HomePageWidgetState extends State<HomePageWidget> {
                   name: _firstNonEmpty([data['name'], 'Evento sem nome']),
                   startDate: _extractPublicEventStartDate(data),
                   endDate: _extractPublicEventEndDate(data),
-                  location: _firstNonEmpty([data['location'], data['track_display_name']]),
+                  location: _firstNonEmpty(
+                      [data['location'], data['track_display_name']]),
                   state: _firstNonEmpty([data['state']]),
                   status: _normalizeEventStatus(data['status']),
                   categories: data['categories'] is List
@@ -1571,6 +1551,7 @@ class _HomePageWidgetState extends State<HomePageWidget> {
       ],
     );
   }
+
   Widget _buildProfileTab({
     required Key key,
     required _ConsolePalette palette,
@@ -2044,4 +2025,3 @@ class _ConsolePalette {
     );
   }
 }
-

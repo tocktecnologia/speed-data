@@ -2,7 +2,6 @@ import '/auth/firebase_auth/auth_util.dart';
 import '/auth/firebase_auth/google_auth.dart';
 import '/flutter_flow/flutter_flow_util.dart';
 import '/index.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -28,7 +27,6 @@ class _LoginWidgetState extends State<LoginWidget> {
 
   final scaffoldKey = GlobalKey<ScaffoldState>();
   final FirestoreService _firestoreService = FirestoreService();
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
 
   @override
   void initState() {
@@ -216,14 +214,70 @@ class _LoginWidgetState extends State<LoginWidget> {
     }
   }
 
+  bool _isPersistedRole(UserRole role) {
+    return role == UserRole.pilot ||
+        role == UserRole.teamMember ||
+        role == UserRole.admin ||
+        role == UserRole.root;
+  }
+
+  Future<UserRole> _getRoleByUid(String uid) async {
+    final normalizedUid = uid.trim();
+    if (normalizedUid.isEmpty) {
+      return UserRole.unknown;
+    }
+    return _firestoreService.getUserRole(normalizedUid);
+  }
+
+  Future<UserRole> _getRoleByEmail(String email) async {
+    final normalizedEmail = email.trim();
+    if (normalizedEmail.isEmpty) {
+      return UserRole.unknown;
+    }
+
+    final userData = await _firestoreService.getUserByEmail(normalizedEmail);
+    if (userData == null) {
+      return UserRole.unknown;
+    }
+
+    return UserRole.fromString(userData['role'] as String?);
+  }
+
+  Future<UserRole> _resolveExistingRole({
+    required String uid,
+    required String email,
+  }) async {
+    final roleByUid = await _getRoleByUid(uid);
+    if (_isPersistedRole(roleByUid)) {
+      return roleByUid;
+    }
+
+    final roleByEmail = await _getRoleByEmail(email);
+    if (_isPersistedRole(roleByEmail)) {
+      return roleByEmail;
+    }
+
+    return UserRole.unknown;
+  }
+
   Future<void> _ensureRoleIfMissing({
     required String uid,
     required String selectedRole,
+    String? email,
   }) async {
-    final userSnapshot = await _db.collection('users').doc(uid).get();
-    final data = userSnapshot.data() ?? <String, dynamic>{};
-    final existingRole = (data['role'] as String?)?.trim() ?? '';
-    if (existingRole.isNotEmpty) {
+    final normalizedEmail = (email ?? '').trim();
+    final existingRole = await _resolveExistingRole(
+      uid: uid,
+      email: normalizedEmail,
+    );
+    if (_isPersistedRole(existingRole)) {
+      if (normalizedEmail.isNotEmpty) {
+        await _firestoreService.setUserRole(
+          uid,
+          existingRole,
+          email: normalizedEmail,
+        );
+      }
       return;
     }
 
@@ -231,8 +285,41 @@ class _LoginWidgetState extends State<LoginWidget> {
     await _firestoreService.setUserRole(
       uid,
       role,
-      email: FirebaseAuth.instance.currentUser?.email,
+      email: normalizedEmail.isEmpty ? null : normalizedEmail,
     );
+  }
+
+  Future<void> _completeGoogleLoginFlow() async {
+    final authUser = FirebaseAuth.instance.currentUser;
+    if (authUser == null) {
+      return;
+    }
+
+    final uid = authUser.uid.trim();
+    if (uid.isEmpty) {
+      return;
+    }
+
+    final email = (authUser.email ?? '').trim();
+    final existingRole = await _resolveExistingRole(uid: uid, email: email);
+
+    if (!_isPersistedRole(existingRole)) {
+      if (!mounted) return;
+      final selectedRole = await _showRolePickerDialog();
+      if (selectedRole == null) {
+        await authManager.signOut();
+        return;
+      }
+
+      await _ensureRoleIfMissing(
+        uid: uid,
+        selectedRole: selectedRole,
+        email: email,
+      );
+    }
+
+    if (!mounted) return;
+    context.goNamedAuth(HomePageWidget.routeName, context.mounted);
   }
 
   Future<bool> _handleGoogleConflict(
@@ -271,37 +358,17 @@ class _LoginWidgetState extends State<LoginWidget> {
   }
 
   Future<void> _handleGoogleLogin() async {
-    final selectedRole = await _showRolePickerDialog();
-    if (selectedRole == null) {
-      return;
-    }
-    if (!mounted) return;
-
     try {
       GoRouter.of(context).prepareAuthEvent();
       final user = await authManager.signInWithGoogle(context);
       if (user == null) {
         return;
       }
-
-      final uid = user.uid;
-      if (uid != null && uid.trim().isNotEmpty) {
-        await _ensureRoleIfMissing(uid: uid, selectedRole: selectedRole);
-      }
-
-      if (!mounted) return;
-      context.goNamedAuth(HomePageWidget.routeName, context.mounted);
+      await _completeGoogleLoginFlow();
     } on GoogleSignInAccountConflictException catch (conflict) {
       final linked = await _handleGoogleConflict(conflict);
       if (!linked) return;
-
-      final uid = FirebaseAuth.instance.currentUser?.uid;
-      if (uid != null && uid.trim().isNotEmpty) {
-        await _ensureRoleIfMissing(uid: uid, selectedRole: selectedRole);
-      }
-
-      if (!mounted) return;
-      context.goNamedAuth(HomePageWidget.routeName, context.mounted);
+      await _completeGoogleLoginFlow();
     }
   }
 
@@ -627,18 +694,17 @@ class _LoginWidgetState extends State<LoginWidget> {
                                         ),
                                       ),
                                       Align(
-                                        alignment:
-                                            const AlignmentDirectional(1.0, 0.0),
+                                        alignment: const AlignmentDirectional(
+                                            1.0, 0.0),
                                         child: Padding(
-                                          padding:
-                                              const EdgeInsetsDirectional
-                                                  .fromSTEB(0.0, 0.0, 0.0, 16.0),
+                                          padding: const EdgeInsetsDirectional
+                                              .fromSTEB(0.0, 0.0, 0.0, 16.0),
                                           child: InkWell(
                                             onTap: _showForgotPasswordDialog,
                                             child: Text(
                                               'Esqueci minha senha',
-                                              style: SpeedDataTheme.themeData
-                                                  .textTheme.bodySmall
+                                              style: SpeedDataTheme
+                                                  .themeData.textTheme.bodySmall
                                                   ?.copyWith(
                                                 color: SpeedDataTheme
                                                     .accentPrimary,
@@ -648,7 +714,6 @@ class _LoginWidgetState extends State<LoginWidget> {
                                           ),
                                         ),
                                       ),
-
                                       Padding(
                                         padding: const EdgeInsetsDirectional
                                             .fromSTEB(0.0, 0.0, 0.0, 16.0),

@@ -54,6 +54,7 @@ class _InscriptionConfigPayload {
     required this.helperText,
     required this.fields,
     required this.prefillResponses,
+    required this.inscriptionData,
   });
 
   final String organizationId;
@@ -62,6 +63,7 @@ class _InscriptionConfigPayload {
   final String helperText;
   final List<_InscriptionFieldDefinition> fields;
   final Map<String, dynamic> prefillResponses;
+  final Map<String, dynamic> inscriptionData;
 }
 
 class _PublicEventInscriptionPageWidgetState
@@ -74,6 +76,7 @@ class _PublicEventInscriptionPageWidgetState
   late Future<_InscriptionConfigPayload?> _formFuture;
   bool _submitting = false;
   bool _prefillApplied = false;
+  DocumentReference<Map<String, dynamic>>? _inscriptionRef;
 
   static const String _otherOptionKey = '__other_option__';
 
@@ -97,9 +100,203 @@ class _PublicEventInscriptionPageWidgetState
   _InscriptionFieldType _parseFieldType(dynamic value) {
     final normalized = (value as String?)?.trim().toLowerCase() ?? '';
     if (normalized == 'number') return _InscriptionFieldType.number;
-    if (normalized == 'single_choice') return _InscriptionFieldType.singleChoice;
-    if (normalized == 'multiple_choice') return _InscriptionFieldType.multipleChoice;
+    if (normalized == 'single_choice') {
+      return _InscriptionFieldType.singleChoice;
+    }
+    if (normalized == 'multiple_choice') {
+      return _InscriptionFieldType.multipleChoice;
+    }
     return _InscriptionFieldType.text;
+  }
+
+  Map<String, dynamic> _toStringKeyedMap(dynamic rawValue) {
+    if (rawValue is Map<String, dynamic>) {
+      return Map<String, dynamic>.from(rawValue);
+    }
+    if (rawValue is Map) {
+      return Map<String, dynamic>.from(
+        rawValue.map((key, value) => MapEntry(key.toString(), value)),
+      );
+    }
+    return <String, dynamic>{};
+  }
+
+  Map<String, dynamic> _extractStoredResponses(Map<String, dynamic> data) {
+    const responseKeys = <String>[
+      'responses',
+      'answers',
+      'form_answers',
+      'formResponses',
+      'form_responses',
+    ];
+
+    final merged = <String, dynamic>{};
+    for (final key in responseKeys) {
+      final source = _toStringKeyedMap(data[key]);
+      for (final entry in source.entries) {
+        merged.putIfAbsent(entry.key, () => entry.value);
+      }
+    }
+    return merged;
+  }
+
+  String _normalizeLookupKey(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'[\s_\-]+'), '');
+  }
+
+  dynamic _lookupByNormalizedKey(
+    Map<String, dynamic> source,
+    Iterable<String> keys,
+  ) {
+    if (source.isEmpty) return null;
+
+    final normalizedKeys =
+        keys.map(_normalizeLookupKey).where((key) => key.isNotEmpty).toSet();
+    if (normalizedKeys.isEmpty) return null;
+
+    for (final entry in source.entries) {
+      final normalizedEntryKey = _normalizeLookupKey(entry.key);
+      if (!normalizedKeys.contains(normalizedEntryKey)) continue;
+      if (entry.value == null) continue;
+      return entry.value;
+    }
+    return null;
+  }
+
+  bool _containsKeyword(
+    _InscriptionFieldDefinition field,
+    List<String> keywords,
+  ) {
+    final haystack = '${field.id} ${field.title}'.toLowerCase();
+    return keywords.any((keyword) => haystack.contains(keyword));
+  }
+
+  dynamic _firstNonEmptyValue(List<dynamic> values) {
+    for (final value in values) {
+      if (value == null) continue;
+      if (value is String) {
+        final text = value.trim();
+        if (text.isNotEmpty) return text;
+        continue;
+      }
+      if (value is List && value.isNotEmpty) {
+        return value;
+      }
+      if (value is Map && value.isNotEmpty) {
+        return value;
+      }
+      final text = value.toString().trim();
+      if (text.isNotEmpty) return text;
+    }
+    return null;
+  }
+
+  dynamic _resolveFallbackByFieldMeaning(
+    _InscriptionFieldDefinition field,
+    Map<String, dynamic> inscriptionData,
+  ) {
+    if (_containsKeyword(field, const ['nome', 'name', 'piloto'])) {
+      return _firstNonEmptyValue([
+        inscriptionData['competitor_name'],
+        inscriptionData['pilot_name'],
+        inscriptionData['user_name'],
+        inscriptionData['name'],
+      ]);
+    }
+    if (_containsKeyword(field, const ['numero', 'number', 'carro'])) {
+      return _firstNonEmptyValue([
+        inscriptionData['competitor_number'],
+        inscriptionData['car_number'],
+        inscriptionData['number'],
+      ]);
+    }
+    if (_containsKeyword(field, const ['categoria', 'category'])) {
+      return _firstNonEmptyValue([inscriptionData['category']]);
+    }
+    if (_containsKeyword(field, const ['email', 'mail'])) {
+      return _firstNonEmptyValue([
+        inscriptionData['user_email'],
+        inscriptionData['email'],
+      ]);
+    }
+    return null;
+  }
+
+  dynamic _unwrapResponseValue(dynamic rawValue) {
+    if (rawValue is Map<String, dynamic>) {
+      for (final key in const ['value', 'answer', 'text']) {
+        if (rawValue.containsKey(key)) {
+          return rawValue[key];
+        }
+      }
+    } else if (rawValue is Map) {
+      for (final key in const ['value', 'answer', 'text']) {
+        if (rawValue.containsKey(key)) {
+          return rawValue[key];
+        }
+      }
+    }
+    return rawValue;
+  }
+
+  dynamic _resolvePrefillValue({
+    required _InscriptionFieldDefinition field,
+    required Map<String, dynamic> responses,
+    required Map<String, dynamic> inscriptionData,
+  }) {
+    final lookupKeys = <String>{
+      field.id,
+      field.title,
+      field.id.replaceAll('-', '_'),
+      field.id.replaceAll('_', '-'),
+      field.title.replaceAll(' ', '_'),
+      field.title.replaceAll(' ', '-'),
+    };
+
+    final fromResponses = _lookupByNormalizedKey(responses, lookupKeys);
+    if (fromResponses != null) return fromResponses;
+
+    final fromInscription = _lookupByNormalizedKey(inscriptionData, lookupKeys);
+    if (fromInscription != null) return fromInscription;
+
+    return _resolveFallbackByFieldMeaning(field, inscriptionData);
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>?> _loadExistingInscription(
+    String uid,
+  ) async {
+    final inscriptions = _db
+        .collection('events_public')
+        .doc(widget.eventId)
+        .collection('inscriptions');
+
+    final byDocumentId = await inscriptions.doc(uid).get();
+    if (byDocumentId.exists) {
+      return byDocumentId;
+    }
+
+    Future<DocumentSnapshot<Map<String, dynamic>>?> queryByField(
+      String field,
+    ) async {
+      final snapshot =
+          await inscriptions.where(field, isEqualTo: uid).limit(1).get();
+      if (snapshot.docs.isNotEmpty) {
+        return snapshot.docs.first;
+      }
+      return null;
+    }
+
+    final byUserUid = await queryByField('user_uid');
+    if (byUserUid != null) {
+      return byUserUid;
+    }
+
+    final byUid = await queryByField('uid');
+    if (byUid != null) {
+      return byUid;
+    }
+
+    return queryByField('user_id');
   }
 
   Future<_InscriptionConfigPayload?> _loadConfig() async {
@@ -121,30 +318,24 @@ class _PublicEventInscriptionPageWidgetState
     }
 
     Map<String, dynamic> prefillResponses = <String, dynamic>{};
+    Map<String, dynamic> inscriptionData = <String, dynamic>{};
+    _inscriptionRef = null;
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      final inscriptionSnapshot = await _db
-          .collection('events_public')
-          .doc(widget.eventId)
-          .collection('inscriptions')
-          .doc(user.uid)
-          .get();
-      if (inscriptionSnapshot.exists && inscriptionSnapshot.data() != null) {
-        final inscriptionData = inscriptionSnapshot.data()!;
-        final responsesRaw = inscriptionData['responses'];
-        if (responsesRaw is Map<String, dynamic>) {
-          prefillResponses = Map<String, dynamic>.from(responsesRaw);
-        } else if (responsesRaw is Map) {
-          prefillResponses = Map<String, dynamic>.from(
-            responsesRaw.map((key, value) => MapEntry(key.toString(), value)),
-          );
-        }
+      final inscriptionSnapshot = await _loadExistingInscription(user.uid);
+      if (inscriptionSnapshot != null &&
+          inscriptionSnapshot.exists &&
+          inscriptionSnapshot.data() != null) {
+        _inscriptionRef = inscriptionSnapshot.reference;
+        inscriptionData = _toStringKeyedMap(inscriptionSnapshot.data()!);
+        prefillResponses = _extractStoredResponses(inscriptionData);
       }
     }
 
     final configData = configSnapshot.data()!;
-    final rawFields =
-        configData['fields'] is List ? (configData['fields'] as List) : const [];
+    final rawFields = configData['fields'] is List
+        ? (configData['fields'] as List)
+        : const [];
 
     final fields = <_InscriptionFieldDefinition>[];
     for (final raw in rawFields) {
@@ -183,12 +374,13 @@ class _PublicEventInscriptionPageWidgetState
           ? (configData['title'] as String).trim()
           : 'Formulário de inscrição',
       subtitle: (configData['subtitle'] as String?)?.trim() ?? '',
-      helperText: ((configData['helper_text'] ?? configData['helperText'])
-                  as String?)
-              ?.trim() ??
-          '',
+      helperText:
+          ((configData['helper_text'] ?? configData['helperText']) as String?)
+                  ?.trim() ??
+              '',
       fields: fields,
       prefillResponses: prefillResponses,
+      inscriptionData: inscriptionData,
     );
   }
 
@@ -226,6 +418,7 @@ class _PublicEventInscriptionPageWidgetState
   }
 
   List<String> _coerceValueList(dynamic rawValue) {
+    rawValue = _unwrapResponseValue(rawValue);
     if (rawValue == null) return const <String>[];
     if (rawValue is List) {
       return rawValue
@@ -248,18 +441,25 @@ class _PublicEventInscriptionPageWidgetState
   void _applyPrefillAnswers(
     List<_InscriptionFieldDefinition> fields,
     Map<String, dynamic> responses,
+    Map<String, dynamic> inscriptionData,
   ) {
     for (final field in fields) {
-      final raw = responses[field.id];
+      final raw = _resolvePrefillValue(
+        field: field,
+        responses: responses,
+        inscriptionData: inscriptionData,
+      );
       if (raw == null) continue;
+      final normalizedRaw = _unwrapResponseValue(raw);
+      if (normalizedRaw == null) continue;
 
       switch (field.type) {
         case _InscriptionFieldType.text:
         case _InscriptionFieldType.number:
-          _textControllers[field.id]?.text = raw.toString().trim();
+          _textControllers[field.id]?.text = normalizedRaw.toString().trim();
           break;
         case _InscriptionFieldType.singleChoice:
-          final value = raw.toString().trim();
+          final value = normalizedRaw.toString().trim();
           if (value.isEmpty) break;
           if (field.options.contains(value)) {
             _singleChoiceValues[field.id] = value;
@@ -269,7 +469,7 @@ class _PublicEventInscriptionPageWidgetState
           }
           break;
         case _InscriptionFieldType.multipleChoice:
-          final values = _coerceValueList(raw);
+          final values = _coerceValueList(normalizedRaw);
           if (values.isEmpty) break;
 
           final selected = <String>{};
@@ -341,8 +541,7 @@ class _PublicEventInscriptionPageWidgetState
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Sessão expirada. Faça login novamente.')),
+        const SnackBar(content: Text('Sessão expirada. Faça login novamente.')),
       );
       return;
     }
@@ -398,11 +597,12 @@ class _PublicEventInscriptionPageWidgetState
         fallback: '',
       );
 
-      final inscriptionRef = _db
-          .collection('events_public')
-          .doc(widget.eventId)
-          .collection('inscriptions')
-          .doc(user.uid);
+      final inscriptionRef = _inscriptionRef ??
+          _db
+              .collection('events_public')
+              .doc(widget.eventId)
+              .collection('inscriptions')
+              .doc(user.uid);
       final existing = await inscriptionRef.get();
 
       final existingPaymentConfirmed =
@@ -415,6 +615,8 @@ class _PublicEventInscriptionPageWidgetState
         'event_name': widget.eventName,
         'organization_id': payload.organizationId,
         'user_uid': user.uid,
+        'uid': user.uid,
+        'user_id': user.uid,
         'user_email': (user.email ?? '').trim(),
         'user_name': userName,
         'competitor_name': competitorName,
@@ -432,6 +634,7 @@ class _PublicEventInscriptionPageWidgetState
       }
 
       await inscriptionRef.set(payloadData, SetOptions(merge: true));
+      _inscriptionRef = inscriptionRef;
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -550,7 +753,8 @@ class _PublicEventInscriptionPageWidgetState
         return TextField(
           controller: _textControllers[field.id],
           decoration: InputDecoration(
-            hintText: field.placeholder.isEmpty ? 'Sua resposta' : field.placeholder,
+            hintText:
+                field.placeholder.isEmpty ? 'Sua resposta' : field.placeholder,
             isDense: true,
           ),
         );
@@ -559,7 +763,9 @@ class _PublicEventInscriptionPageWidgetState
           controller: _textControllers[field.id],
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: InputDecoration(
-            hintText: field.placeholder.isEmpty ? 'Digite um numero' : field.placeholder,
+            hintText: field.placeholder.isEmpty
+                ? 'Digite um numero'
+                : field.placeholder,
             isDense: true,
           ),
         );
@@ -603,7 +809,11 @@ class _PublicEventInscriptionPageWidgetState
 
           _syncControllers(payload.fields);
           if (!_prefillApplied) {
-            _applyPrefillAnswers(payload.fields, payload.prefillResponses);
+            _applyPrefillAnswers(
+              payload.fields,
+              payload.prefillResponses,
+              payload.inscriptionData,
+            );
             _prefillApplied = true;
           }
 
@@ -666,7 +876,8 @@ class _PublicEventInscriptionPageWidgetState
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: _submitting ? null : () => _submitInscription(payload),
+                  onPressed:
+                      _submitting ? null : () => _submitInscription(payload),
                   icon: _submitting
                       ? const SizedBox(
                           height: 16,

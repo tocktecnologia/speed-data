@@ -318,7 +318,25 @@ class _LoginWidgetState extends State<LoginWidget> {
       );
     }
 
+    _navigateAfterLogin();
+  }
+
+  bool _hasPendingInscriptionRedirect() {
+    final appState = AppStateNotifier.instance;
+    if (!appState.hasRedirect()) return false;
+    return appState.getRedirectLocation().startsWith('/inscricao');
+  }
+
+  void _navigateAfterLogin() {
     if (!mounted) return;
+    final router = GoRouter.of(context);
+    final appState = AppStateNotifier.instance;
+    if (appState.hasRedirect()) {
+      final targetLocation = appState.getRedirectLocation();
+      appState.clearRedirectLocation();
+      router.go(targetLocation);
+      return;
+    }
     context.goNamedAuth(HomePageWidget.routeName, context.mounted);
   }
 
@@ -448,6 +466,24 @@ class _LoginWidgetState extends State<LoginWidget> {
                                     style: SpeedDataTheme
                                         .themeData.textTheme.headlineLarge,
                                   ),
+                                  if (_hasPendingInscriptionRedirect())
+                                    Container(
+                                      width: double.infinity,
+                                      margin: const EdgeInsets.only(top: 12),
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: SpeedDataTheme.accentPrimary
+                                            .withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: SpeedDataTheme.accentPrimary
+                                              .withValues(alpha: 0.35),
+                                        ),
+                                      ),
+                                      child: const Text(
+                                        'Você precisa fazer login para acessar a inscrição deste evento. Após entrar, abra novamente o link caso precise.',
+                                      ),
+                                    ),
                                   Padding(
                                     padding:
                                         const EdgeInsetsDirectional.fromSTEB(
@@ -739,9 +775,7 @@ class _LoginWidgetState extends State<LoginWidget> {
                                               if (!currentContext.mounted) {
                                                 return;
                                               }
-                                              currentContext.goNamedAuth(
-                                                  HomePageWidget.routeName,
-                                                  currentContext.mounted);
+                                              _navigateAfterLogin();
                                             },
                                             text: 'Entrar',
                                           ),

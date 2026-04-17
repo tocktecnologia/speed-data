@@ -2,6 +2,7 @@ import '/auth/firebase_auth/auth_util.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:speed_data/flutter_flow/flutter_flow_util.dart';
+import '/index.dart';
 import 'package:speed_data/pages/public_event/public_event_inscription_page_widget.dart';
 
 class PublicEventDetailsPageWidget extends StatefulWidget {
@@ -20,6 +21,15 @@ class PublicEventDetailsPageWidget extends StatefulWidget {
 class _PublicEventDetailsPageWidgetState
     extends State<PublicEventDetailsPageWidget> {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  void _goToHome() {
+    if (!mounted) return;
+    context.goNamedAuth(
+      HomePageWidget.routeName,
+      context.mounted,
+      ignoreRedirect: true,
+    );
+  }
 
   DateTime? _asDateTime(dynamic value) {
     if (value == null) return null;
@@ -180,6 +190,15 @@ class _PublicEventDetailsPageWidgetState
                 label: Text(hasInscription ? 'Ver inscrição' : 'Se inscrever'),
               ),
             ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _goToHome,
+                icon: const Icon(Icons.home_rounded),
+                label: const Text('Voltar para home'),
+              ),
+            ),
           ],
         ),
       ),
@@ -190,81 +209,59 @@ class _PublicEventDetailsPageWidgetState
   Widget build(BuildContext context) {
     final uid = currentUserUid.trim();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Detalhes do Evento'),
-      ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _db.collection('events_public').doc(widget.eventId).snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(
-              child: Text('Erro ao carregar evento: ${snapshot.error}'),
-            );
-          }
-
-          final data = snapshot.data?.data();
-          if (data == null) {
-            return const Center(
-              child: Text('Evento não encontrado.'),
-            );
-          }
-
-          final name = (data['name'] as String?)?.trim().isNotEmpty == true
-              ? data['name'] as String
-              : 'Evento';
-          final location = (data['location'] as String?)?.trim() ?? '';
-          final state = (data['state'] as String?)?.trim() ?? '';
-          final startDate =
-              _asDateTime(data['start_date'] ?? data['startDate']);
-          final endDate = _asDateTime(data['end_date'] ?? data['endDate']);
-          final categories = data['categories'] is List
-              ? List<String>.from(
-                  (data['categories'] as List)
-                      .whereType<dynamic>()
-                      .map((e) => e.toString()),
-                )
-              : const <String>[];
-          final statusLabel = _normalizeStatus(data['status']);
-
-          if (uid.isEmpty) {
-            return SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: _buildEventCard(
-                name: name,
-                location: location,
-                state: state,
-                startDate: startDate,
-                endDate: endDate,
-                statusLabel: statusLabel,
-                categories: categories,
-                hasInscription: false,
-                paymentStatus: 'pending',
-              ),
-            );
-          }
-
-          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: _db
-                .collection('events_public')
-                .doc(widget.eventId)
-                .collection('inscriptions')
-                .where('user_uid', isEqualTo: uid)
-                .limit(1)
-                .snapshots(),
-            builder: (context, inscriptionSnapshot) {
-              final inscriptionDocs = inscriptionSnapshot.data?.docs ??
-                  <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-              final hasInscription = inscriptionDocs.isNotEmpty;
-              final inscriptionData =
-                  hasInscription ? inscriptionDocs.first.data() : null;
-              final paymentStatus = _normalizePaymentStatus(
-                inscriptionData?['payment_status'],
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _goToHome();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Voltar para home',
+            onPressed: _goToHome,
+          ),
+          title: const Text('Detalhes do Evento'),
+        ),
+        body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream:
+              _db.collection('events_public').doc(widget.eventId).snapshots(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(
+                child: Text('Erro ao carregar evento: ${snapshot.error}'),
               );
+            }
 
+            final data = snapshot.data?.data();
+            if (data == null) {
+              return const Center(
+                child: Text('Evento não encontrado.'),
+              );
+            }
+
+            final name = (data['name'] as String?)?.trim().isNotEmpty == true
+                ? data['name'] as String
+                : 'Evento';
+            final location = (data['location'] as String?)?.trim() ?? '';
+            final state = (data['state'] as String?)?.trim() ?? '';
+            final startDate =
+                _asDateTime(data['start_date'] ?? data['startDate']);
+            final endDate = _asDateTime(data['end_date'] ?? data['endDate']);
+            final categories = data['categories'] is List
+                ? List<String>.from(
+                    (data['categories'] as List)
+                        .whereType<dynamic>()
+                        .map((e) => e.toString()),
+                  )
+                : const <String>[];
+            final statusLabel = _normalizeStatus(data['status']);
+
+            if (uid.isEmpty) {
               return SingleChildScrollView(
                 padding: const EdgeInsets.all(16),
                 child: _buildEventCard(
@@ -275,13 +272,48 @@ class _PublicEventDetailsPageWidgetState
                   endDate: endDate,
                   statusLabel: statusLabel,
                   categories: categories,
-                  hasInscription: hasInscription,
-                  paymentStatus: paymentStatus,
+                  hasInscription: false,
+                  paymentStatus: 'pending',
                 ),
               );
-            },
-          );
-        },
+            }
+
+            return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _db
+                  .collection('events_public')
+                  .doc(widget.eventId)
+                  .collection('inscriptions')
+                  .where('user_uid', isEqualTo: uid)
+                  .limit(1)
+                  .snapshots(),
+              builder: (context, inscriptionSnapshot) {
+                final inscriptionDocs = inscriptionSnapshot.data?.docs ??
+                    <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                final hasInscription = inscriptionDocs.isNotEmpty;
+                final inscriptionData =
+                    hasInscription ? inscriptionDocs.first.data() : null;
+                final paymentStatus = _normalizePaymentStatus(
+                  inscriptionData?['payment_status'],
+                );
+
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: _buildEventCard(
+                    name: name,
+                    location: location,
+                    state: state,
+                    startDate: startDate,
+                    endDate: endDate,
+                    statusLabel: statusLabel,
+                    categories: categories,
+                    hasInscription: hasInscription,
+                    paymentStatus: paymentStatus,
+                  ),
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }

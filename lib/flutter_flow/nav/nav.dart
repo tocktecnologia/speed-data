@@ -16,6 +16,7 @@ import 'serialization_util.dart';
 
 import '/index.dart';
 import '/pages/landing_page_widget.dart';
+import '/pages/public_event/public_event_inscription_entry_page_widget.dart';
 
 export 'package:go_router/go_router.dart';
 export 'serialization_util.dart';
@@ -120,6 +121,14 @@ GoRouter createRouter(AppStateNotifier appStateNotifier) => GoRouter(
           name: PublicResultsPageWidget.routeName,
           path: PublicResultsPageWidget.routePath,
           builder: (context, params) => PublicResultsPageWidget(),
+        ),
+        FFRoute(
+          name: PublicEventInscriptionEntryPageWidget.routeName,
+          path: PublicEventInscriptionEntryPageWidget.routePath,
+          requireAuth: true,
+          builder: (context, params) => PublicEventInscriptionEntryPageWidget(
+            eventId: params.state.uri.queryParameters['eventId'] ?? '',
+          ),
         )
       ].map((r) => r.toRoute(appStateNotifier)).toList(),
     );
